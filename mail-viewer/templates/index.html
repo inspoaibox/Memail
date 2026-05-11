@@ -572,6 +572,13 @@
                     <div class="row g-3">
                         <div class="col-12">
                             <h6 class="mb-2" data-i18n="sendConfig">发信配置</h6>
+                            <label class="form-label" for="settings-unified-password" data-i18n="unifiedPassword">邮箱统一密码</label>
+                            <input type="password" class="form-control" id="settings-unified-password" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="settings-clear-unified">
+                                <label class="form-check-label" for="settings-clear-unified" data-i18n="clearUnified">清除邮箱统一密码</label>
+                            </div>
+                            <div class="small text-muted mt-1 mb-3" id="settings-unified-status"></div>
                             <label class="form-label" for="settings-resend-api-key">Resend API Key</label>
                             <input type="password" class="form-control" id="settings-resend-api-key" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
                             <div class="form-check mt-2">
@@ -746,7 +753,9 @@
                 disableDomain: '停用此域名',
                 verifyCode: '验证码',
                 sendConfig: '发信配置',
+                unifiedPassword: '邮箱统一密码',
                 secretKeepPlaceholder: '留空则保持当前值',
+                clearUnified: '清除邮箱统一密码',
                 clearResend: '清除 Resend API Key',
                 clearGoogleSecret: '清除 Google Client Secret',
                 saveSettings: '保存配置',
@@ -840,7 +849,9 @@
                 disableDomain: 'Disable this domain',
                 verifyCode: 'Code',
                 sendConfig: 'Sending',
+                unifiedPassword: 'Unified mailbox password',
                 secretKeepPlaceholder: 'Leave blank to keep current value',
+                clearUnified: 'Clear unified mailbox password',
                 clearResend: 'Clear Resend API Key',
                 clearGoogleSecret: 'Clear Google Client Secret',
                 saveSettings: 'Save Settings',
@@ -1129,16 +1140,21 @@
         }
 
         function _clearSettingsSecrets() {
+            document.getElementById('settings-unified-password').value = '';
             document.getElementById('settings-resend-api-key').value = '';
             document.getElementById('settings-google-client-secret').value = '';
+            document.getElementById('settings-clear-unified').checked = false;
             document.getElementById('settings-clear-resend').checked = false;
             document.getElementById('settings-clear-google-secret').checked = false;
         }
 
         function _renderSettingsStatus(settings) {
+            const unifiedStatus = document.getElementById('settings-unified-status');
             const resendStatus = document.getElementById('settings-resend-status');
             const googleStatus = document.getElementById('settings-google-status');
             const gmail = settings.gmail || {};
+            const unifiedState = settings.unified_password_configured ? t('configured') : t('notConfigured');
+            unifiedStatus.textContent = `${unifiedState} · ${_settingsSourceLabel(settings.unified_password_source)}`;
             const resendState = settings.resend_api_key_configured ? t('configured') : t('notConfigured');
             resendStatus.textContent = `${resendState} · ${_settingsSourceLabel(settings.resend_api_key_source)}`;
             const googleState = gmail.enabled ? t('configured') : t('notConfigured');
@@ -1185,6 +1201,8 @@
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('saveSettings')}`;
             try {
                 const payload = {
+                    unified_password: document.getElementById('settings-unified-password').value.trim(),
+                    clear_unified_password: document.getElementById('settings-clear-unified').checked,
                     resend_api_key: document.getElementById('settings-resend-api-key').value.trim(),
                     clear_resend_api_key: document.getElementById('settings-clear-resend').checked,
                     public_base_url: document.getElementById('settings-public-base-url').value.trim(),

@@ -14,7 +14,8 @@ from urllib.parse import urlparse, urljoin, quote
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for, Response, stream_with_context
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "mail-viewer-secret-key-change-me")
+APP_SECRET = os.getenv("APP_SECRET", "")
+app.secret_key = os.getenv("SECRET_KEY") or APP_SECRET or "mail-viewer-secret-key-change-me"
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 IS_PRODUCTION = ENVIRONMENT == "production"
 app.config.update(
@@ -32,7 +33,7 @@ ACCESS_PASSWORD = os.getenv("ACCESS_PASSWORD", "")
 
 # DuckMail API 配置
 DUCKMAIL_BASE_URL = os.getenv("DUCKMAIL_BASE_URL", "http://127.0.0.1:8080")
-DUCKMAIL_API_KEY = os.getenv("DUCKMAIL_API_KEY", "")
+DUCKMAIL_API_KEY = os.getenv("DUCKMAIL_API_KEY") or os.getenv("API_KEY") or APP_SECRET
 UNIFIED_PASSWORD = os.getenv("UNIFIED_PASSWORD", "")
 IMAP_MAIL_BASE_URL = os.getenv("IMAP_MAIL_BASE_URL", "http://imap-mail:3939")
 
@@ -42,6 +43,7 @@ VIEWER_SETTINGS_FILE = os.getenv("VIEWER_SETTINGS_FILE", os.path.join(os.getcwd(
 CONFIG_ENCRYPTION_KEY = (
     os.getenv("CONFIG_ENCRYPTION_KEY")
     or os.getenv("IMAP_ACCOUNTS_SECRET")
+    or APP_SECRET
     or app.secret_key
     or ""
 )
@@ -146,8 +148,16 @@ def _get_viewer_secret(name: str) -> str:
     return _decrypt_setting(_read_viewer_settings().get(name))
 
 
+def _get_unified_password() -> str:
+    return _get_viewer_secret("unified_password") or UNIFIED_PASSWORD
+
+
 def _update_viewer_runtime_settings(data: dict) -> dict:
     settings = _read_viewer_settings()
+    if data.get("clear_unified_password"):
+        settings.pop("unified_password", None)
+    elif data.get("unified_password"):
+        settings["unified_password"] = _encrypt_setting(data["unified_password"].strip())
     if data.get("clear_resend_api_key"):
         settings.pop("resend_api_key", None)
     elif data.get("resend_api_key"):
@@ -160,7 +170,6 @@ _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key
 _require_production_value("ACCESS_PASSWORD", ACCESS_PASSWORD)
 _require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
 _require_production_value("DUCKMAIL_API_KEY", DUCKMAIL_API_KEY)
-_require_production_value("UNIFIED_PASSWORD", UNIFIED_PASSWORD)
 _require_production_value("IMAP_MAIL_BASE_URL", IMAP_MAIL_BASE_URL)
 _require_production_value("CONFIG_ENCRYPTION_KEY", CONFIG_ENCRYPTION_KEY, {"mail-viewer-secret-key-change-me"})
 
@@ -300,7 +309,7 @@ def _rewrite_html_images(html: str) -> str:
 
 def _get_mail_token(email: str, password: str = "") -> tuple:
     """获取邮件服务 Token，返回 (token, error_response)"""
-    password = password or UNIFIED_PASSWORD
+    password = password or _get_unified_password()
     if not password:
         return None, ("未配置邮箱统一密码", 500)
     base_url = DUCKMAIL_BASE_URL.rstrip("/")
@@ -332,9 +341,10 @@ def _extract_api_error(resp, fallback: str = "操作失败") -> str:
 
 def _is_managed_sender(address: str) -> bool:
     """只有能用统一密码登录的本地账户才允许作为 Web 发件人。"""
-    if not address or not UNIFIED_PASSWORD:
+    unified_password = _get_unified_password()
+    if not address or not unified_password:
         return False
-    token, _ = _get_mail_token(address, UNIFIED_PASSWORD)
+    token, _ = _get_mail_token(address, unified_password)
     return bool(token)
 
 
@@ -482,7 +492,7 @@ def inbox_query():
     """通用收件箱查询 - 自动创建邮箱（如不存在）"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     offset = int(data.get("offset", 0))
     limit = int(data.get("limit", 30))
     
@@ -718,6 +728,8 @@ def get_runtime_settings():
     return jsonify({
         "success": True,
         "settings": {
+            "unified_password_configured": bool(_get_unified_password()),
+            "unified_password_source": "runtime" if _decrypt_setting(local_settings.get("unified_password")) else ("env" if UNIFIED_PASSWORD else "none"),
             "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
             "resend_api_key_source": "runtime" if resend_runtime else ("env" if RESEND_API_KEY else "none"),
             "gmail": imap_settings,
@@ -751,9 +763,12 @@ def save_runtime_settings():
         return jsonify({"success": False, "message": f"本地配置已保存，但 Gmail OAuth 配置保存失败: {imap_error}"}), 502
 
     resend_runtime = _decrypt_setting(local_settings.get("resend_api_key"))
+    unified_runtime = _decrypt_setting(local_settings.get("unified_password"))
     return jsonify({
         "success": True,
         "settings": {
+            "unified_password_configured": bool(unified_runtime or UNIFIED_PASSWORD),
+            "unified_password_source": "runtime" if unified_runtime else ("env" if UNIFIED_PASSWORD else "none"),
             "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
             "resend_api_key_source": "runtime" if resend_runtime else ("env" if RESEND_API_KEY else "none"),
             "gmail": imap_settings,
@@ -767,7 +782,7 @@ def inbox_detail():
     """通用收件箱邮件详情"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     message_id = data.get("message_id", "").strip()
     
     if not email or not message_id:
@@ -805,7 +820,7 @@ def inbox_detail():
 def inbox_attachment(message_id, attachment_id):
     """代理下载本地收件附件。"""
     email = request.args.get("email", "").strip()
-    password = request.args.get("password", "").strip() or UNIFIED_PASSWORD
+    password = request.args.get("password", "").strip() or _get_unified_password()
     if not email:
         return jsonify({"success": False, "message": "缺少邮箱参数"}), 400
 
@@ -840,7 +855,7 @@ def inbox_batch():
     """批量操作邮件"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     action = data.get("action", "").strip()
     message_ids = data.get("message_ids", [])
 
@@ -887,7 +902,7 @@ def inbox_search():
     """搜索邮件"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     query = data.get("query", "").strip()
 
     if not email or not query:
@@ -935,7 +950,7 @@ def inbox_delete():
     """删除邮件（软删除）"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     message_id = data.get("message_id", "").strip()
 
     if not email or not message_id:
@@ -972,7 +987,7 @@ def trash_query():
     """查询回收站邮件。"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     offset = int(data.get("offset", 0))
     limit = int(data.get("limit", 30))
 
@@ -1029,7 +1044,7 @@ def inbox_permanent_delete():
 def _message_action(actions: list[str], ok_message: str):
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     message_id = data.get("message_id", "").strip()
 
     if not email or not message_id:
@@ -1078,7 +1093,7 @@ def sent_detail():
     """查询已发送邮件详情。"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
     message_id = data.get("message_id", "").strip()
 
     if not email or not message_id:
@@ -1115,7 +1130,7 @@ def sent_query():
     """查询已发送邮件"""
     data = request.json or {}
     email = data.get("email", "").strip()
-    password = data.get("password", "").strip() or UNIFIED_PASSWORD
+    password = data.get("password", "").strip() or _get_unified_password()
 
     if not email:
         return jsonify({"success": False, "message": "缺少邮箱地址", "messages": []})

@@ -76,24 +76,17 @@ cd ManyMail
 cp .env.example .env
 ```
 
-Edit `.env` with your actual values:
+Edit only the required values first:
 
 ```env
-# Mail Service
-JWT_SECRET=your-strong-jwt-secret
-API_KEY=your-api-key
+APP_SECRET=your-long-random-bootstrap-secret
+ACCESS_PASSWORD=your-viewer-password
+
 SMTP_HOSTNAME=mail.yourdomain.com
 DOMAINS=yourdomain.com
-REQUIRE_API_KEY_FOR_ACCOUNTS=1
-
-# Mail Viewer
-ACCESS_PASSWORD=your-viewer-password
-SECRET_KEY=random-flask-secret
-UNIFIED_PASSWORD=shared-mailbox-password
-IMAP_ACCOUNTS_SECRET=imap-account-encryption-secret
-# Optional: separate key for runtime settings saved from the web UI.
-CONFIG_ENCRYPTION_KEY=runtime-settings-encryption-secret
 ```
+
+Most other values in `.env.example` are optional. `APP_SECRET` is used as the default JWT/API/session/encryption secret unless you override the advanced keys. Gmail OAuth2, Resend, and the unified mailbox password are configured later from the Web UI gear icon.
 
 ### 2. Start With Local Builds
 
@@ -168,15 +161,16 @@ To roll back, change the image tag in `.env` to an older tag, such as a release 
 ManyMail no longer requires every operational setting to be baked into `.env`. After Docker starts, log in to the web UI and click the gear icon to configure:
 
 - Resend API Key for outbound mail.
+- Unified mailbox password used by the built-in inbox viewer.
 - Gmail OAuth2 Public Base URL, Client ID, Client Secret, and Redirect URI.
 
-These settings are saved to Docker volumes and survive container restarts, image rebuilds, and GitHub-built image updates. Sensitive values are encrypted with `CONFIG_ENCRYPTION_KEY`; if it is omitted, `docker-compose.yml` falls back to `IMAP_ACCOUNTS_SECRET`.
+These settings are saved to Docker volumes and survive container restarts, image rebuilds, and GitHub-built image updates. Sensitive values are encrypted with `CONFIG_ENCRYPTION_KEY`; if it is omitted, `docker-compose.yml` falls back to `IMAP_ACCOUNTS_SECRET`, then `SECRET_KEY`, then `APP_SECRET`.
 
 Keep `.env` for bootstrapping values that must exist before the UI can start, such as database connection, login password, API keys used between internal services, session/JWT secrets, and encryption keys.
 
 ### Gmail OAuth2 For External IMAP Accounts
 
-The external IMAP aggregator persists account configuration and encrypts sensitive credentials with `IMAP_ACCOUNTS_SECRET`; adding external accounts is rejected when this secret is not configured. Gmail can use OAuth2 instead of an app password:
+The external IMAP aggregator persists account configuration and encrypts sensitive credentials with `IMAP_ACCOUNTS_SECRET`, falling back to `APP_SECRET` in the default Compose setup. Gmail can use OAuth2 instead of an app password:
 
 1. Create a Web application OAuth Client in Google Cloud Console.
 2. Add this Authorized redirect URI:
@@ -335,7 +329,7 @@ ManyMail/
 | **Network** | Server-side image proxy (prevents IP leakage) |
 | **Storage** | Auto-cleanup via MongoDB TTL index (default 3 days) |
 | **Web** | Login-protected viewer, HttpOnly session cookies |
-| **Credential Storage** | External IMAP accounts and runtime settings are saved encrypted with `IMAP_ACCOUNTS_SECRET` / `CONFIG_ENCRYPTION_KEY` |
+| **Credential Storage** | External IMAP accounts and runtime settings are saved encrypted with `IMAP_ACCOUNTS_SECRET` / `CONFIG_ENCRYPTION_KEY` / `APP_SECRET` fallback |
 
 <br>
 

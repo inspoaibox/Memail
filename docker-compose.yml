@@ -77,17 +77,12 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:5000:5000"
+    env_file:
+      - .env
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-production}
       - DUCKMAIL_BASE_URL=http://mail-service:8080
-      - DUCKMAIL_API_KEY=${DUCKMAIL_API_KEY}
-      - ACCESS_PASSWORD=${ACCESS_PASSWORD}
-      - SECRET_KEY=${SECRET_KEY}
-      - UNIFIED_PASSWORD=${UNIFIED_PASSWORD}
       - VIEWER_SETTINGS_FILE=/data/settings.json
-      - CONFIG_ENCRYPTION_KEY=${CONFIG_ENCRYPTION_KEY:-}
-      - IMAP_ACCOUNTS_SECRET=${IMAP_ACCOUNTS_SECRET}
-      - RESEND_API_KEY=${RESEND_API_KEY:-}
       - MAX_IMAGE_PROXY_BYTES=${MAX_IMAGE_PROXY_BYTES:-5242880}
       - IMAP_MAIL_BASE_URL=http://imap-mail:3939
     volumes:
@@ -112,15 +107,12 @@ services:
     build: ./mail-viewer/imap-mail-app
     container_name: mail-imap-bridge
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - PORT=3939
       - ACCOUNTS_FILE=/data/accounts.json
       - SETTINGS_FILE=/data/settings.json
-      - IMAP_ACCOUNTS_SECRET=${IMAP_ACCOUNTS_SECRET}
-      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
-      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
     volumes:
       - imap_mail_data:/data
     expose:

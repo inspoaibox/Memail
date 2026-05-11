@@ -18,12 +18,12 @@ let clientId = 0;
 // 持久化文件路径
 const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || path.join(__dirname, 'accounts.json');
 const SETTINGS_FILE = process.env.SETTINGS_FILE || path.join(path.dirname(ACCOUNTS_FILE), 'settings.json');
-const ACCOUNTS_SECRET = process.env.IMAP_ACCOUNTS_SECRET || process.env.SECRET_KEY || '';
+const ACCOUNTS_SECRET = process.env.IMAP_ACCOUNTS_SECRET || process.env.SECRET_KEY || process.env.APP_SECRET || '';
 const GOOGLE_SCOPE = 'https://mail.google.com/';
 const oauthStates = new Map();
 let runtimeSettings = {};
 if (!ACCOUNTS_SECRET) {
-  console.warn('WARNING: IMAP_ACCOUNTS_SECRET is not configured; external IMAP accounts cannot be persisted.');
+  console.warn('WARNING: IMAP_ACCOUNTS_SECRET/APP_SECRET is not configured; external IMAP accounts cannot be persisted.');
 }
 
 function deriveAccountsKey() {
@@ -281,7 +281,7 @@ function buildGmailAccount(email, token) {
 
 function requirePersistenceSecret(res) {
   if (ACCOUNTS_SECRET) return true;
-  res.status(500).json({ error: '未配置 IMAP_ACCOUNTS_SECRET，无法持久化保存外部邮箱账号' });
+  res.status(500).json({ error: '未配置 IMAP_ACCOUNTS_SECRET 或 APP_SECRET，无法持久化保存外部邮箱账号' });
   return false;
 }
 
@@ -310,7 +310,7 @@ async function restoreAccounts() {
   for (const item of data) {
     const account = deserializeAccount(item);
     if (!account) {
-      console.log('  ✗ 跳过账户：未配置 IMAP_ACCOUNTS_SECRET 或密码无法解密');
+      console.log('  ✗ 跳过账户：未配置 IMAP_ACCOUNTS_SECRET/APP_SECRET 或密码无法解密');
       continue;
     }
     const client = createMailClient(account);
@@ -396,7 +396,7 @@ app.post('/api/oauth/gmail/start', (req, res) => {
 
 app.get('/api/oauth/gmail/callback', async (req, res) => {
   if (!ACCOUNTS_SECRET) {
-    return res.status(500).send('IMAP_ACCOUNTS_SECRET is not configured; external IMAP accounts cannot be persisted.');
+    return res.status(500).send('IMAP_ACCOUNTS_SECRET or APP_SECRET is not configured; external IMAP accounts cannot be persisted.');
   }
   if (!hasGmailOAuthConfig()) {
     return res.status(500).send('Gmail OAuth is not configured.');

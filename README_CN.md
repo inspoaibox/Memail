@@ -76,24 +76,17 @@ cd ManyMail
 cp .env.example .env
 ```
 
-编辑 `.env`，填入实际值：
+先只改这些必填项：
 
 ```env
-# 邮件服务
-JWT_SECRET=你的JWT密钥
-API_KEY=你的API密钥
+APP_SECRET=你的长随机启动密钥
+ACCESS_PASSWORD=查看器登录密码
+
 SMTP_HOSTNAME=mail.yourdomain.com
 DOMAINS=yourdomain.com
-REQUIRE_API_KEY_FOR_ACCOUNTS=1
-
-# 邮件查看器
-ACCESS_PASSWORD=查看器登录密码
-SECRET_KEY=Flask会话密钥
-UNIFIED_PASSWORD=邮箱统一密码
-IMAP_ACCOUNTS_SECRET=IMAP聚合账号加密密钥
-# 可选：后台运行配置独立加密密钥
-CONFIG_ENCRYPTION_KEY=后台配置加密密钥
 ```
+
+`.env.example` 里的其他项目大多是可选项。`APP_SECRET` 会默认作为 JWT/API/Session/加密密钥使用，除非你在高级配置里分别覆盖。Gmail OAuth2、Resend API Key、邮箱统一密码启动后在 Web UI 右上角齿轮里配置。
 
 ### 2. 使用服务器本地源码构建启动
 
@@ -173,15 +166,16 @@ docker compose up -d
 ManyMail 现在不要求所有运行配置都写进 `.env`。Docker 启动后，登录 Web UI，点击右上角齿轮，可以配置：
 
 - Resend API Key，用于发信。
+- 邮箱统一密码，用于内置收件箱查看器。
 - Gmail OAuth2 的 Public Base URL、Client ID、Client Secret、Redirect URI。
 
-这些配置会保存到 Docker volume，容器重启、镜像更新、GitHub 构建镜像更新后都不会丢。敏感值使用 `CONFIG_ENCRYPTION_KEY` 加密；如果没有设置该值，`docker-compose.yml` 会回退使用 `IMAP_ACCOUNTS_SECRET`。
+这些配置会保存到 Docker volume，容器重启、镜像更新、GitHub 构建镜像更新后都不会丢。敏感值使用 `CONFIG_ENCRYPTION_KEY` 加密；如果没有设置该值，`docker-compose.yml` 会回退使用 `IMAP_ACCOUNTS_SECRET`，再回退到 `SECRET_KEY`，最后回退到 `APP_SECRET`。
 
 `.env` 仍然用于启动前必须存在的配置，比如登录密码、服务间 API Key、Session/JWT 密钥、加密密钥等。
 
 ### Gmail OAuth2 外部邮箱聚合
 
-外部 IMAP 聚合器会持久化保存账号配置，并使用 `IMAP_ACCOUNTS_SECRET` 加密敏感凭据；未配置该密钥时会拒绝添加外部邮箱账号。Gmail 推荐使用 OAuth2 登录：
+外部 IMAP 聚合器会持久化保存账号配置，并使用 `IMAP_ACCOUNTS_SECRET` 加密敏感凭据；默认 Compose 部署下未单独设置时会回退使用 `APP_SECRET`。Gmail 推荐使用 OAuth2 登录：
 
 1. 在 Google Cloud Console 创建 OAuth Client，类型选择 Web application。
 2. 添加 Authorized redirect URI：
@@ -340,7 +334,7 @@ ManyMail/
 | **网络安全** | 服务端图片代理，防止收件人 IP 泄露 |
 | **数据清理** | MongoDB TTL 索引自动清理过期邮件（默认 3 天） |
 | **访问控制** | 查看器登录保护，HttpOnly Session Cookie |
-| **凭据存储** | 外部 IMAP 聚合账号使用 `IMAP_ACCOUNTS_SECRET` 加密后保存 |
+| **凭据存储** | 外部 IMAP 聚合账号和后台运行配置使用 `IMAP_ACCOUNTS_SECRET` / `CONFIG_ENCRYPTION_KEY` / `APP_SECRET` fallback 加密后保存 |
 
 <br>
 

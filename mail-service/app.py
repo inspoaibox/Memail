@@ -31,10 +31,11 @@ from aiosmtpd.controller import Controller
 # Configuration
 # ---------------------------------------------------------------------------
 
+APP_SECRET = os.getenv("APP_SECRET", "")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
 DB_NAME = os.getenv("DB_NAME", "mailserver")
-JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
-API_KEY = os.getenv("API_KEY", "")
+JWT_SECRET = os.getenv("JWT_SECRET") or APP_SECRET or "change-this-in-production"
+API_KEY = os.getenv("API_KEY") or APP_SECRET
 SMTP_HOSTNAME = os.getenv("SMTP_HOSTNAME", "mail.example.com")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 # 环境变量中的域名仅作为种子数据，实际域名列表存储在 MongoDB 中
