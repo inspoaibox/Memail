@@ -406,6 +406,9 @@
                 <button class="btn btn-sm btn-outline-secondary" onclick="toggleLang()" id="btn-lang" title="Switch Language">
                     <i class="bi bi-translate me-1"></i><span id="lang-label">EN</span>
                 </button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="openSettings()" data-i18n-title="settings" title="设置">
+                    <i class="bi bi-gear"></i>
+                </button>
                 <button class="btn btn-primary" onclick="openCompose()">
                     <i class="bi bi-pencil-square me-1"></i><span data-i18n="compose">写邮件</span>
                 </button>
@@ -556,6 +559,64 @@
         </div>
     </div>
 
+    <!-- 系统配置 Modal -->
+    <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
+                    <h5 class="modal-title" id="settingsModalLabel"><i class="bi bi-gear me-2"></i><span data-i18n="settings">系统配置</span></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="settings-alert" class="alert" style="display:none;" role="alert"></div>
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <h6 class="mb-2" data-i18n="sendConfig">发信配置</h6>
+                            <label class="form-label" for="settings-resend-api-key">Resend API Key</label>
+                            <input type="password" class="form-control" id="settings-resend-api-key" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="settings-clear-resend">
+                                <label class="form-check-label" for="settings-clear-resend" data-i18n="clearResend">清除 Resend API Key</label>
+                            </div>
+                            <div class="small text-muted mt-1" id="settings-resend-status"></div>
+                        </div>
+                        <div class="col-12"><hr></div>
+                        <div class="col-12">
+                            <h6 class="mb-2">Gmail OAuth2</h6>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label" for="settings-public-base-url">Public Base URL</label>
+                            <input type="url" class="form-control" id="settings-public-base-url" placeholder="https://mail.example.com/imap">
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label" for="settings-google-redirect-uri">Redirect URI</label>
+                            <input type="url" class="form-control" id="settings-google-redirect-uri" placeholder="https://mail.example.com/imap/api/oauth/gmail/callback">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="settings-google-client-id">Google Client ID</label>
+                            <input type="text" class="form-control" id="settings-google-client-id" placeholder="xxxxx.apps.googleusercontent.com">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="settings-google-client-secret">Google Client Secret</label>
+                            <input type="password" class="form-control" id="settings-google-client-secret" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="settings-clear-google-secret">
+                                <label class="form-check-label" for="settings-clear-google-secret" data-i18n="clearGoogleSecret">清除 Google Client Secret</label>
+                            </div>
+                            <div class="small text-muted mt-1" id="settings-google-status"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
+                    <button type="button" class="btn btn-primary" id="btn-save-settings" onclick="saveSettings()">
+                        <i class="bi bi-save me-1"></i><span data-i18n="saveSettings">保存配置</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 撰写/回复邮件 Modal -->
     <div class="modal fade" id="composeModal" tabindex="-1" aria-labelledby="composeModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
@@ -606,6 +667,7 @@
         const LANGS = {
             zh: {
                 compose: '写邮件',
+                settings: '设置',
                 queryInbox: '查询收件箱',
                 selectDomain: '选择域名',
                 loading: '加载中...',
@@ -683,9 +745,23 @@
                 autoRefreshTitle: '每 15 秒自动刷新',
                 disableDomain: '停用此域名',
                 verifyCode: '验证码',
+                sendConfig: '发信配置',
+                secretKeepPlaceholder: '留空则保持当前值',
+                clearResend: '清除 Resend API Key',
+                clearGoogleSecret: '清除 Google Client Secret',
+                saveSettings: '保存配置',
+                settingsSaved: '配置已保存',
+                settingsLoadFailed: '配置加载失败',
+                settingsSaveFailed: '配置保存失败',
+                configured: '已配置',
+                notConfigured: '未配置',
+                sourceRuntime: '后台配置',
+                sourceEnv: '环境变量',
+                sourceNone: '无',
             },
             en: {
                 compose: 'Compose',
+                settings: 'Settings',
                 queryInbox: 'Query Inbox',
                 selectDomain: 'Select Domain',
                 loading: 'Loading...',
@@ -763,6 +839,19 @@
                 autoRefreshTitle: 'Auto-refresh every 15s',
                 disableDomain: 'Disable this domain',
                 verifyCode: 'Code',
+                sendConfig: 'Sending',
+                secretKeepPlaceholder: 'Leave blank to keep current value',
+                clearResend: 'Clear Resend API Key',
+                clearGoogleSecret: 'Clear Google Client Secret',
+                saveSettings: 'Save Settings',
+                settingsSaved: 'Settings saved',
+                settingsLoadFailed: 'Failed to load settings',
+                settingsSaveFailed: 'Failed to save settings',
+                configured: 'Configured',
+                notConfigured: 'Not configured',
+                sourceRuntime: 'Runtime settings',
+                sourceEnv: 'Environment',
+                sourceNone: 'None',
             }
         };
 
@@ -818,6 +907,7 @@
         let currentSentTotal = 0;
         let currentTrashTotal = 0;
         let imapLoaded = false;
+        let settingsModal = null;
         const PAGE_SIZE = 30;
 
         // HTML 转义工具函数（防 XSS）
@@ -1014,6 +1104,112 @@
             } catch (e) {
                 errorDiv.textContent = t('networkError') + ': ' + e.message;
                 errorDiv.style.display = 'block';
+            }
+        }
+
+        // ---- 系统配置 ----
+        function _getSettingsModal() {
+            if (!settingsModal) {
+                settingsModal = new bootstrap.Modal(document.getElementById('settingsModal'));
+            }
+            return settingsModal;
+        }
+
+        function _settingsSourceLabel(source) {
+            if (source === 'runtime') return t('sourceRuntime');
+            if (source === 'env') return t('sourceEnv');
+            return t('sourceNone');
+        }
+
+        function _showSettingsAlert(type, message) {
+            const alert = document.getElementById('settings-alert');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+        }
+
+        function _clearSettingsSecrets() {
+            document.getElementById('settings-resend-api-key').value = '';
+            document.getElementById('settings-google-client-secret').value = '';
+            document.getElementById('settings-clear-resend').checked = false;
+            document.getElementById('settings-clear-google-secret').checked = false;
+        }
+
+        function _renderSettingsStatus(settings) {
+            const resendStatus = document.getElementById('settings-resend-status');
+            const googleStatus = document.getElementById('settings-google-status');
+            const gmail = settings.gmail || {};
+            const resendState = settings.resend_api_key_configured ? t('configured') : t('notConfigured');
+            resendStatus.textContent = `${resendState} · ${_settingsSourceLabel(settings.resend_api_key_source)}`;
+            const googleState = gmail.enabled ? t('configured') : t('notConfigured');
+            const secretState = gmail.google_client_secret_configured ? t('configured') : t('notConfigured');
+            googleStatus.textContent = settings.gmail_error
+                ? `${t('settingsLoadFailed')}: ${settings.gmail_error}`
+                : `OAuth2 ${googleState} · Secret ${secretState}`;
+        }
+
+        function _fillSettingsForm(settings) {
+            const gmail = settings.gmail || {};
+            document.getElementById('settings-public-base-url').value = gmail.public_base_url || '';
+            document.getElementById('settings-google-client-id').value = gmail.google_client_id || '';
+            document.getElementById('settings-google-redirect-uri').value = gmail.google_redirect_uri || '';
+            _clearSettingsSecrets();
+            _renderSettingsStatus(settings);
+        }
+
+        async function loadSettings() {
+            const alert = document.getElementById('settings-alert');
+            alert.style.display = 'none';
+            try {
+                const resp = await fetch('/api/settings');
+                const data = await resp.json();
+                if (!data.success) {
+                    throw new Error(data.message || t('settingsLoadFailed'));
+                }
+                _fillSettingsForm(data.settings || {});
+            } catch (e) {
+                _showSettingsAlert('danger', `${t('settingsLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        async function openSettings() {
+            _getSettingsModal().show();
+            await loadSettings();
+        }
+
+        async function saveSettings() {
+            const btn = document.getElementById('btn-save-settings');
+            const alert = document.getElementById('settings-alert');
+            alert.style.display = 'none';
+            btn.disabled = true;
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('saveSettings')}`;
+            try {
+                const payload = {
+                    resend_api_key: document.getElementById('settings-resend-api-key').value.trim(),
+                    clear_resend_api_key: document.getElementById('settings-clear-resend').checked,
+                    public_base_url: document.getElementById('settings-public-base-url').value.trim(),
+                    google_client_id: document.getElementById('settings-google-client-id').value.trim(),
+                    google_client_secret: document.getElementById('settings-google-client-secret').value.trim(),
+                    clear_google_client_secret: document.getElementById('settings-clear-google-secret').checked,
+                    google_redirect_uri: document.getElementById('settings-google-redirect-uri').value.trim(),
+                };
+                const resp = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) {
+                    throw new Error(data.message || t('settingsSaveFailed'));
+                }
+                _fillSettingsForm(data.settings || {});
+                _showSettingsAlert('success', t('settingsSaved'));
+                reloadImapFrame();
+            } catch (e) {
+                _showSettingsAlert('danger', `${t('settingsSaveFailed')}: ${e.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="bi bi-save me-1"></i>${t('saveSettings')}`;
             }
         }
 

@@ -1,4 +1,7 @@
 import ipaddress
+import base64
+import json
+import hashlib
 import os
 import re
 import socket
@@ -6,6 +9,7 @@ import requests
 import bleach
 from functools import wraps
 from bleach.css_sanitizer import CSSSanitizer
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from urllib.parse import urlparse, urljoin, quote
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for, Response, stream_with_context
 
@@ -34,6 +38,13 @@ IMAP_MAIL_BASE_URL = os.getenv("IMAP_MAIL_BASE_URL", "http://imap-mail:3939")
 
 # Resend 发信配置
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+VIEWER_SETTINGS_FILE = os.getenv("VIEWER_SETTINGS_FILE", os.path.join(os.getcwd(), "viewer-settings.json"))
+CONFIG_ENCRYPTION_KEY = (
+    os.getenv("CONFIG_ENCRYPTION_KEY")
+    or os.getenv("IMAP_ACCOUNTS_SECRET")
+    or app.secret_key
+    or ""
+)
 MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 1024)))
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "code", "div", "em", "font",
@@ -79,12 +90,79 @@ def _require_production_value(name: str, value: str, disallowed: set[str] | None
         raise RuntimeError(f"{name} must be configured for production")
 
 
+def _settings_key() -> bytes:
+    if not CONFIG_ENCRYPTION_KEY:
+        raise RuntimeError("CONFIG_ENCRYPTION_KEY is required for persisted settings")
+    return hashlib.sha256(CONFIG_ENCRYPTION_KEY.encode("utf-8")).digest()
+
+
+def _encrypt_setting(value: str) -> dict | None:
+    if not value:
+        return None
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(_settings_key()).encrypt(nonce, value.encode("utf-8"), None)
+    return {
+        "v": 1,
+        "alg": "aes-256-gcm",
+        "iv": base64.b64encode(nonce).decode("ascii"),
+        "data": base64.b64encode(ciphertext).decode("ascii"),
+    }
+
+
+def _decrypt_setting(encrypted: dict | None) -> str:
+    if not encrypted or encrypted.get("alg") != "aes-256-gcm":
+        return ""
+    try:
+        nonce = base64.b64decode(encrypted.get("iv", ""))
+        ciphertext = base64.b64decode(encrypted.get("data", ""))
+        return AESGCM(_settings_key()).decrypt(nonce, ciphertext, None).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _read_viewer_settings() -> dict:
+    if not os.path.exists(VIEWER_SETTINGS_FILE):
+        return {}
+    try:
+        with open(VIEWER_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        app.logger.error(f"读取后台配置失败: {e}", exc_info=True)
+        return {}
+
+
+def _write_viewer_settings(settings: dict):
+    settings_dir = os.path.dirname(VIEWER_SETTINGS_FILE)
+    if settings_dir:
+        os.makedirs(settings_dir, exist_ok=True)
+    tmp_path = f"{VIEWER_SETTINGS_FILE}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, VIEWER_SETTINGS_FILE)
+
+
+def _get_viewer_secret(name: str) -> str:
+    return _decrypt_setting(_read_viewer_settings().get(name))
+
+
+def _update_viewer_runtime_settings(data: dict) -> dict:
+    settings = _read_viewer_settings()
+    if data.get("clear_resend_api_key"):
+        settings.pop("resend_api_key", None)
+    elif data.get("resend_api_key"):
+        settings["resend_api_key"] = _encrypt_setting(data["resend_api_key"].strip())
+    _write_viewer_settings(settings)
+    return settings
+
+
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
 _require_production_value("ACCESS_PASSWORD", ACCESS_PASSWORD)
 _require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
 _require_production_value("DUCKMAIL_API_KEY", DUCKMAIL_API_KEY)
 _require_production_value("UNIFIED_PASSWORD", UNIFIED_PASSWORD)
 _require_production_value("IMAP_MAIL_BASE_URL", IMAP_MAIL_BASE_URL)
+_require_production_value("CONFIG_ENCRYPTION_KEY", CONFIG_ENCRYPTION_KEY, {"mail-viewer-secret-key-change-me"})
 
 
 def login_required(f):
@@ -584,6 +662,105 @@ def delete_domain(domain):
         return jsonify({"success": False, "message": str(e)})
 
 
+# ---- 运行配置 API（保存到持久化卷；敏感字段加密） ----
+
+def _response_error(resp, default: str) -> str:
+    try:
+        payload = resp.json()
+    except Exception:
+        return default
+    if isinstance(payload, dict):
+        return payload.get("message") or payload.get("error") or payload.get("detail") or default
+    return default
+
+
+def _get_imap_runtime_settings() -> tuple[dict, str | None]:
+    target = urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/settings")
+    try:
+        resp = http_session.get(target, timeout=20)
+    except Exception as e:
+        return {}, str(e)
+    if resp.status_code != 200:
+        return {}, _response_error(resp, f"IMAP 设置服务返回 HTTP {resp.status_code}")
+    try:
+        payload = resp.json()
+    except Exception:
+        return {}, "IMAP 设置服务返回了无效响应"
+    if not payload.get("success", True):
+        return {}, payload.get("message") or payload.get("error") or "读取 IMAP 设置失败"
+    return payload.get("settings", {}), None
+
+
+def _save_imap_runtime_settings(data: dict) -> tuple[dict, str | None]:
+    target = urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/settings")
+    try:
+        resp = http_session.post(target, json=data, timeout=20)
+    except Exception as e:
+        return {}, str(e)
+    if resp.status_code != 200:
+        return {}, _response_error(resp, f"IMAP 设置服务返回 HTTP {resp.status_code}")
+    try:
+        payload = resp.json()
+    except Exception:
+        return {}, "IMAP 设置服务返回了无效响应"
+    if not payload.get("success", True):
+        return {}, payload.get("message") or payload.get("error") or "保存 IMAP 设置失败"
+    return payload.get("settings", {}), None
+
+
+@app.route("/api/settings", methods=["GET"])
+@login_required
+def get_runtime_settings():
+    """读取后台运行配置。敏感值只返回是否已配置，不回显原文。"""
+    local_settings = _read_viewer_settings()
+    resend_runtime = _decrypt_setting(local_settings.get("resend_api_key"))
+    imap_settings, imap_error = _get_imap_runtime_settings()
+    return jsonify({
+        "success": True,
+        "settings": {
+            "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
+            "resend_api_key_source": "runtime" if resend_runtime else ("env" if RESEND_API_KEY else "none"),
+            "gmail": imap_settings,
+            "gmail_error": imap_error,
+        },
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+@login_required
+def save_runtime_settings():
+    """保存后台运行配置。空白敏感字段表示保留原值。"""
+    data = request.json or {}
+    try:
+        local_settings = _update_viewer_runtime_settings(data)
+    except Exception as e:
+        app.logger.error(f"保存后台配置失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": "保存后台配置失败"}), 500
+
+    imap_payload = {
+        "public_base_url": data.get("public_base_url", ""),
+        "google_client_id": data.get("google_client_id", ""),
+        "google_redirect_uri": data.get("google_redirect_uri", ""),
+        "clear_google_client_secret": bool(data.get("clear_google_client_secret")),
+    }
+    if data.get("google_client_secret"):
+        imap_payload["google_client_secret"] = data.get("google_client_secret", "")
+
+    imap_settings, imap_error = _save_imap_runtime_settings(imap_payload)
+    if imap_error:
+        return jsonify({"success": False, "message": f"本地配置已保存，但 Gmail OAuth 配置保存失败: {imap_error}"}), 502
+
+    resend_runtime = _decrypt_setting(local_settings.get("resend_api_key"))
+    return jsonify({
+        "success": True,
+        "settings": {
+            "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
+            "resend_api_key_source": "runtime" if resend_runtime else ("env" if RESEND_API_KEY else "none"),
+            "gmail": imap_settings,
+        },
+    })
+
+
 @app.route("/api/inbox/detail", methods=["POST"])
 @login_required
 def inbox_detail():
@@ -987,7 +1164,8 @@ def sent_query():
 @login_required
 def send_email():
     """通过 Resend API 发送邮件"""
-    if not RESEND_API_KEY:
+    resend_api_key = _get_viewer_secret("resend_api_key") or RESEND_API_KEY
+    if not resend_api_key:
         return jsonify({"success": False, "message": "未配置 Resend API Key，无法发信"})
 
     data = request.json or {}
@@ -1036,7 +1214,7 @@ def send_email():
             "https://api.resend.com/emails",
             json=payload,
             headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Authorization": f"Bearer {resend_api_key}",
                 "Content-Type": "application/json",
             },
             timeout=30,

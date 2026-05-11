@@ -17,13 +17,11 @@ let clientId = 0;
 
 // 持久化文件路径
 const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || path.join(__dirname, 'accounts.json');
+const SETTINGS_FILE = process.env.SETTINGS_FILE || path.join(path.dirname(ACCOUNTS_FILE), 'settings.json');
 const ACCOUNTS_SECRET = process.env.IMAP_ACCOUNTS_SECRET || process.env.SECRET_KEY || '';
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || (PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/api/oauth/gmail/callback` : '');
 const GOOGLE_SCOPE = 'https://mail.google.com/';
 const oauthStates = new Map();
+let runtimeSettings = {};
 if (!ACCOUNTS_SECRET) {
   console.warn('WARNING: IMAP_ACCOUNTS_SECRET is not configured; external IMAP accounts cannot be persisted.');
 }
@@ -62,6 +60,76 @@ function decryptSecret(encrypted) {
   } catch {
     return '';
   }
+}
+
+function normalizePublicBaseUrl(value) {
+  return (value || '').trim().replace(/\/+$/, '');
+}
+
+function getPublicBaseUrl() {
+  return normalizePublicBaseUrl(runtimeSettings.public_base_url || process.env.PUBLIC_BASE_URL || '');
+}
+
+function getGoogleClientId() {
+  return (runtimeSettings.google_client_id || process.env.GOOGLE_CLIENT_ID || '').trim();
+}
+
+function getGoogleClientSecret() {
+  return (runtimeSettings.google_client_secret || process.env.GOOGLE_CLIENT_SECRET || '').trim();
+}
+
+function getGoogleRedirectUri() {
+  const explicit = (runtimeSettings.google_redirect_uri || process.env.GOOGLE_REDIRECT_URI || '').trim();
+  if (explicit) return explicit;
+  const publicBaseUrl = getPublicBaseUrl();
+  return publicBaseUrl ? `${publicBaseUrl}/api/oauth/gmail/callback` : '';
+}
+
+function getGoogleOAuthSettings() {
+  const publicBaseUrl = getPublicBaseUrl();
+  const clientId = getGoogleClientId();
+  const clientSecret = getGoogleClientSecret();
+  const redirectUri = getGoogleRedirectUri();
+  return {
+    enabled: Boolean(clientId && clientSecret && redirectUri),
+    public_base_url: publicBaseUrl,
+    google_client_id: clientId,
+    google_client_secret_configured: Boolean(clientSecret),
+    google_redirect_uri: redirectUri,
+    scope: GOOGLE_SCOPE,
+  };
+}
+
+function loadSettings() {
+  runtimeSettings = {};
+  if (!fs.existsSync(SETTINGS_FILE)) return;
+  try {
+    const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+    runtimeSettings = {
+      public_base_url: normalizePublicBaseUrl(data.public_base_url || ''),
+      google_client_id: (data.google_client_id || '').trim(),
+      google_redirect_uri: (data.google_redirect_uri || '').trim(),
+      google_client_secret: decryptSecret(data.google_client_secret_encrypted),
+    };
+  } catch (err) {
+    console.warn(`读取 IMAP 运行配置失败: ${err.message}`);
+    runtimeSettings = {};
+  }
+}
+
+function saveSettings() {
+  const dir = path.dirname(SETTINGS_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+  const data = {
+    public_base_url: runtimeSettings.public_base_url || '',
+    google_client_id: runtimeSettings.google_client_id || '',
+    google_redirect_uri: runtimeSettings.google_redirect_uri || '',
+  };
+  const encryptedSecret = encryptSecret(runtimeSettings.google_client_secret || '');
+  if (encryptedSecret) data.google_client_secret_encrypted = encryptedSecret;
+  const tmpPath = `${SETTINGS_FILE}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+  fs.renameSync(tmpPath, SETTINGS_FILE);
 }
 
 function serializeAccount(account) {
@@ -146,7 +214,7 @@ function setClient(account, client) {
 }
 
 function hasGmailOAuthConfig() {
-  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REDIRECT_URI);
+  return getGoogleOAuthSettings().enabled;
 }
 
 async function exchangeGoogleToken(params) {
@@ -180,9 +248,11 @@ async function refreshOAuthToken(account) {
   if (account.oauth.access_token && account.oauth.expires_at && Date.now() < account.oauth.expires_at - 60000) {
     return { access_token: account.oauth.access_token };
   }
+  const clientId = getGoogleClientId();
+  const clientSecret = getGoogleClientSecret();
   const token = await exchangeGoogleToken({
-    client_id: GOOGLE_CLIENT_ID,
-    client_secret: GOOGLE_CLIENT_SECRET,
+    client_id: clientId,
+    client_secret: clientSecret,
     refresh_token: account.oauth.refresh_token,
     grant_type: 'refresh_token',
   });
@@ -263,23 +333,57 @@ app.get('/api/presets', (req, res) => {
 });
 
 app.get('/api/oauth/gmail/status', (req, res) => {
+  const settings = getGoogleOAuthSettings();
   res.json({
-    enabled: hasGmailOAuthConfig(),
-    redirectUri: GOOGLE_REDIRECT_URI,
+    enabled: settings.enabled,
+    redirectUri: settings.google_redirect_uri,
     scope: GOOGLE_SCOPE,
   });
+});
+
+app.get('/api/settings', (req, res) => {
+  res.json({
+    success: true,
+    settings: getGoogleOAuthSettings(),
+  });
+});
+
+app.post('/api/settings', (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
+  const data = req.body || {};
+  runtimeSettings.public_base_url = normalizePublicBaseUrl(data.public_base_url || '');
+  runtimeSettings.google_client_id = (data.google_client_id || '').trim();
+  runtimeSettings.google_redirect_uri = (data.google_redirect_uri || '').trim();
+
+  if (data.clear_google_client_secret) {
+    runtimeSettings.google_client_secret = '';
+  } else if (typeof data.google_client_secret === 'string' && data.google_client_secret.trim()) {
+    runtimeSettings.google_client_secret = data.google_client_secret.trim();
+  }
+
+  try {
+    saveSettings();
+    res.json({
+      success: true,
+      settings: getGoogleOAuthSettings(),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: `保存 IMAP 运行配置失败: ${err.message}` });
+  }
 });
 
 app.post('/api/oauth/gmail/start', (req, res) => {
   if (!requirePersistenceSecret(res)) return;
   if (!hasGmailOAuthConfig()) {
-    return res.status(400).json({ error: 'Gmail OAuth 未配置，请设置 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI' });
+    return res.status(400).json({ error: 'Gmail OAuth 未配置，请在后台系统配置中填写 Google Client ID / Secret / Redirect URI' });
   }
+  const clientId = getGoogleClientId();
+  const redirectUri = getGoogleRedirectUri();
   const state = crypto.randomBytes(24).toString('hex');
   oauthStates.set(state, { createdAt: Date.now() });
   const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: GOOGLE_REDIRECT_URI,
+    client_id: clientId,
+    redirect_uri: redirectUri,
     response_type: 'code',
     scope: `${GOOGLE_SCOPE} openid email`,
     access_type: 'offline',
@@ -294,6 +398,9 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
   if (!ACCOUNTS_SECRET) {
     return res.status(500).send('IMAP_ACCOUNTS_SECRET is not configured; external IMAP accounts cannot be persisted.');
   }
+  if (!hasGmailOAuthConfig()) {
+    return res.status(500).send('Gmail OAuth is not configured.');
+  }
   const { code, state, error } = req.query;
   if (error) {
     return res.status(400).send(`Google OAuth failed: ${error}`);
@@ -305,12 +412,15 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
   }
 
   try {
+    const clientId = getGoogleClientId();
+    const clientSecret = getGoogleClientSecret();
+    const redirectUri = getGoogleRedirectUri();
     const token = await exchangeGoogleToken({
-      client_id: GOOGLE_CLIENT_ID,
-      client_secret: GOOGLE_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       code,
       grant_type: 'authorization_code',
-      redirect_uri: GOOGLE_REDIRECT_URI,
+      redirect_uri: redirectUri,
     });
     if (!token.refresh_token) {
       throw new Error('Google did not return a refresh token. Revoke the app grant and try again, or keep prompt=consent.');
@@ -814,6 +924,7 @@ app.post('/api/accounts/batch', async (req, res) => {
 
 const PORT = process.env.PORT || 3939;
 
+loadSettings();
 restoreAccounts().then(() => {
   app.listen(PORT, () => {
     console.log(`IMAP Mail Client 已启动: http://localhost:${PORT}`);

@@ -91,6 +91,8 @@ ACCESS_PASSWORD=your-viewer-password
 SECRET_KEY=random-flask-secret
 UNIFIED_PASSWORD=shared-mailbox-password
 IMAP_ACCOUNTS_SECRET=imap-account-encryption-secret
+# Optional: separate key for runtime settings saved from the web UI.
+CONFIG_ENCRYPTION_KEY=runtime-settings-encryption-secret
 ```
 
 ### 2. Deploy
@@ -126,6 +128,17 @@ docker compose pull
 docker compose up -d
 ```
 
+### Runtime Settings In The Web UI
+
+ManyMail no longer requires every operational setting to be baked into `.env`. After Docker starts, log in to the web UI and click the gear icon to configure:
+
+- Resend API Key for outbound mail.
+- Gmail OAuth2 Public Base URL, Client ID, Client Secret, and Redirect URI.
+
+These settings are saved to Docker volumes and survive container restarts, image rebuilds, and GitHub-built image updates. Sensitive values are encrypted with `CONFIG_ENCRYPTION_KEY`; if it is omitted, `docker-compose.yml` falls back to `IMAP_ACCOUNTS_SECRET`.
+
+Keep `.env` for bootstrapping values that must exist before the UI can start, such as database connection, login password, API keys used between internal services, session/JWT secrets, and encryption keys.
+
 ### Gmail OAuth2 For External IMAP Accounts
 
 The external IMAP aggregator persists account configuration and encrypts sensitive credentials with `IMAP_ACCOUNTS_SECRET`; adding external accounts is rejected when this secret is not configured. Gmail can use OAuth2 instead of an app password:
@@ -137,15 +150,12 @@ The external IMAP aggregator persists account configuration and encrypts sensiti
 https://mail.yourdomain.com/imap/api/oauth/gmail/callback
 ```
 
-3. Configure `.env`:
+3. Open the ManyMail web UI, click the gear icon, and fill in:
 
-```env
-PUBLIC_BASE_URL=https://mail.yourdomain.com/imap
-GOOGLE_CLIENT_ID=your-google-oauth-client-id
-GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
-GOOGLE_REDIRECT_URI=https://mail.yourdomain.com/imap/api/oauth/gmail/callback
-IMAP_ACCOUNTS_SECRET=external-imap-account-encryption-secret
-```
+   - Public Base URL: `https://mail.yourdomain.com/imap`
+   - Google Client ID
+   - Google Client Secret
+   - Redirect URI: `https://mail.yourdomain.com/imap/api/oauth/gmail/callback`
 
 Gmail IMAP OAuth2 uses the `https://mail.google.com/` scope. If Google OAuth is not configured, Gmail can still connect with an app password through regular IMAP.
 
@@ -290,7 +300,7 @@ ManyMail/
 | **Network** | Server-side image proxy (prevents IP leakage) |
 | **Storage** | Auto-cleanup via MongoDB TTL index (default 3 days) |
 | **Web** | Login-protected viewer, HttpOnly session cookies |
-| **Credential Storage** | External IMAP aggregator accounts are saved encrypted with `IMAP_ACCOUNTS_SECRET` |
+| **Credential Storage** | External IMAP accounts and runtime settings are saved encrypted with `IMAP_ACCOUNTS_SECRET` / `CONFIG_ENCRYPTION_KEY` |
 
 <br>
 
