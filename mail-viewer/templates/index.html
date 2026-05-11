@@ -201,12 +201,16 @@
                 min-height: 0;
                 overflow: hidden;
                 align-items: stretch;
+                display: grid;
+                grid-template-columns: minmax(220px, 280px) minmax(320px, 440px) minmax(0, 1fr);
+                gap: 12px;
             }
             .mail-col {
                 display: flex;
                 flex-direction: column;
                 min-height: 0;
                 height: 100%;
+                width: auto;
             }
             .mail-col > .card {
                 flex: 1 1 auto;
@@ -388,11 +392,78 @@
         #imap-panel .card-body {
             padding: 0;
         }
+        @media (min-width: 992px) {
+            #imap-panel {
+                grid-column: 2 / 4;
+                min-height: 0;
+            }
+            #imap-panel .card {
+                height: 100%;
+            }
+        }
         #imap-frame {
             width: 100%;
             min-height: calc(100vh - 180px);
             border: 0;
             background: #fff;
+        }
+        .mail-client-shell {
+            gap: 0.75rem;
+        }
+        .mail-account-list,
+        .mail-folder-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .mail-account-item,
+        .mail-folder-item {
+            width: 100%;
+            border: 0;
+            background: transparent;
+            color: var(--text-color);
+            padding: 8px 10px;
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-align: left;
+            min-height: 36px;
+        }
+        .mail-account-item:hover,
+        .mail-folder-item:hover {
+            background: rgba(91,154,139,0.08);
+        }
+        .mail-account-item.active,
+        .mail-folder-item.active {
+            background: rgba(91,154,139,0.16);
+            color: var(--text-color);
+            font-weight: 600;
+        }
+        .mail-account-address {
+            min-width: 0;
+            flex: 1 1 auto;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .mail-sidebar-section-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--muted-text);
+            letter-spacing: 0;
+            margin: 14px 2px 6px;
+        }
+        .mail-client-empty {
+            padding: 24px 12px;
+            color: var(--muted-text);
+            text-align: center;
+        }
+        @media (min-width: 992px) {
+            .mail-left .mail-query-card,
+            .mail-left .mail-domain-card {
+                flex: 1 1 auto;
+            }
         }
     </style>
 </head>
@@ -418,35 +489,46 @@
 
     <div class="container-fluid py-4 px-4 mail-shell">
         <div class="row g-4 mail-layout">
-            <!-- 第1栏：查询 -->
+            <!-- 第1栏：账号 / 文件夹 -->
             <div class="col-12 col-lg-3 mail-col mail-left" id="mail-left-column">
                 <div class="card mail-query-card">
-                    <div class="card-header">
-                        <i class="bi bi-search me-2"></i><span data-i18n="queryInbox">查询收件箱</span>
-                    </div>
-                    <div class="card-body">
-                        <div class="mb-3">
-                            <label class="form-label" data-i18n="selectDomain">选择域名</label>
-                            <select class="form-select" id="inbox-domain">
-                                <option value="" data-i18n="loading">加载中...</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label" data-i18n="emailPrefix">邮箱前缀</label>
-                            <div class="input-group">
-                                <input type="text" class="form-control" id="inbox-prefix" data-i18n-ph="enterPrefix" placeholder="输入前缀" onkeydown="if(event.key==='Enter') queryInbox()">
-                                <span class="input-group-text" id="inbox-domain-display">@damnv.lol</span>
-                            </div>
-                            <small class="text-muted" data-i18n="prefixExample">例如：openai001</small>
-                        </div>
-                        <button class="btn btn-primary w-100" onclick="queryInbox()" id="btn-query-inbox">
-                            <i class="bi bi-search me-1"></i><span data-i18n="query">查询</span>
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-envelope-at me-2"></i><span data-i18n="mailAccounts">邮箱账号</span></span>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadMailboxes()" data-i18n-title="refresh" title="刷新">
+                            <i class="bi bi-arrow-clockwise"></i>
                         </button>
-                        <div id="inbox-error" class="alert alert-danger mt-3" style="display:none;"></div>
+                    </div>
+                    <div class="card-body d-flex flex-column mail-client-shell">
+                        <div id="mail-account-list" class="mail-account-list">
+                            <div class="text-center text-muted py-2 small" data-i18n="loading">加载中...</div>
+                        </div>
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
+                            <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
+                                <i class="bi bi-plus-lg"></i>
+                            </button>
+                        </div>
+                        <div id="mailbox-error" class="text-danger small" style="display:none;"></div>
+                        <div class="mail-sidebar-section-title" data-i18n="folders">文件夹</div>
+                        <div id="mail-folder-list" class="mail-folder-list">
+                            <button class="mail-folder-item active" data-folder="inbox" onclick="selectFolder('inbox')">
+                                <i class="bi bi-inbox"></i><span data-i18n="inbox">收件箱</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
+                            </button>
+                            <button class="mail-folder-item" data-folder="sent" onclick="selectFolder('sent')">
+                                <i class="bi bi-send"></i><span data-i18n="sent">已发送</span>
+                            </button>
+                            <button class="mail-folder-item" data-folder="trash" onclick="selectFolder('trash')">
+                                <i class="bi bi-trash"></i><span data-i18n="trash">回收站</span>
+                            </button>
+                            <button class="mail-folder-item" data-folder="imap" onclick="selectFolder('imap')">
+                                <i class="bi bi-diagram-3"></i><span>IMAP</span>
+                            </button>
+                        </div>
+                        <div class="small text-muted mt-auto" data-i18n="accountTip">添加多个邮箱后，可像邮件客户端一样切换查看。</div>
                     </div>
                 </div>
                 
-                <div class="card mail-domain-card">
+                <div class="card mail-domain-card d-none">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-globe me-2"></i><span data-i18n="domainMgmt">域名管理</span></span>
                         <button class="btn btn-sm btn-outline-secondary" onclick="loadDomains()" data-i18n-title="refresh" title="刷新">
@@ -475,9 +557,14 @@
             <div class="col-12 col-lg-4 mail-col" id="mail-list-column">
                 <div class="card h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <div class="btn-group btn-group-sm" role="group">
+                        <div class="d-flex align-items-center gap-2 min-w-0">
+                            <i class="bi bi-list-ul text-muted"></i>
+                            <span class="fw-semibold text-truncate" id="mail-list-title" data-i18n="inbox">收件箱</span>
+                            <span class="text-muted small text-truncate" id="current-mailbox-label"></span>
+                        </div>
+                        <div class="btn-group btn-group-sm d-none" role="group">
                             <button type="button" class="btn btn-primary" id="tab-inbox" onclick="switchTab('inbox')">
-                                <i class="bi bi-envelope-open me-1"></i><span data-i18n="inbox">收件箱</span><span id="unread-badge" class="badge ms-1" style="display:none;background:var(--navy);font-size:0.7em;"></span>
+                                <i class="bi bi-envelope-open me-1"></i><span data-i18n="inbox">收件箱</span>
                             </button>
                             <button type="button" class="btn btn-outline-secondary" id="tab-sent" onclick="switchTab('sent')">
                                 <i class="bi bi-send me-1"></i><span data-i18n="sent">已发送</span>
@@ -526,7 +613,7 @@
                         </div>
                         <div id="mail-list" class="mail-list-scroll">
                             <div class="text-center text-muted py-4">
-                                <i class="bi bi-arrow-left me-2"></i><span data-i18n="queryHint">请在左侧输入邮箱前缀查询</span>
+                                <i class="bi bi-arrow-left me-2"></i><span data-i18n="queryHint">请先添加或选择一个邮箱</span>
                             </div>
                         </div>
                     </div>
@@ -675,6 +762,14 @@
             zh: {
                 compose: '写邮件',
                 settings: '设置',
+                mailAccounts: '邮箱账号',
+                addMailbox: '添加邮箱',
+                mailboxPlaceholder: 'name@example.com',
+                folders: '文件夹',
+                accountTip: '添加多个邮箱后，可像邮件客户端一样切换查看。',
+                mailboxInvalid: '请输入完整邮箱地址',
+                mailboxAdded: '邮箱已添加',
+                confirmRemoveMailbox: '从列表移除邮箱 "{email}" 吗？邮件数据不会被删除。',
                 queryInbox: '查询收件箱',
                 selectDomain: '选择域名',
                 loading: '加载中...',
@@ -701,7 +796,7 @@
                 selectAll: '全选',
                 delete: '删除',
                 markRead: '已读',
-                queryHint: '请在左侧输入邮箱前缀查询',
+                queryHint: '请先添加或选择一个邮箱',
                 mailDetail: '邮件详情',
                 selectMailHint: '请选择一封邮件查看详情',
                 composeEmail: '撰写邮件',
@@ -771,6 +866,14 @@
             en: {
                 compose: 'Compose',
                 settings: 'Settings',
+                mailAccounts: 'Mail Accounts',
+                addMailbox: 'Add mailbox',
+                mailboxPlaceholder: 'name@example.com',
+                folders: 'Folders',
+                accountTip: 'Add multiple mailboxes and switch between them like a desktop mail client.',
+                mailboxInvalid: 'Enter a full email address',
+                mailboxAdded: 'Mailbox added',
+                confirmRemoveMailbox: 'Remove mailbox "{email}" from the list? Mail data is not deleted.',
                 queryInbox: 'Query Inbox',
                 selectDomain: 'Select Domain',
                 loading: 'Loading...',
@@ -797,7 +900,7 @@
                 selectAll: 'All',
                 delete: 'Delete',
                 markRead: 'Read',
-                queryHint: 'Enter email prefix on the left to query',
+                queryHint: 'Add or select a mailbox first',
                 mailDetail: 'Mail Detail',
                 selectMailHint: 'Select an email to view details',
                 composeEmail: 'Compose Email',
@@ -906,9 +1009,12 @@
             if (currentSentMessages.length > 0 && currentTab === 'sent') renderSentMessages(currentSentMessages);
             if (currentTrashMessages.length > 0 && currentTab === 'trash') renderTrashMessages(currentTrashMessages);
             if (!currentEmail) resetMailDetail();
+            _updateFolderChrome();
         }
 
         let currentEmail = '';
+        let mailboxes = [];
+        let currentMailbox = '';
         let currentMessages = [];
         let currentSentMessages = [];
         let currentTrashMessages = [];
@@ -974,6 +1080,7 @@
         // 更新未读邮件计数 badge
         function _updateUnreadBadge() {
             const badge = document.getElementById('unread-badge');
+            if (!badge) return;
             const unreadCount = currentMessages.filter(m => !m.seen).length;
             if (unreadCount > 0) {
                 badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
@@ -993,6 +1100,39 @@
             return n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB';
         }
 
+        function _splitEmail(address) {
+            const [prefix, ...rest] = String(address || '').split('@');
+            return { prefix: prefix || '', domain: rest.join('@') || '' };
+        }
+
+        function _isValidEmail(address) {
+            return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(address || '').trim());
+        }
+
+        function _setCurrentMailbox(address) {
+            currentMailbox = address || '';
+            currentEmail = currentMailbox;
+            const label = document.getElementById('current-mailbox-label');
+            if (label) label.textContent = currentMailbox ? currentMailbox : '';
+        }
+
+        function _currentFolderTitle() {
+            if (currentTab === 'sent') return t('sent');
+            if (currentTab === 'trash') return t('trash');
+            if (currentTab === 'imap') return 'IMAP';
+            return t('inbox');
+        }
+
+        function _updateFolderChrome() {
+            document.querySelectorAll('.mail-folder-item').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.folder === currentTab);
+            });
+            const title = document.getElementById('mail-list-title');
+            if (title) title.textContent = _currentFolderTitle();
+            const label = document.getElementById('current-mailbox-label');
+            if (label) label.textContent = currentMailbox || '';
+        }
+
         function _renderAttachments(messageId, attachments) {
             if (!attachments || attachments.length === 0) return '';
             return `
@@ -1009,15 +1149,116 @@
                 </div>`;
         }
 
-        // 域名选择联动
-        document.getElementById('inbox-domain').addEventListener('change', function() {
-            document.getElementById('inbox-domain-display').textContent = '@' + this.value;
-        });
+        async function loadMailboxes() {
+            const list = document.getElementById('mail-account-list');
+            try {
+                const resp = await fetch('/api/mailboxes');
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('loadFailed'));
+                mailboxes = data.mailboxes || [];
+                renderMailboxes();
+                if (!currentMailbox && mailboxes.length > 0) {
+                    await selectMailbox(mailboxes[0].address);
+                }
+            } catch (e) {
+                list.innerHTML = `<div class="text-danger small">${t('loadFailed')}: ${_escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function renderMailboxes() {
+            const list = document.getElementById('mail-account-list');
+            if (!mailboxes.length) {
+                list.innerHTML = `<div class="mail-client-empty"><i class="bi bi-envelope-plus d-block mb-2"></i><div>${t('queryHint')}</div></div>`;
+                return;
+            }
+            list.innerHTML = mailboxes.map(item => {
+                const address = item.address || '';
+                return `
+                    <button class="mail-account-item ${address === currentMailbox ? 'active' : ''}" onclick="selectMailbox('${encodeURIComponent(address)}')">
+                        <i class="bi bi-envelope"></i>
+                        <span class="mail-account-address">${_escapeHtml(address)}</span>
+                        <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
+                            <i class="bi bi-x-lg"></i>
+                        </span>
+                    </button>`;
+            }).join('');
+        }
+
+        async function addMailbox() {
+            const input = document.getElementById('mailbox-address-input');
+            const error = document.getElementById('mailbox-error');
+            const address = input.value.trim().toLowerCase();
+            error.style.display = 'none';
+            if (!_isValidEmail(address)) {
+                error.textContent = t('mailboxInvalid');
+                error.style.display = 'block';
+                return;
+            }
+            const btn = document.getElementById('btn-add-mailbox');
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/api/mailboxes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address }),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('loadFailed'));
+                input.value = '';
+                mailboxes = data.mailboxes || [];
+                renderMailboxes();
+                await selectMailbox(address);
+            } catch (e) {
+                error.textContent = e.message;
+                error.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function removeMailbox(encodedAddress) {
+            const address = decodeURIComponent(encodedAddress);
+            if (!confirm(t('confirmRemoveMailbox', {email: address}))) return;
+            const resp = await fetch(`/api/mailboxes/${encodeURIComponent(address)}`, { method: 'DELETE' });
+            const data = await resp.json();
+            if (data.success) {
+                mailboxes = data.mailboxes || [];
+                if (currentMailbox === address) {
+                    _setCurrentMailbox('');
+                    currentMessages = [];
+                    currentSentMessages = [];
+                    currentTrashMessages = [];
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                    resetMailDetail();
+                }
+                renderMailboxes();
+            }
+        }
+
+        async function selectMailbox(encodedAddress) {
+            const address = decodeURIComponent(encodedAddress);
+            _setCurrentMailbox(address);
+            currentMessages = [];
+            currentSentMessages = [];
+            currentTrashMessages = [];
+            renderMailboxes();
+            document.getElementById('btn-refresh-mail').disabled = false;
+            await selectFolder(currentTab || 'inbox');
+        }
+
+        async function selectFolder(folder) {
+            currentTab = folder;
+            _updateFolderChrome();
+            if (folder === 'imap') {
+                switchTab('imap');
+                return;
+            }
+            switchTab(folder);
+        }
 
         // ---- 域名管理 ----
         async function loadDomains() {
             const domainList = document.getElementById('domain-list');
-            const domainSelect = document.getElementById('inbox-domain');
             try {
                 const resp = await fetch('/api/domains');
                 const data = await resp.json();
@@ -1029,17 +1270,6 @@
                 activeDomains = domains.map(d => d.domain);
 
                 // 更新域名下拉框
-                const prevSelected = domainSelect.value;
-                domainSelect.innerHTML = activeDomains.map(d =>
-                    `<option value="${_escapeHtml(d)}">${_escapeHtml(d)}</option>`
-                ).join('');
-                if (activeDomains.includes(prevSelected)) {
-                    domainSelect.value = prevSelected;
-                }
-                if (domainSelect.value) {
-                    document.getElementById('inbox-domain-display').textContent = '@' + domainSelect.value;
-                }
-
                 // 更新域名管理列表
                 if (activeDomains.length === 0) {
                     domainList.innerHTML = `<div class="text-muted small text-center py-2">${t('noDomains')}</div>`;
@@ -1231,8 +1461,13 @@
             }
         }
 
-        // 页面加载时初始化语言 + 获取域名列表
-        document.addEventListener('DOMContentLoaded', () => { applyLang(); loadDomains(); });
+        // 页面加载时初始化语言 + 获取域名和账号列表
+        document.addEventListener('DOMContentLoaded', async () => {
+            applyLang();
+            await loadDomains();
+            await loadMailboxes();
+            _updateFolderChrome();
+        });
         window.addEventListener('message', (event) => {
             if (event.origin !== window.location.origin) return;
             if (event.data?.type === 'mail-viewer-switch-tab' && event.data.tab) {
@@ -1276,6 +1511,7 @@
 
         function switchTab(tab) {
             currentTab = tab;
+            _updateFolderChrome();
             const tabInbox = document.getElementById('tab-inbox');
             const tabSent = document.getElementById('tab-sent');
             const tabTrash = document.getElementById('tab-trash');
@@ -1296,9 +1532,11 @@
                 listColumn.style.display = '';
                 detailColumn.style.display = '';
                 imapPanel.style.display = 'none';
-                batchBar.style.display = currentMessages.length > 0 ? 'flex' : 'none';
-                searchBar.style.display = currentEmail ? 'flex' : 'none';
-                if (currentMessages.length > 0) {
+                if (batchBar) batchBar.style.display = currentMessages.length > 0 ? 'flex' : 'none';
+                if (searchBar) searchBar.style.display = currentEmail ? 'flex' : 'none';
+                if (!currentEmail) {
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                } else if (currentMessages.length > 0) {
                     renderMessages(currentMessages);
                 } else if (currentEmail) {
                     queryInbox();
@@ -1306,8 +1544,9 @@
                 resetMailDetail();
             } else {
                 tabInbox.className = 'btn btn-outline-secondary';
-                searchBar.style.display = 'none';
-                batchBar.style.display = 'none';
+                if (searchBar) searchBar.style.display = 'none';
+                if (batchBar) batchBar.style.display = 'none';
+                document.getElementById('mail-list').innerHTML = '';
                 if (tab === 'sent' || tab === 'trash') {
                     tabSent.className = tab === 'sent' ? 'btn btn-primary' : 'btn btn-outline-secondary';
                     tabTrash.className = tab === 'trash' ? 'btn btn-primary' : 'btn btn-outline-secondary';
@@ -1331,7 +1570,7 @@
                         autoRefreshTimer = null;
                         document.getElementById('auto-refresh-toggle').checked = false;
                     }
-                    leftColumn.style.display = 'none';
+                    leftColumn.style.display = '';
                     listColumn.style.display = 'none';
                     detailColumn.style.display = 'none';
                     imapPanel.style.display = 'block';
@@ -1341,6 +1580,10 @@
         }
 
         function refreshCurrentTab() {
+            if (!currentEmail && currentTab !== 'imap') {
+                document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                return;
+            }
             if (currentTab === 'inbox') queryInbox();
             else if (currentTab === 'sent') querySent();
             else if (currentTab === 'trash') queryTrash();
@@ -1495,17 +1738,12 @@
 
         async function queryInbox(silent = false, append = false) {
             if (!silent && !append) resetMailDetail();
-            const prefix = document.getElementById('inbox-prefix').value.trim();
-            const domain = document.getElementById('inbox-domain').value;
-            const email = prefix ? `${prefix}@${domain}` : '';
-            const errorDiv = document.getElementById('inbox-error');
-            const btn = document.getElementById('btn-query-inbox');
+            const email = currentMailbox || currentEmail;
             const mailList = document.getElementById('mail-list');
             
-            if (!prefix) {
+            if (!email) {
                 if (!silent) {
-                    errorDiv.textContent = t('enterPrefixErr');
-                    errorDiv.style.display = 'block';
+                    mailList.innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
                 }
                 return;
             }
@@ -1513,10 +1751,7 @@
             // 计算分页偏移量
             const reqOffset = append ? currentMessages.length : 0;
             
-            errorDiv.style.display = 'none';
             if (!silent && !append) {
-                btn.disabled = true;
-                btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('querying')}`;
                 mailList.innerHTML = `
                     <div class="card mb-2">
                         <div class="card-body py-3">
@@ -1550,8 +1785,6 @@
                 
                 if (!data.success) {
                     if (!silent) {
-                        errorDiv.textContent = data.message;
-                        errorDiv.style.display = 'block';
                         mailList.innerHTML = `
                             <div class="error-state">
                                 <i class="bi bi-exclamation-triangle d-block"></i>
@@ -1561,7 +1794,7 @@
                     return;
                 }
                 
-                currentEmail = email;
+            _setCurrentMailbox(email);
                 currentTotal = data.total || 0;
                 
                 if (append) {
@@ -1606,18 +1839,11 @@
                 
             } catch (e) {
                 if (!silent) {
-                    errorDiv.textContent = t('networkError') + ': ' + e.message;
-                    errorDiv.style.display = 'block';
                     mailList.innerHTML = `
                         <div class="error-state">
                             <i class="bi bi-exclamation-triangle d-block"></i>
                             <p>${t('networkError')}: ${_escapeHtml(e.message)}</p>
                         </div>`;
-                }
-            } finally {
-                if (!silent) {
-                    btn.disabled = false;
-                    btn.innerHTML = `<i class="bi bi-search me-1"></i>${t('query')}`;
                 }
             }
         }
@@ -1628,13 +1854,16 @@
 
             // 显示/隐藏批量操作栏
             if (messages.length > 0 && currentTab === 'inbox') {
-                batchBar.style.display = 'flex';
-                batchBar.style.cssText = 'display:flex !important;';
+                if (batchBar) {
+                    batchBar.style.display = 'flex';
+                    batchBar.style.cssText = 'display:flex !important;';
+                }
             } else {
-                batchBar.style.cssText = 'display:none !important;';
+                if (batchBar) batchBar.style.cssText = 'display:none !important;';
             }
             // 重置全选
-            document.getElementById('select-all-checkbox').checked = false;
+            const selectAll = document.getElementById('select-all-checkbox');
+            if (selectAll) selectAll.checked = false;
             updateBatchButtons();
             
             if (messages.length === 0) {

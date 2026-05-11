@@ -8,6 +8,7 @@ import socket
 import requests
 import bleach
 from functools import wraps
+from datetime import datetime, timezone
 from bleach.css_sanitizer import CSSSanitizer
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from urllib.parse import urlparse, urljoin, quote
@@ -164,6 +165,13 @@ def _update_viewer_runtime_settings(data: dict) -> dict:
         settings["resend_api_key"] = _encrypt_setting(data["resend_api_key"].strip())
     _write_viewer_settings(settings)
     return settings
+
+
+def _normalize_mailbox_address(address: str) -> str:
+    address = (address or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", address):
+        return ""
+    return address
 
 
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
@@ -774,6 +782,52 @@ def save_runtime_settings():
             "gmail": imap_settings,
         },
     })
+
+
+@app.route("/api/mailboxes", methods=["GET"])
+@login_required
+def list_mailboxes():
+    settings = _read_viewer_settings()
+    mailboxes = settings.get("mailboxes", [])
+    if not isinstance(mailboxes, list):
+        mailboxes = []
+    return jsonify({"success": True, "mailboxes": mailboxes})
+
+
+@app.route("/api/mailboxes", methods=["POST"])
+@login_required
+def add_mailbox():
+    data = request.json or {}
+    address = _normalize_mailbox_address(data.get("address", ""))
+    if not address:
+        return jsonify({"success": False, "message": "邮箱地址格式不正确"}), 400
+
+    settings = _read_viewer_settings()
+    mailboxes = settings.get("mailboxes", [])
+    if not isinstance(mailboxes, list):
+        mailboxes = []
+    now = datetime.now(timezone.utc).isoformat()
+    existing = next((item for item in mailboxes if item.get("address") == address), None)
+    if existing:
+        existing["updated_at"] = now
+    else:
+        mailboxes.append({"address": address, "created_at": now, "updated_at": now})
+    settings["mailboxes"] = mailboxes
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "mailbox": {"address": address}, "mailboxes": mailboxes})
+
+
+@app.route("/api/mailboxes/<path:address>", methods=["DELETE"])
+@login_required
+def delete_mailbox(address):
+    normalized = _normalize_mailbox_address(address)
+    settings = _read_viewer_settings()
+    mailboxes = settings.get("mailboxes", [])
+    if not isinstance(mailboxes, list):
+        mailboxes = []
+    settings["mailboxes"] = [item for item in mailboxes if item.get("address") != normalized]
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "mailboxes": settings["mailboxes"]})
 
 
 @app.route("/api/inbox/detail", methods=["POST"])
