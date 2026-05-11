@@ -95,6 +95,21 @@ class TestAccounts:
         })
         assert resp.status_code == 422
 
+    def test_create_account_requires_api_key_when_enabled(self, client, monkeypatch):
+        import app as mail_app
+
+        monkeypatch.setattr(mail_app, "REQUIRE_API_KEY_FOR_ACCOUNTS", True)
+        payload = {
+            "address": "protected@test.local",
+            "password": "pass123",
+        }
+
+        resp = client.post("/accounts", json=payload)
+        assert resp.status_code == 403
+
+        resp = client.post("/accounts", json=payload, headers={"X-API-Key": "test-api-key"})
+        assert resp.status_code == 201
+
 
 # ========== Token (Login) ==========
 

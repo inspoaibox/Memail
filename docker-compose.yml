@@ -21,6 +21,7 @@ services:
 
   # ---- Mail Service (SMTP + REST API) ----
   mail-service:
+    image: ${MAIL_SERVICE_IMAGE:-manymail-mail-service:local}
     build: ./mail-service
     container_name: mail-service
     restart: unless-stopped
@@ -37,6 +38,7 @@ services:
       - EXPOSE_HEALTH_DETAILS=0
       - RATE_LIMIT_WINDOW=60
       - RATE_LIMIT_MAX=60
+      - REQUIRE_API_KEY_FOR_ACCOUNTS=${REQUIRE_API_KEY_FOR_ACCOUNTS:-1}
       - SMTP_RCPT_RATE_WINDOW=60
       - SMTP_RCPT_RATE_MAX=100
       - SMTP_DATA_RATE_WINDOW=60
@@ -69,6 +71,7 @@ services:
 
   # ---- Mail Viewer (Web UI) ----
   mail-viewer:
+    image: ${MAIL_VIEWER_IMAGE:-manymail-mail-viewer:local}
     build: ./mail-viewer
     container_name: mail-viewer
     restart: unless-stopped
@@ -99,12 +102,18 @@ services:
 
   # ---- IMAP Mail Bridge (Node.js) ----
   imap-mail:
+    image: ${IMAP_MAIL_IMAGE:-manymail-imap-mail:local}
     build: ./mail-viewer/imap-mail-app
     container_name: mail-imap-bridge
     restart: unless-stopped
     environment:
       - PORT=3939
       - ACCOUNTS_FILE=/data/accounts.json
+      - IMAP_ACCOUNTS_SECRET=${IMAP_ACCOUNTS_SECRET}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
     volumes:
       - imap_mail_data:/data
     expose:
@@ -120,6 +129,7 @@ services:
 
   # ---- IMAP Server (Node.js) ----
   imap-server:
+    image: ${IMAP_SERVER_IMAGE:-manymail-imap-server:local}
     build: ./imap-server
     container_name: mail-imap-server
     restart: unless-stopped

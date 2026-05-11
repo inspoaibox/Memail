@@ -84,11 +84,13 @@ JWT_SECRET=你的JWT密钥
 API_KEY=你的API密钥
 SMTP_HOSTNAME=mail.yourdomain.com
 DOMAINS=yourdomain.com
+REQUIRE_API_KEY_FOR_ACCOUNTS=1
 
 # 邮件查看器
 ACCESS_PASSWORD=查看器登录密码
 SECRET_KEY=Flask会话密钥
 UNIFIED_PASSWORD=邮箱统一密码
+IMAP_ACCOUNTS_SECRET=IMAP聚合账号加密密钥
 ```
 
 ### 2. 部署
@@ -96,6 +98,56 @@ UNIFIED_PASSWORD=邮箱统一密码
 ```bash
 docker compose up -d
 ```
+
+### 使用 GitHub 构建的 Docker 镜像
+
+项目包含 GitHub Actions 工作流，会在推送到 `master`、创建 `v*.*.*` 标签或手动触发时构建并推送镜像到 GitHub Container Registry：
+
+```text
+ghcr.io/<owner>/manymail-mail-service
+ghcr.io/<owner>/manymail-mail-viewer
+ghcr.io/<owner>/manymail-imap-mail
+ghcr.io/<owner>/manymail-imap-server
+```
+
+如需在服务器上直接使用 GitHub 构建的镜像，在 `.env` 中设置：
+
+```env
+MAIL_SERVICE_IMAGE=ghcr.io/<owner>/manymail-mail-service:master
+MAIL_VIEWER_IMAGE=ghcr.io/<owner>/manymail-mail-viewer:master
+IMAP_MAIL_IMAGE=ghcr.io/<owner>/manymail-imap-mail:master
+IMAP_SERVER_IMAGE=ghcr.io/<owner>/manymail-imap-server:master
+```
+
+然后运行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+### Gmail OAuth2 外部邮箱聚合
+
+外部 IMAP 聚合器会持久化保存账号配置，并使用 `IMAP_ACCOUNTS_SECRET` 加密敏感凭据；未配置该密钥时会拒绝添加外部邮箱账号。Gmail 推荐使用 OAuth2 登录：
+
+1. 在 Google Cloud Console 创建 OAuth Client，类型选择 Web application。
+2. 添加 Authorized redirect URI：
+
+```text
+https://mail.yourdomain.com/imap/api/oauth/gmail/callback
+```
+
+3. 在 `.env` 中配置：
+
+```env
+PUBLIC_BASE_URL=https://mail.yourdomain.com/imap
+GOOGLE_CLIENT_ID=你的Google OAuth Client ID
+GOOGLE_CLIENT_SECRET=你的Google OAuth Client Secret
+GOOGLE_REDIRECT_URI=https://mail.yourdomain.com/imap/api/oauth/gmail/callback
+IMAP_ACCOUNTS_SECRET=外部邮箱账号加密密钥
+```
+
+Gmail IMAP OAuth2 使用 `https://mail.google.com/` scope。未配置 Google OAuth 时，Gmail 仍可用应用专用密码通过普通 IMAP 方式连接。
 
 ### 3. 验证
 
@@ -141,7 +193,9 @@ _dmarc.yourdomain.com.  IN  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@yourd
 
 > 基础地址：`http://127.0.0.1:8080`
 >
-> 认证方式：`Authorization: Bearer <token>`（`/health`、`/token`、`/accounts` 除外）
+> 认证方式：`Authorization: Bearer <token>`（`/health`、`/token` 除外）
+>
+> 生产环境默认 `REQUIRE_API_KEY_FOR_ACCOUNTS=1`，创建账户需要传入 `Authorization: Bearer <API_KEY>` 或 `X-API-Key`。
 
 ### 账户管理
 
@@ -174,6 +228,7 @@ GET  /domains               # 可用域名列表
 # 创建账户
 curl -X POST http://127.0.0.1:8080/accounts \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{"address": "user@yourdomain.com", "password": "secret123"}'
 
 # 获取 Token
@@ -227,7 +282,7 @@ ManyMail/
 
 | 层级 | 特性 |
 |:-----|:-----|
-| **认证** | JWT Token 鉴权（24h 自动过期）+ API Key 保护管理端点 |
+| **认证** | JWT Token 鉴权（24h 自动过期）+ API Key 保护账户创建和管理端点 |
 | **密码** | bcrypt 哈希存储，不可逆 |
 | **速率限制** | API 和 SMTP 双层 IP 限流，防止滥用 |
 | **SMTP 防护** | IP 黑名单 / 灰名单，收件人数量限制，邮件大小限制 |
@@ -235,6 +290,7 @@ ManyMail/
 | **网络安全** | 服务端图片代理，防止收件人 IP 泄露 |
 | **数据清理** | MongoDB TTL 索引自动清理过期邮件（默认 3 天） |
 | **访问控制** | 查看器登录保护，HttpOnly Session Cookie |
+| **凭据存储** | 外部 IMAP 聚合账号使用 `IMAP_ACCOUNTS_SECRET` 加密后保存 |
 
 <br>
 

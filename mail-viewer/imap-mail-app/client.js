@@ -4,22 +4,44 @@ const fs = require('fs');
 const path = require('path');
 
 class MailClient {
-  constructor(account) {
+  constructor(account, options = {}) {
     this.account = account;
-    this.client = new ImapFlow({
-      host: account.host,
-      port: account.port,
-      secure: account.secure,
-      auth: account.auth,
+    this.refreshOAuthToken = options.refreshOAuthToken;
+    this.client = this.createClient();
+  }
+
+  async buildAuth() {
+    if (this.account.oauth?.provider === 'gmail') {
+      if (!this.refreshOAuthToken) {
+        throw new Error('OAuth token refresh handler is not configured');
+      }
+      const token = await this.refreshOAuthToken(this.account);
+      return {
+        user: this.account.auth.user,
+        accessToken: token.access_token,
+      };
+    }
+    return this.account.auth;
+  }
+
+  createClient(auth) {
+    const client = new ImapFlow({
+      host: this.account.host,
+      port: this.account.port,
+      secure: this.account.secure,
+      auth: auth || this.account.auth,
       logger: false,
     });
-    this.client.on('error', (err) => {
-      console.error(`[${account.name}] 连接错误: ${err.message}`);
+    client.on('error', (err) => {
+      console.error(`[${this.account.name}] 连接错误: ${err.message}`);
     });
+    return client;
   }
 
   /** 连接到邮箱服务器 */
   async connect() {
+    const auth = await this.buildAuth();
+    this.client = this.createClient(auth);
     await this.client.connect();
     console.log(`[${this.account.name}] 已连接 ${this.account.auth.user}`);
   }
@@ -28,16 +50,8 @@ class MailClient {
   async ensureConnected() {
     if (!this.client.usable) {
       console.log(`[${this.account.name}] 连接已断开，正在重连...`);
-      this.client = new ImapFlow({
-        host: this.account.host,
-        port: this.account.port,
-        secure: this.account.secure,
-        auth: this.account.auth,
-        logger: false,
-      });
-      this.client.on('error', (err) => {
-        console.error(`[${this.account.name}] 连接错误: ${err.message}`);
-      });
+      const auth = await this.buildAuth();
+      this.client = this.createClient(auth);
       await this.client.connect();
       console.log(`[${this.account.name}] 重连成功`);
     }

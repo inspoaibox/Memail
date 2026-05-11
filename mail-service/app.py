@@ -56,6 +56,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 IS_PRODUCTION = ENVIRONMENT == "production"
 ENABLE_API_DOCS = _env_flag("ENABLE_API_DOCS", default=not IS_PRODUCTION)
 EXPOSE_HEALTH_DETAILS = _env_flag("EXPOSE_HEALTH_DETAILS", default=not IS_PRODUCTION)
+REQUIRE_API_KEY_FOR_ACCOUNTS = _env_flag("REQUIRE_API_KEY_FOR_ACCOUNTS", default=IS_PRODUCTION)
 _CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 if not _CORS_ORIGINS and not IS_PRODUCTION:
     _CORS_ORIGINS = ["*"]
@@ -96,7 +97,9 @@ _smtp_limit_lock = threading.Lock()
 _require_production_value("JWT_SECRET", JWT_SECRET, {"change-this-in-production"})
 _require_production_value("API_KEY", API_KEY)
 if IS_PRODUCTION and not _CORS_ORIGINS:
-    raise RuntimeError("CORS_ORIGINS must be configured for production")
+    _CORS_WARNING = "CORS_ORIGINS is empty; browser cross-origin access to the API is disabled"
+else:
+    _CORS_WARNING = ""
 
 
 def _is_internal_client(client_ip: str) -> bool:
@@ -116,6 +119,16 @@ def _check_rate_limit(client_ip: str):
     if len(_rate_limit_store[client_ip]) >= _RATE_LIMIT_MAX:
         raise HTTPException(status_code=429, detail="Too many requests, please try again later")
     _rate_limit_store[client_ip].append(now)
+
+
+def _require_api_key(request: Request):
+    """验证 API Key（用于管理端点和受保护的账户创建）"""
+    auth = request.headers.get("Authorization", "")
+    key = auth.replace("Bearer ", "").strip() if auth.startswith("Bearer ") else ""
+    if not key:
+        key = request.headers.get("X-API-Key", "").strip()
+    if not API_KEY or not hmac.compare_digest(key, API_KEY):
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
 
 def _get_smtp_client_ip(session) -> str:
@@ -207,6 +220,8 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger("mail-service")
+if _CORS_WARNING:
+    logger.warning(_CORS_WARNING)
 
 # ---------------------------------------------------------------------------
 # MongoDB (pymongo, thread-safe)
@@ -377,6 +392,8 @@ async def list_domains(request: Request):
 async def create_account(request: Request):
     """创建邮箱账户 (兼容 DuckMail API)"""
     _check_rate_limit(request.client.host)
+    if REQUIRE_API_KEY_FOR_ACCOUNTS:
+        _require_api_key(request)
     data = await request.json()
     address = data.get("address", "").strip().lower()
     password = data.get("password", "")
@@ -459,15 +476,6 @@ async def login(request: Request):
 
 
 # ---- Admin: Domain Management (API_KEY 鉴权) ----
-
-def _require_api_key(request: Request):
-    """验证 API Key（用于管理端点）"""
-    auth = request.headers.get("Authorization", "")
-    key = auth.replace("Bearer ", "").strip() if auth.startswith("Bearer ") else ""
-    if not key:
-        key = request.headers.get("X-API-Key", "").strip()
-    if not API_KEY or not hmac.compare_digest(key, API_KEY):
-        raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
 
 @app.get("/admin/domains")

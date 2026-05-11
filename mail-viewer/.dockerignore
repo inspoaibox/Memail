@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.env
+imap-mail-app/node_modules/
+imap-mail-app/accounts.json

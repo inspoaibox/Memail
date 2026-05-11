@@ -27,9 +27,9 @@ if app.secret_key == "mail-viewer-secret-key-change-me":
 ACCESS_PASSWORD = os.getenv("ACCESS_PASSWORD", "")
 
 # DuckMail API 配置
-DUCKMAIL_BASE_URL = os.getenv("DUCKMAIL_BASE_URL", "http://161.33.195.3:8080")
+DUCKMAIL_BASE_URL = os.getenv("DUCKMAIL_BASE_URL", "http://127.0.0.1:8080")
 DUCKMAIL_API_KEY = os.getenv("DUCKMAIL_API_KEY", "")
-UNIFIED_PASSWORD = os.getenv("UNIFIED_PASSWORD", "openai123456")
+UNIFIED_PASSWORD = os.getenv("UNIFIED_PASSWORD", "")
 IMAP_MAIL_BASE_URL = os.getenv("IMAP_MAIL_BASE_URL", "http://imap-mail:3939")
 
 # Resend 发信配置
@@ -81,6 +81,7 @@ def _require_production_value(name: str, value: str, disallowed: set[str] | None
 
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
 _require_production_value("ACCESS_PASSWORD", ACCESS_PASSWORD)
+_require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
 _require_production_value("DUCKMAIL_API_KEY", DUCKMAIL_API_KEY)
 _require_production_value("UNIFIED_PASSWORD", UNIFIED_PASSWORD)
 _require_production_value("IMAP_MAIL_BASE_URL", IMAP_MAIL_BASE_URL)
@@ -222,6 +223,8 @@ def _rewrite_html_images(html: str) -> str:
 def _get_mail_token(email: str, password: str = "") -> tuple:
     """获取邮件服务 Token，返回 (token, error_response)"""
     password = password or UNIFIED_PASSWORD
+    if not password:
+        return None, ("未配置邮箱统一密码", 500)
     base_url = DUCKMAIL_BASE_URL.rstrip("/")
     try:
         token_resp = http_session.post(
@@ -247,6 +250,14 @@ def _extract_api_error(resp, fallback: str = "操作失败") -> str:
     except Exception:
         pass
     return fallback
+
+
+def _is_managed_sender(address: str) -> bool:
+    """只有能用统一密码登录的本地账户才允许作为 Web 发件人。"""
+    if not address or not UNIFIED_PASSWORD:
+        return False
+    token, _ = _get_mail_token(address, UNIFIED_PASSWORD)
+    return bool(token)
 
 
 def _format_attachments(detail: dict) -> list:
@@ -997,6 +1008,8 @@ def send_email():
         return jsonify({"success": False, "message": "请填写邮件主题"})
     if not html and not text:
         return jsonify({"success": False, "message": "请填写邮件正文"})
+    if not _is_managed_sender(from_email):
+        return jsonify({"success": False, "message": "发件人邮箱不存在或密码不匹配，无法发信"})
 
     # 构造发件人字段
     sender = f"{from_name} <{from_email}>" if from_name else from_email

@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { simpleParser } = require('mailparser');
 const MailClient = require('./client');
 const { fromPreset, PRESETS, autoDetect } = require('./config');
@@ -16,12 +17,210 @@ let clientId = 0;
 
 // 持久化文件路径
 const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || path.join(__dirname, 'accounts.json');
+const ACCOUNTS_SECRET = process.env.IMAP_ACCOUNTS_SECRET || process.env.SECRET_KEY || '';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || (PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/api/oauth/gmail/callback` : '');
+const GOOGLE_SCOPE = 'https://mail.google.com/';
+const oauthStates = new Map();
+if (!ACCOUNTS_SECRET) {
+  console.warn('WARNING: IMAP_ACCOUNTS_SECRET is not configured; external IMAP accounts cannot be persisted.');
+}
+
+function deriveAccountsKey() {
+  if (!ACCOUNTS_SECRET) return null;
+  return crypto.createHash('sha256').update(ACCOUNTS_SECRET).digest();
+}
+
+function encryptSecret(value) {
+  const key = deriveAccountsKey();
+  if (!key || !value) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  return {
+    v: 1,
+    alg: 'aes-256-gcm',
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    data: ciphertext.toString('base64'),
+  };
+}
+
+function decryptSecret(encrypted) {
+  const key = deriveAccountsKey();
+  if (!key || !encrypted || encrypted.alg !== 'aes-256-gcm') return '';
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(encrypted.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(encrypted.tag, 'base64'));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(encrypted.data, 'base64')),
+      decipher.final(),
+    ]);
+    return plaintext.toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function serializeAccount(account) {
+  const safeAccount = {
+    ...account,
+    auth: { ...account.auth },
+    oauth: account.oauth ? { ...account.oauth } : undefined,
+  };
+  const encryptedPass = encryptSecret(account.auth?.pass || '');
+  const encryptedRefreshToken = encryptSecret(account.oauth?.refresh_token || '');
+  if (!encryptedPass && !encryptedRefreshToken) return null;
+  if (encryptedPass) {
+    delete safeAccount.auth.pass;
+    safeAccount.auth.pass_encrypted = encryptedPass;
+  }
+  if (safeAccount.oauth && encryptedRefreshToken) {
+    delete safeAccount.oauth.refresh_token;
+    delete safeAccount.oauth.access_token;
+    delete safeAccount.oauth.expires_at;
+    safeAccount.oauth.refresh_token_encrypted = encryptedRefreshToken;
+  }
+  return safeAccount;
+}
+
+function deserializeAccount(item) {
+  const account = item.account || {};
+  const auth = account.auth || {};
+  const oauth = account.oauth || null;
+  let pass = auth.pass || '';
+  if (auth.pass_encrypted) {
+    pass = decryptSecret(auth.pass_encrypted);
+  }
+  let refreshToken = oauth?.refresh_token || '';
+  if (oauth?.refresh_token_encrypted) {
+    refreshToken = decryptSecret(oauth.refresh_token_encrypted);
+  }
+  if (!pass && !refreshToken) return null;
+  const { pass_encrypted: _passEncrypted, ...safeAuth } = auth;
+  const { refresh_token_encrypted: _refreshTokenEncrypted, ...safeOauth } = oauth || {};
+  return {
+    ...account,
+    auth: {
+      ...safeAuth,
+      ...(pass ? { pass } : {}),
+    },
+    ...(oauth ? { oauth: { ...safeOauth, refresh_token: refreshToken } } : {}),
+  };
+}
+
+function createMailClient(account) {
+  return new MailClient(account, { refreshOAuthToken });
+}
+
+function upsertClient(account) {
+  for (const [existingId, existing] of clients) {
+    if (existing.account.auth.user === account.auth.user) {
+      existing.account = account;
+      existing.client = existing.createClient();
+      saveAccounts();
+      return existingId;
+    }
+  }
+  const id = ++clientId;
+  clients.set(id, createMailClient(account));
+  saveAccounts();
+  return id;
+}
+
+function setClient(account, client) {
+  for (const [existingId, existing] of clients) {
+    if (existing.account.auth.user === account.auth.user) {
+      existing.disconnect().catch(() => {});
+      clients.set(existingId, client);
+      saveAccounts();
+      return existingId;
+    }
+  }
+  const id = ++clientId;
+  clients.set(id, client);
+  saveAccounts();
+  return id;
+}
+
+function hasGmailOAuthConfig() {
+  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REDIRECT_URI);
+}
+
+async function exchangeGoogleToken(params) {
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params),
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(data.error_description || data.error || 'Google OAuth token exchange failed');
+  }
+  return data;
+}
+
+async function getGoogleUserInfo(accessToken) {
+  const resp = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(data.error_description || data.error || 'Failed to load Google user info');
+  }
+  return data;
+}
+
+async function refreshOAuthToken(account) {
+  if (account.oauth?.provider !== 'gmail') {
+    throw new Error('Unsupported OAuth provider');
+  }
+  if (account.oauth.access_token && account.oauth.expires_at && Date.now() < account.oauth.expires_at - 60000) {
+    return { access_token: account.oauth.access_token };
+  }
+  const token = await exchangeGoogleToken({
+    client_id: GOOGLE_CLIENT_ID,
+    client_secret: GOOGLE_CLIENT_SECRET,
+    refresh_token: account.oauth.refresh_token,
+    grant_type: 'refresh_token',
+  });
+  account.oauth.access_token = token.access_token;
+  account.oauth.expires_at = Date.now() + ((token.expires_in || 3600) * 1000);
+  saveAccounts();
+  return token;
+}
+
+function buildGmailAccount(email, token) {
+  return {
+    name: 'gmail',
+    host: PRESETS.gmail.host,
+    port: PRESETS.gmail.port,
+    secure: PRESETS.gmail.secure,
+    auth: { user: email },
+    oauth: {
+      provider: 'gmail',
+      refresh_token: token.refresh_token,
+      access_token: token.access_token,
+      expires_at: Date.now() + ((token.expires_in || 3600) * 1000),
+      scope: token.scope || GOOGLE_SCOPE,
+    },
+  };
+}
+
+function requirePersistenceSecret(res) {
+  if (ACCOUNTS_SECRET) return true;
+  res.status(500).json({ error: '未配置 IMAP_ACCOUNTS_SECRET，无法持久化保存外部邮箱账号' });
+  return false;
+}
 
 // 保存账户配置到文件
 function saveAccounts() {
   const data = [];
   clients.forEach((client, id) => {
-    data.push({ id, account: client.account });
+    const account = serializeAccount(client.account);
+    if (account) data.push({ id, account });
   });
   fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(data, null, 2), 'utf-8');
 }
@@ -39,17 +238,22 @@ async function restoreAccounts() {
 
   console.log(`正在恢复 ${data.length} 个已保存的账户...`);
   for (const item of data) {
-    const client = new MailClient(item.account);
+    const account = deserializeAccount(item);
+    if (!account) {
+      console.log('  ✗ 跳过账户：未配置 IMAP_ACCOUNTS_SECRET 或密码无法解密');
+      continue;
+    }
+    const client = createMailClient(account);
+    const id = ++clientId;
+    clients.set(id, client);
     try {
       await client.connect();
-      const id = ++clientId;
-      clients.set(id, client);
-      console.log(`  ✓ ${item.account.auth.user} 已恢复`);
+      console.log(`  ✓ ${account.auth.user} 已恢复`);
     } catch (err) {
-      console.log(`  ✗ ${item.account.auth.user} 恢复失败: ${err.message}`);
+      console.log(`  ✗ ${account.auth.user} 暂未连接，已保留账号: ${err.message}`);
     }
   }
-  // 重连后更新持久化（去掉连接失败的）
+  // 重写持久化文件，迁移旧的明文格式；连接失败的账号仍保留。
   saveAccounts();
 }
 
@@ -58,8 +262,77 @@ app.get('/api/presets', (req, res) => {
   res.json(Object.keys(PRESETS));
 });
 
+app.get('/api/oauth/gmail/status', (req, res) => {
+  res.json({
+    enabled: hasGmailOAuthConfig(),
+    redirectUri: GOOGLE_REDIRECT_URI,
+    scope: GOOGLE_SCOPE,
+  });
+});
+
+app.post('/api/oauth/gmail/start', (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
+  if (!hasGmailOAuthConfig()) {
+    return res.status(400).json({ error: 'Gmail OAuth 未配置，请设置 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI' });
+  }
+  const state = crypto.randomBytes(24).toString('hex');
+  oauthStates.set(state, { createdAt: Date.now() });
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: 'code',
+    scope: `${GOOGLE_SCOPE} openid email`,
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    state,
+  });
+  res.json({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` });
+});
+
+app.get('/api/oauth/gmail/callback', async (req, res) => {
+  if (!ACCOUNTS_SECRET) {
+    return res.status(500).send('IMAP_ACCOUNTS_SECRET is not configured; external IMAP accounts cannot be persisted.');
+  }
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.status(400).send(`Google OAuth failed: ${error}`);
+  }
+  const stateInfo = oauthStates.get(state);
+  oauthStates.delete(state);
+  if (!stateInfo || Date.now() - stateInfo.createdAt > 10 * 60 * 1000) {
+    return res.status(400).send('Invalid or expired OAuth state');
+  }
+
+  try {
+    const token = await exchangeGoogleToken({
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: GOOGLE_REDIRECT_URI,
+    });
+    if (!token.refresh_token) {
+      throw new Error('Google did not return a refresh token. Revoke the app grant and try again, or keep prompt=consent.');
+    }
+    const profile = await getGoogleUserInfo(token.access_token);
+    const email = (profile.email || '').toLowerCase();
+    if (!email || profile.email_verified === false) {
+      throw new Error('Google 未返回已验证邮箱地址');
+    }
+    const account = buildGmailAccount(email, token);
+    const client = createMailClient(account);
+    await client.connect();
+    const id = setClient(account, client);
+    res.send(`<!doctype html><meta charset="utf-8"><script>window.opener&&window.opener.postMessage({type:'gmail-oauth-success',id:${JSON.stringify(id)},email:${JSON.stringify(email)}},window.location.origin);window.close();</script><p>Gmail OAuth 登录成功，可以关闭此窗口。</p>`);
+  } catch (err) {
+    res.status(500).send(`Gmail OAuth failed: ${err.message}`);
+  }
+});
+
 // 添加账户
 app.post('/api/accounts', async (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
   const { preset, host, port, email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: '请填写邮箱和密码' });
@@ -90,7 +363,7 @@ app.post('/api/accounts', async (req, res) => {
     }
   }
 
-  const client = new MailClient(account);
+  const client = createMailClient(account);
   try {
     await client.connect();
     const id = ++clientId;
@@ -487,6 +760,7 @@ app.get('/api/accounts/:id/folders/status', async (req, res) => {
 
 // 批量导入账户 (格式: email:password，每行一个)
 app.post('/api/accounts/batch', async (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
   const { lines } = req.body;
   if (!lines || !lines.length) {
     return res.status(400).json({ error: '请提供账户列表' });
@@ -524,7 +798,7 @@ app.post('/api/accounts/batch', async (req, res) => {
 
     try {
       const account = autoDetect(email, password);
-      const client = new MailClient(account);
+      const client = createMailClient(account);
       await client.connect();
       const id = ++clientId;
       clients.set(id, client);

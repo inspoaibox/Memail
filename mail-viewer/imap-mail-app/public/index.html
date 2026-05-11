@@ -1143,6 +1143,10 @@ if (new URLSearchParams(window.location.search).get('embedded') === '1') {
       <input id="m-email" type="email" placeholder="you@example.com">
       <label data-i18n="passwordLabel">密码 / 应用专用密码</label>
       <input id="m-pass" type="password" data-i18n-ph="passwordPlaceholder" placeholder="密码">
+      <div class="oauth-panel" id="gmail-oauth-panel" style="display:none;">
+        <button class="primary" onclick="startGmailOAuth()" data-i18n="gmailOAuthButton">使用 Google 登录</button>
+        <p class="batch-hint" data-i18n="gmailOAuthHint">推荐 Gmail 使用 OAuth2。密码方式仍可用于应用专用密码。</p>
+      </div>
       <div class="modal-buttons">
         <button onclick="hideAddModal()" data-i18n="cancel">取消</button>
         <button class="primary" onclick="doAddAccount()" data-i18n="connectButton">连接邮箱</button>
@@ -1178,6 +1182,7 @@ let detailVisible = false;
 let selectMode = false;
 let selectedUids = new Set();
 let folderCache = [];
+let gmailOAuthEnabled = false;
 const LANGS = {
   zh: {
     embeddedTitle: 'ManyMail IMAP',
@@ -1198,6 +1203,10 @@ const LANGS = {
     emailLabel: '邮箱地址',
     passwordLabel: '密码 / 应用专用密码',
     passwordPlaceholder: '密码',
+    gmailOAuthButton: '使用 Google 登录',
+    gmailOAuthHint: '推荐 Gmail 使用 OAuth2。密码方式仍可用于应用专用密码。',
+    gmailOAuthDisabled: 'Gmail OAuth 未配置',
+    gmailOAuthFailed: 'Google 登录失败',
     cancel: '取消',
     connectButton: '连接邮箱',
     batchLabel: '账户列表（每行一个，格式: 邮箱:密码）',
@@ -1272,6 +1281,10 @@ const LANGS = {
     emailLabel: 'Email address',
     passwordLabel: 'Password / app password',
     passwordPlaceholder: 'Password',
+    gmailOAuthButton: 'Sign in with Google',
+    gmailOAuthHint: 'OAuth2 is recommended for Gmail. Password mode still works with app passwords.',
+    gmailOAuthDisabled: 'Gmail OAuth is not configured',
+    gmailOAuthFailed: 'Google sign-in failed',
     cancel: 'Cancel',
     connectButton: 'Connect mailbox',
     batchLabel: 'Accounts (one per line, format: email:password)',
@@ -1715,6 +1728,8 @@ async function showAddModal(tab) {
     sel.innerHTML = '<option value="" data-i18n="loading">' + t('loading') + '</option>' +
       presets.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('')
       + '<option value="custom">' + t('customPreset') + '</option>';
+    await loadGmailOAuthStatus();
+    onPresetChange();
   } catch(e) {}
 }
 
@@ -1723,9 +1738,48 @@ function hideAddModal() {
 }
 
 function onPresetChange() {
+  var preset = document.getElementById('m-preset').value;
   document.getElementById('custom-fields').style.display =
-    document.getElementById('m-preset').value === 'custom' ? 'block' : 'none';
+    preset === 'custom' ? 'block' : 'none';
+  document.getElementById('gmail-oauth-panel').style.display =
+    preset === 'gmail' ? 'block' : 'none';
 }
+
+async function loadGmailOAuthStatus() {
+  try {
+    var status = await api('GET', '/api/oauth/gmail/status');
+    gmailOAuthEnabled = Boolean(status.enabled);
+  } catch (e) {
+    gmailOAuthEnabled = false;
+  }
+}
+
+async function startGmailOAuth() {
+  var errEl = document.getElementById('modal-error');
+  errEl.textContent = '';
+  if (!gmailOAuthEnabled) {
+    errEl.textContent = t('gmailOAuthDisabled');
+    return;
+  }
+  try {
+    var data = await api('POST', '/api/oauth/gmail/start', {});
+    window.open(data.url, 'manymail-gmail-oauth', 'width=520,height=720');
+  } catch (err) {
+    errEl.textContent = err.message || t('gmailOAuthFailed');
+  }
+}
+
+window.addEventListener('message', async function(event) {
+  if (event.origin !== window.location.origin) return;
+  if (event.data?.type === 'gmail-oauth-success') {
+    hideAddModal();
+    activeAccountId = event.data.id;
+    activeFolder = 'INBOX';
+    await loadAccounts();
+    await loadFolders(activeAccountId);
+    await loadMails();
+  }
+});
 
 async function doAddAccount() {
   var preset = document.getElementById('m-preset').value;

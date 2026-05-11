@@ -84,11 +84,13 @@ JWT_SECRET=your-strong-jwt-secret
 API_KEY=your-api-key
 SMTP_HOSTNAME=mail.yourdomain.com
 DOMAINS=yourdomain.com
+REQUIRE_API_KEY_FOR_ACCOUNTS=1
 
 # Mail Viewer
 ACCESS_PASSWORD=your-viewer-password
 SECRET_KEY=random-flask-secret
 UNIFIED_PASSWORD=shared-mailbox-password
+IMAP_ACCOUNTS_SECRET=imap-account-encryption-secret
 ```
 
 ### 2. Deploy
@@ -96,6 +98,56 @@ UNIFIED_PASSWORD=shared-mailbox-password
 ```bash
 docker compose up -d
 ```
+
+### Use GitHub-Built Docker Images
+
+The repository includes a GitHub Actions workflow that builds and pushes images to GitHub Container Registry on pushes to `master`, `v*.*.*` tags, or manual runs:
+
+```text
+ghcr.io/<owner>/manymail-mail-service
+ghcr.io/<owner>/manymail-mail-viewer
+ghcr.io/<owner>/manymail-imap-mail
+ghcr.io/<owner>/manymail-imap-server
+```
+
+To deploy with those images, set these values in `.env`:
+
+```env
+MAIL_SERVICE_IMAGE=ghcr.io/<owner>/manymail-mail-service:master
+MAIL_VIEWER_IMAGE=ghcr.io/<owner>/manymail-mail-viewer:master
+IMAP_MAIL_IMAGE=ghcr.io/<owner>/manymail-imap-mail:master
+IMAP_SERVER_IMAGE=ghcr.io/<owner>/manymail-imap-server:master
+```
+
+Then run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+### Gmail OAuth2 For External IMAP Accounts
+
+The external IMAP aggregator persists account configuration and encrypts sensitive credentials with `IMAP_ACCOUNTS_SECRET`; adding external accounts is rejected when this secret is not configured. Gmail can use OAuth2 instead of an app password:
+
+1. Create a Web application OAuth Client in Google Cloud Console.
+2. Add this Authorized redirect URI:
+
+```text
+https://mail.yourdomain.com/imap/api/oauth/gmail/callback
+```
+
+3. Configure `.env`:
+
+```env
+PUBLIC_BASE_URL=https://mail.yourdomain.com/imap
+GOOGLE_CLIENT_ID=your-google-oauth-client-id
+GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
+GOOGLE_REDIRECT_URI=https://mail.yourdomain.com/imap/api/oauth/gmail/callback
+IMAP_ACCOUNTS_SECRET=external-imap-account-encryption-secret
+```
+
+Gmail IMAP OAuth2 uses the `https://mail.google.com/` scope. If Google OAuth is not configured, Gmail can still connect with an app password through regular IMAP.
 
 ### 3. Verify
 
@@ -141,7 +193,9 @@ _dmarc.yourdomain.com.  IN  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@yourd
 
 > Base URL: `http://127.0.0.1:8080`
 >
-> Auth: `Authorization: Bearer <token>` (except `/health`, `/token`, `/accounts`)
+> Auth: `Authorization: Bearer <token>` (except `/health`, `/token`)
+>
+> In production, `REQUIRE_API_KEY_FOR_ACCOUNTS=1` by default, so account creation also requires `Authorization: Bearer <API_KEY>` or `X-API-Key`.
 
 ### Account
 
@@ -174,6 +228,7 @@ GET  /domains               # Active domain list
 # Create account
 curl -X POST http://127.0.0.1:8080/accounts \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{"address": "user@yourdomain.com", "password": "secret123"}'
 
 # Get token
@@ -227,7 +282,7 @@ ManyMail/
 
 | Layer | Feature |
 |:------|:--------|
-| **Auth** | JWT tokens (24h expiry) + API Key for admin endpoints |
+| **Auth** | JWT tokens (24h expiry) + API Key for account creation and admin endpoints |
 | **Password** | bcrypt hashing |
 | **Rate Limit** | Per-IP throttling on both API and SMTP |
 | **SMTP** | IP blacklist / greylist, recipient limits, size limits |
@@ -235,6 +290,7 @@ ManyMail/
 | **Network** | Server-side image proxy (prevents IP leakage) |
 | **Storage** | Auto-cleanup via MongoDB TTL index (default 3 days) |
 | **Web** | Login-protected viewer, HttpOnly session cookies |
+| **Credential Storage** | External IMAP aggregator accounts are saved encrypted with `IMAP_ACCOUNTS_SECRET` |
 
 <br>
 

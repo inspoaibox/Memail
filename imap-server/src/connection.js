@@ -838,7 +838,7 @@ class ImapConnection {
     this.idleTag = tag;
     this.send('+ idling');
 
-    const prevCount = this.messages.length;
+    let prevCount = this.messages.length;
     this._idleTimer = setInterval(async () => {
       try {
         const db = getDb();
@@ -847,6 +847,7 @@ class ImapConnection {
         if (count > prevCount) {
           this.send(`* ${count} EXISTS`);
         }
+        prevCount = count;
       } catch {}
     }, 30000);
   }
