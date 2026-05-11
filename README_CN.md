@@ -91,17 +91,29 @@ ACCESS_PASSWORD=查看器登录密码
 SECRET_KEY=Flask会话密钥
 UNIFIED_PASSWORD=邮箱统一密码
 IMAP_ACCOUNTS_SECRET=IMAP聚合账号加密密钥
+# 可选：后台运行配置独立加密密钥
+CONFIG_ENCRYPTION_KEY=后台配置加密密钥
 ```
 
-### 2. 部署
+### 2. 使用服务器本地源码构建启动
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-### 使用 GitHub 构建的 Docker 镜像
+这种方式适合直接在服务器上用当前源码构建镜像。此时 `.env` 中不要设置 `MAIL_SERVICE_IMAGE`、`MAIL_VIEWER_IMAGE`、`IMAP_MAIL_IMAGE`、`IMAP_SERVER_IMAGE`。
 
-项目包含 GitHub Actions 工作流，会在推送到 `master`、创建 `v*.*.*` 标签或手动触发时构建并推送镜像到 GitHub Container Registry：
+以后更新代码：
+
+```bash
+git pull
+docker compose up -d --build
+docker compose ps
+```
+
+### 3. 使用 GitHub 构建的 Docker 镜像启动
+
+这种方式适合由 GitHub Actions 负责构建 Docker 镜像，服务器只负责拉取镜像并运行。项目包含 Docker 工作流，会在推送到 `main` / `master`、创建 `v*.*.*` 标签、Pull Request 或手动触发时构建并推送镜像到 GitHub Container Registry：
 
 ```text
 ghcr.io/<owner>/manymail-mail-service
@@ -110,7 +122,9 @@ ghcr.io/<owner>/manymail-imap-mail
 ghcr.io/<owner>/manymail-imap-server
 ```
 
-如需在服务器上直接使用 GitHub 构建的镜像，在 `.env` 中设置：
+注意：GitHub Actions 只负责构建并推送镜像，不会自动登录你的服务器，也不会自动运行 `docker compose up`。如果需要自动部署，还要另外写 SSH 部署工作流。
+
+推送代码到 GitHub 后，先到仓库的 **Actions** 页面，确认 **Docker** 工作流已经成功。然后在服务器的 `.env` 中设置镜像地址。把 `<owner>` 替换成你的 GitHub 用户名或组织名，标签通常使用 `main` 或 `master`：
 
 ```env
 MAIL_SERVICE_IMAGE=ghcr.io/<owner>/manymail-mail-service:master
@@ -119,12 +133,51 @@ IMAP_MAIL_IMAGE=ghcr.io/<owner>/manymail-imap-mail:master
 IMAP_SERVER_IMAGE=ghcr.io/<owner>/manymail-imap-server:master
 ```
 
-然后运行：
+如果 GHCR 包是私有的，服务器需要先登录：
+
+```bash
+echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
+```
+
+首次启动：
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+```
+
+以后 GitHub 有新代码并构建成功后，在服务器执行：
+
+```bash
+# 如果 docker-compose.yml 或文档也变了，先更新服务器上的仓库文件
+git pull
+
+# 拉取 GitHub 新构建的镜像，并重建有变化的容器
+docker compose pull
+docker compose up -d
+docker compose ps
+```
+
+`.env` 和 Docker volume 会保留。不要运行 `docker compose down -v`，除非你明确想删除 MongoDB 数据、外部邮箱账号和后台运行配置。
+
+需要回滚时，把 `.env` 中的镜像 tag 改成旧版本，比如 release tag 或 GitHub Actions 里显示的 `sha-...` tag，然后执行：
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
+
+### 后台运行配置
+
+ManyMail 现在不要求所有运行配置都写进 `.env`。Docker 启动后，登录 Web UI，点击右上角齿轮，可以配置：
+
+- Resend API Key，用于发信。
+- Gmail OAuth2 的 Public Base URL、Client ID、Client Secret、Redirect URI。
+
+这些配置会保存到 Docker volume，容器重启、镜像更新、GitHub 构建镜像更新后都不会丢。敏感值使用 `CONFIG_ENCRYPTION_KEY` 加密；如果没有设置该值，`docker-compose.yml` 会回退使用 `IMAP_ACCOUNTS_SECRET`。
+
+`.env` 仍然用于启动前必须存在的配置，比如登录密码、服务间 API Key、Session/JWT 密钥、加密密钥等。
 
 ### Gmail OAuth2 外部邮箱聚合
 
@@ -137,19 +190,16 @@ docker compose up -d
 https://mail.yourdomain.com/imap/api/oauth/gmail/callback
 ```
 
-3. 在 `.env` 中配置：
+3. 登录 ManyMail Web UI，点击右上角齿轮，填写 Gmail OAuth2 配置：
 
-```env
-PUBLIC_BASE_URL=https://mail.yourdomain.com/imap
-GOOGLE_CLIENT_ID=你的Google OAuth Client ID
-GOOGLE_CLIENT_SECRET=你的Google OAuth Client Secret
-GOOGLE_REDIRECT_URI=https://mail.yourdomain.com/imap/api/oauth/gmail/callback
-IMAP_ACCOUNTS_SECRET=外部邮箱账号加密密钥
-```
+   - Public Base URL：`https://mail.yourdomain.com/imap`
+   - Google Client ID
+   - Google Client Secret
+   - Redirect URI：`https://mail.yourdomain.com/imap/api/oauth/gmail/callback`
 
 Gmail IMAP OAuth2 使用 `https://mail.google.com/` scope。未配置 Google OAuth 时，Gmail 仍可用应用专用密码通过普通 IMAP 方式连接。
 
-### 3. 验证
+### 4. 验证
 
 ```bash
 # 检查服务状态

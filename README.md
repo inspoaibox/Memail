@@ -95,15 +95,25 @@ IMAP_ACCOUNTS_SECRET=imap-account-encryption-secret
 CONFIG_ENCRYPTION_KEY=runtime-settings-encryption-secret
 ```
 
-### 2. Deploy
+### 2. Start With Local Builds
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-### Use GitHub-Built Docker Images
+Use this mode when you are building directly from the source code on your server. Do not set `MAIL_SERVICE_IMAGE`, `MAIL_VIEWER_IMAGE`, `IMAP_MAIL_IMAGE`, or `IMAP_SERVER_IMAGE` in `.env`.
 
-The repository includes a GitHub Actions workflow that builds and pushes images to GitHub Container Registry on pushes to `master`, `v*.*.*` tags, or manual runs:
+To update later:
+
+```bash
+git pull
+docker compose up -d --build
+docker compose ps
+```
+
+### 3. Start With GitHub-Built Images
+
+Use this mode when GitHub builds the Docker images and your server only pulls and runs them. GitHub Actions builds and pushes images to GitHub Container Registry on pushes to `main` / `master`, `v*.*.*` tags, pull requests, or manual workflow runs:
 
 ```text
 ghcr.io/<owner>/manymail-mail-service
@@ -112,7 +122,9 @@ ghcr.io/<owner>/manymail-imap-mail
 ghcr.io/<owner>/manymail-imap-server
 ```
 
-To deploy with those images, set these values in `.env`:
+GitHub Actions only builds and publishes images. It does not automatically SSH into your server or restart Docker Compose unless you add a separate deploy workflow.
+
+After pushing code to GitHub, open the repository's **Actions** tab and wait for the **Docker** workflow to finish successfully. Then set these image names in `.env` on your server. Replace `<owner>` with your GitHub username or organization, and use the branch tag you build from, usually `main` or `master`:
 
 ```env
 MAIL_SERVICE_IMAGE=ghcr.io/<owner>/manymail-mail-service:master
@@ -121,12 +133,35 @@ IMAP_MAIL_IMAGE=ghcr.io/<owner>/manymail-imap-mail:master
 IMAP_SERVER_IMAGE=ghcr.io/<owner>/manymail-imap-server:master
 ```
 
-Then run:
+If the GitHub Container Registry package is private, log in on the server before pulling:
+
+```bash
+echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
+```
+
+Start the services:
 
 ```bash
 docker compose pull
 docker compose up -d
+docker compose ps
 ```
+
+To update after new code is pushed:
+
+```bash
+# If docker-compose.yml or docs changed on the server copy, update the repo first.
+git pull
+
+# Pull the newly built GHCR images and recreate changed containers.
+docker compose pull
+docker compose up -d
+docker compose ps
+```
+
+Your `.env` file and Docker volumes are kept. Do not run `docker compose down -v` unless you intentionally want to delete persisted MongoDB data, external IMAP accounts, and runtime settings.
+
+To roll back, change the image tag in `.env` to an older tag, such as a release tag or `sha-...` tag shown in GitHub Actions, then run `docker compose pull && docker compose up -d`.
 
 ### Runtime Settings In The Web UI
 
@@ -159,7 +194,7 @@ https://mail.yourdomain.com/imap/api/oauth/gmail/callback
 
 Gmail IMAP OAuth2 uses the `https://mail.google.com/` scope. If Google OAuth is not configured, Gmail can still connect with an app password through regular IMAP.
 
-### 3. Verify
+### 4. Verify
 
 ```bash
 # Check all services
