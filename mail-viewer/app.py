@@ -952,6 +952,7 @@ def get_runtime_settings():
             "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
             "resend_api_key_source": "runtime" if resend_runtime else ("env" if RESEND_API_KEY else "none"),
             "gmail": imap_settings,
+            "microsoft": imap_settings.get("microsoft", {}) if isinstance(imap_settings, dict) else {},
             "gmail_error": imap_error,
         },
     })
@@ -973,9 +974,14 @@ def save_runtime_settings():
         "google_client_id": data.get("google_client_id", ""),
         "google_redirect_uri": data.get("google_redirect_uri", ""),
         "clear_google_client_secret": bool(data.get("clear_google_client_secret")),
+        "microsoft_client_id": data.get("microsoft_client_id", ""),
+        "microsoft_redirect_uri": data.get("microsoft_redirect_uri", ""),
+        "clear_microsoft_client_secret": bool(data.get("clear_microsoft_client_secret")),
     }
     if data.get("google_client_secret"):
         imap_payload["google_client_secret"] = data.get("google_client_secret", "")
+    if data.get("microsoft_client_secret"):
+        imap_payload["microsoft_client_secret"] = data.get("microsoft_client_secret", "")
 
     imap_settings, imap_error = _save_imap_runtime_settings(imap_payload)
     if imap_error:
@@ -991,6 +997,7 @@ def save_runtime_settings():
             "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
             "resend_api_key_source": "runtime" if resend_runtime else ("env" if RESEND_API_KEY else "none"),
             "gmail": imap_settings,
+            "microsoft": imap_settings.get("microsoft", {}) if isinstance(imap_settings, dict) else {},
         },
     })
 

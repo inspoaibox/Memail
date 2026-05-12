@@ -11,7 +11,7 @@ class MailClient {
   }
 
   async buildAuth() {
-    if (this.account.oauth?.provider === 'gmail') {
+    if (this.account.oauth?.provider) {
       if (!this.refreshOAuthToken) {
         throw new Error('OAuth token refresh handler is not configured');
       }

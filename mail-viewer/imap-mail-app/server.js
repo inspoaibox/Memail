@@ -21,6 +21,9 @@ const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || path.join(__dirname, 'account
 const SETTINGS_FILE = process.env.SETTINGS_FILE || path.join(path.dirname(ACCOUNTS_FILE), 'settings.json');
 const ACCOUNTS_SECRET = process.env.IMAP_ACCOUNTS_SECRET || process.env.SECRET_KEY || process.env.APP_SECRET || '';
 const GOOGLE_SCOPE = 'https://mail.google.com/';
+const MICROSOFT_SCOPE = 'offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send openid email profile';
+const MICROSOFT_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+const MICROSOFT_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
 const oauthStates = new Map();
 let runtimeSettings = {};
 if (!ACCOUNTS_SECRET) {
@@ -86,6 +89,21 @@ function getGoogleRedirectUri() {
   return publicBaseUrl ? `${publicBaseUrl}/api/oauth/gmail/callback` : '';
 }
 
+function getMicrosoftClientId() {
+  return (runtimeSettings.microsoft_client_id || process.env.MICROSOFT_CLIENT_ID || '').trim();
+}
+
+function getMicrosoftClientSecret() {
+  return (runtimeSettings.microsoft_client_secret || process.env.MICROSOFT_CLIENT_SECRET || '').trim();
+}
+
+function getMicrosoftRedirectUri() {
+  const explicit = (runtimeSettings.microsoft_redirect_uri || process.env.MICROSOFT_REDIRECT_URI || '').trim();
+  if (explicit) return explicit;
+  const publicBaseUrl = getPublicBaseUrl();
+  return publicBaseUrl ? `${publicBaseUrl}/api/oauth/outlook/callback` : '';
+}
+
 function getGoogleOAuthSettings() {
   const publicBaseUrl = getPublicBaseUrl();
   const clientId = getGoogleClientId();
@@ -101,6 +119,21 @@ function getGoogleOAuthSettings() {
   };
 }
 
+function getMicrosoftOAuthSettings() {
+  const publicBaseUrl = getPublicBaseUrl();
+  const clientId = getMicrosoftClientId();
+  const clientSecret = getMicrosoftClientSecret();
+  const redirectUri = getMicrosoftRedirectUri();
+  return {
+    enabled: Boolean(clientId && clientSecret && redirectUri),
+    public_base_url: publicBaseUrl,
+    microsoft_client_id: clientId,
+    microsoft_client_secret_configured: Boolean(clientSecret),
+    microsoft_redirect_uri: redirectUri,
+    scope: MICROSOFT_SCOPE,
+  };
+}
+
 function loadSettings() {
   runtimeSettings = {};
   if (!fs.existsSync(SETTINGS_FILE)) return;
@@ -111,6 +144,9 @@ function loadSettings() {
       google_client_id: (data.google_client_id || '').trim(),
       google_redirect_uri: (data.google_redirect_uri || '').trim(),
       google_client_secret: decryptSecret(data.google_client_secret_encrypted),
+      microsoft_client_id: (data.microsoft_client_id || '').trim(),
+      microsoft_redirect_uri: (data.microsoft_redirect_uri || '').trim(),
+      microsoft_client_secret: decryptSecret(data.microsoft_client_secret_encrypted),
     };
   } catch (err) {
     console.warn(`读取 IMAP 运行配置失败: ${err.message}`);
@@ -125,9 +161,13 @@ function saveSettings() {
     public_base_url: runtimeSettings.public_base_url || '',
     google_client_id: runtimeSettings.google_client_id || '',
     google_redirect_uri: runtimeSettings.google_redirect_uri || '',
+    microsoft_client_id: runtimeSettings.microsoft_client_id || '',
+    microsoft_redirect_uri: runtimeSettings.microsoft_redirect_uri || '',
   };
   const encryptedSecret = encryptSecret(runtimeSettings.google_client_secret || '');
   if (encryptedSecret) data.google_client_secret_encrypted = encryptedSecret;
+  const encryptedMicrosoftSecret = encryptSecret(runtimeSettings.microsoft_client_secret || '');
+  if (encryptedMicrosoftSecret) data.microsoft_client_secret_encrypted = encryptedMicrosoftSecret;
   const tmpPath = `${SETTINGS_FILE}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
   fs.renameSync(tmpPath, SETTINGS_FILE);
@@ -351,7 +391,7 @@ async function createSmtpTransport(account) {
     throw new Error('该账号未配置 SMTP，无法发信');
   }
   let auth = account.auth?.pass ? account.auth : undefined;
-  if (account.oauth?.provider === 'gmail') {
+  if (account.oauth?.provider) {
     const token = await refreshOAuthToken(account);
     auth = {
       type: 'OAuth2',
@@ -459,6 +499,10 @@ function hasGmailOAuthConfig() {
   return getGoogleOAuthSettings().enabled;
 }
 
+function hasMicrosoftOAuthConfig() {
+  return getMicrosoftOAuthSettings().enabled;
+}
+
 async function exchangeGoogleToken(params) {
   const resp = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -468,6 +512,19 @@ async function exchangeGoogleToken(params) {
   const data = await resp.json();
   if (!resp.ok) {
     throw new Error(data.error_description || data.error || 'Google OAuth token exchange failed');
+  }
+  return data;
+}
+
+async function exchangeMicrosoftToken(params) {
+  const resp = await fetch(MICROSOFT_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params),
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(data.error_description || data.error || 'Microsoft OAuth token exchange failed');
   }
   return data;
 }
@@ -484,20 +541,29 @@ async function getGoogleUserInfo(accessToken) {
 }
 
 async function refreshOAuthToken(account) {
-  if (account.oauth?.provider !== 'gmail') {
-    throw new Error('Unsupported OAuth provider');
-  }
+  if (!account.oauth?.provider) throw new Error('Unsupported OAuth provider');
   if (account.oauth.access_token && account.oauth.expires_at && Date.now() < account.oauth.expires_at - 60000) {
     return { access_token: account.oauth.access_token };
   }
-  const clientId = getGoogleClientId();
-  const clientSecret = getGoogleClientSecret();
-  const token = await exchangeGoogleToken({
-    client_id: clientId,
-    client_secret: clientSecret,
-    refresh_token: account.oauth.refresh_token,
-    grant_type: 'refresh_token',
-  });
+  let token;
+  if (account.oauth.provider === 'gmail') {
+    token = await exchangeGoogleToken({
+      client_id: getGoogleClientId(),
+      client_secret: getGoogleClientSecret(),
+      refresh_token: account.oauth.refresh_token,
+      grant_type: 'refresh_token',
+    });
+  } else if (account.oauth.provider === 'microsoft') {
+    token = await exchangeMicrosoftToken({
+      client_id: getMicrosoftClientId(),
+      client_secret: getMicrosoftClientSecret(),
+      refresh_token: account.oauth.refresh_token,
+      grant_type: 'refresh_token',
+      scope: MICROSOFT_SCOPE,
+    });
+  } else {
+    throw new Error('Unsupported OAuth provider');
+  }
   account.oauth.access_token = token.access_token;
   account.oauth.expires_at = Date.now() + ((token.expires_in || 3600) * 1000);
   saveAccounts();
@@ -523,6 +589,29 @@ function buildGmailAccount(email, token) {
       access_token: token.access_token,
       expires_at: Date.now() + ((token.expires_in || 3600) * 1000),
       scope: token.scope || GOOGLE_SCOPE,
+    },
+  };
+}
+
+function buildMicrosoftAccount(email, token) {
+  return {
+    name: 'outlook',
+    host: PRESETS.outlook.host,
+    port: PRESETS.outlook.port,
+    secure: PRESETS.outlook.secure,
+    smtp: {
+      host: PRESETS.outlook.smtp.host,
+      port: PRESETS.outlook.smtp.port,
+      secure: PRESETS.outlook.smtp.secure !== false,
+      requireTLS: !!PRESETS.outlook.smtp.requireTLS,
+    },
+    auth: { user: email },
+    oauth: {
+      provider: 'microsoft',
+      refresh_token: token.refresh_token,
+      access_token: token.access_token,
+      expires_at: Date.now() + ((token.expires_in || 3600) * 1000),
+      scope: token.scope || MICROSOFT_SCOPE,
     },
   };
 }
@@ -605,10 +694,22 @@ app.get('/api/oauth/gmail/status', (req, res) => {
   });
 });
 
+app.get('/api/oauth/outlook/status', (req, res) => {
+  const settings = getMicrosoftOAuthSettings();
+  res.json({
+    enabled: settings.enabled,
+    redirectUri: settings.microsoft_redirect_uri,
+    scope: MICROSOFT_SCOPE,
+  });
+});
+
 app.get('/api/settings', (req, res) => {
   res.json({
     success: true,
-    settings: getGoogleOAuthSettings(),
+    settings: {
+      ...getGoogleOAuthSettings(),
+      microsoft: getMicrosoftOAuthSettings(),
+    },
   });
 });
 
@@ -618,18 +719,28 @@ app.post('/api/settings', (req, res) => {
   runtimeSettings.public_base_url = normalizePublicBaseUrl(data.public_base_url || '');
   runtimeSettings.google_client_id = (data.google_client_id || '').trim();
   runtimeSettings.google_redirect_uri = (data.google_redirect_uri || '').trim();
+  runtimeSettings.microsoft_client_id = (data.microsoft_client_id || '').trim();
+  runtimeSettings.microsoft_redirect_uri = (data.microsoft_redirect_uri || '').trim();
 
   if (data.clear_google_client_secret) {
     runtimeSettings.google_client_secret = '';
   } else if (typeof data.google_client_secret === 'string' && data.google_client_secret.trim()) {
     runtimeSettings.google_client_secret = data.google_client_secret.trim();
   }
+  if (data.clear_microsoft_client_secret) {
+    runtimeSettings.microsoft_client_secret = '';
+  } else if (typeof data.microsoft_client_secret === 'string' && data.microsoft_client_secret.trim()) {
+    runtimeSettings.microsoft_client_secret = data.microsoft_client_secret.trim();
+  }
 
   try {
     saveSettings();
     res.json({
       success: true,
-      settings: getGoogleOAuthSettings(),
+      settings: {
+        ...getGoogleOAuthSettings(),
+        microsoft: getMicrosoftOAuthSettings(),
+      },
     });
   } catch (err) {
     res.status(500).json({ success: false, error: `保存 IMAP 运行配置失败: ${err.message}` });
@@ -703,6 +814,71 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
     res.send(`<!doctype html><meta charset="utf-8"><script>window.opener&&window.opener.postMessage({type:'gmail-oauth-success',id:${JSON.stringify(id)},email:${JSON.stringify(email)}},window.location.origin);window.close();</script><p>Gmail OAuth 登录成功，可以关闭此窗口。</p>`);
   } catch (err) {
     res.status(500).send(`Gmail OAuth failed: ${err.message}`);
+  }
+});
+
+app.post('/api/oauth/outlook/start', (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
+  if (!hasMicrosoftOAuthConfig()) {
+    return res.status(400).json({ error: 'Outlook OAuth 未配置，请在后台系统配置中填写 Microsoft Client ID / Secret / Redirect URI' });
+  }
+  const state = crypto.randomBytes(24).toString('hex');
+  oauthStates.set(state, { createdAt: Date.now(), provider: 'microsoft' });
+  const params = new URLSearchParams({
+    client_id: getMicrosoftClientId(),
+    redirect_uri: getMicrosoftRedirectUri(),
+    response_type: 'code',
+    response_mode: 'query',
+    scope: MICROSOFT_SCOPE,
+    prompt: 'select_account',
+    state,
+  });
+  res.json({ url: `${MICROSOFT_AUTH_URL}?${params.toString()}` });
+});
+
+app.get('/api/oauth/outlook/callback', async (req, res) => {
+  if (!ACCOUNTS_SECRET) {
+    return res.status(500).send('IMAP_ACCOUNTS_SECRET or APP_SECRET is not configured; external IMAP accounts cannot be persisted.');
+  }
+  if (!hasMicrosoftOAuthConfig()) {
+    return res.status(500).send('Outlook OAuth is not configured.');
+  }
+  const { code, state, error, error_description: errorDescription } = req.query;
+  if (error) {
+    return res.status(400).send(`Microsoft OAuth failed: ${errorDescription || error}`);
+  }
+  const stateInfo = oauthStates.get(state);
+  oauthStates.delete(state);
+  if (!stateInfo || stateInfo.provider !== 'microsoft' || Date.now() - stateInfo.createdAt > 10 * 60 * 1000) {
+    return res.status(400).send('Invalid or expired OAuth state');
+  }
+
+  try {
+    const token = await exchangeMicrosoftToken({
+      client_id: getMicrosoftClientId(),
+      client_secret: getMicrosoftClientSecret(),
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: getMicrosoftRedirectUri(),
+      scope: MICROSOFT_SCOPE,
+    });
+    if (!token.refresh_token) {
+      throw new Error('Microsoft did not return a refresh token. Check offline_access permission and consent settings.');
+    }
+    const claims = JSON.parse(Buffer.from(String(token.id_token || '').split('.')[1] || '', 'base64url').toString('utf8') || '{}');
+    const email = String(claims.email || claims.preferred_username || claims.upn || '').toLowerCase();
+    if (!email) {
+      throw new Error('Microsoft 未返回邮箱地址');
+    }
+    const account = buildMicrosoftAccount(email, token);
+    account.displayName = normalizeDisplayName(claims.name || email, email);
+    account.group = normalizeAccountGroup('');
+    const client = createMailClient(account);
+    await client.connect();
+    const id = setClient(account, client);
+    res.send(`<!doctype html><meta charset="utf-8"><script>window.opener&&window.opener.postMessage({type:'outlook-oauth-success',id:${JSON.stringify(id)},email:${JSON.stringify(email)}},window.location.origin);window.close();</script><p>Outlook OAuth 登录成功，可以关闭此窗口。</p>`);
+  } catch (err) {
+    res.status(500).send(`Outlook OAuth failed: ${err.message}`);
   }
 });
 

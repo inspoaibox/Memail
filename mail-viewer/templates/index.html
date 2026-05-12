@@ -1181,6 +1181,27 @@
                                     </div>
                                     <div class="small text-muted mt-1" id="settings-google-status"></div>
                                 </div>
+                                <div class="col-12"><hr></div>
+                                <div class="col-12">
+                                    <h6 class="mb-2">Microsoft Outlook OAuth2</h6>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label" for="settings-microsoft-redirect-uri">Redirect URI</label>
+                                    <input type="url" class="form-control" id="settings-microsoft-redirect-uri" placeholder="https://mail.example.com/imap/api/oauth/outlook/callback">
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label" for="settings-microsoft-client-id">Microsoft Client ID</label>
+                                    <input type="text" class="form-control" id="settings-microsoft-client-id" placeholder="Application (client) ID">
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label" for="settings-microsoft-client-secret">Microsoft Client Secret</label>
+                                    <input type="password" class="form-control" id="settings-microsoft-client-secret" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="settings-clear-microsoft-secret">
+                                        <label class="form-check-label" for="settings-clear-microsoft-secret" data-i18n="clearMicrosoftSecret">清除 Microsoft Client Secret</label>
+                                    </div>
+                                    <div class="small text-muted mt-1" id="settings-microsoft-status"></div>
+                                </div>
                             </div>
                         </div>
                         <div class="tab-pane fade" id="settings-accounts-pane" role="tabpanel" aria-labelledby="settings-accounts-tab">
@@ -1204,6 +1225,9 @@
                                     <div class="mail-account-actions mb-2">
                                         <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
                                             <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="startOutlookOAuth()">
+                                            <i class="bi bi-microsoft me-1"></i><span data-i18n="outlookLogin">Outlook 登录</span>
                                         </button>
                                         <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
                                             <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
@@ -1398,6 +1422,7 @@
                 localMailbox: '本地',
                 externalMailbox: '外部',
                 gmailLogin: 'Gmail 登录',
+                outlookLogin: 'Outlook 登录',
                 addExternal: '添加外部',
                 connectExternal: '连接外部邮箱',
                 providerPreset: '邮箱类型',
@@ -1423,8 +1448,11 @@
                 noExternalMail: '此文件夹暂无邮件',
                 confirmRemoveExternal: '移除外部邮箱 "{email}" 吗？账号配置会从本机持久化存储中删除。',
                 gmailOAuthNotReady: 'Gmail OAuth2 未配置，请先在设置中填写 Google Client ID / Secret / Redirect URI。',
+                outlookOAuthNotReady: 'Outlook OAuth2 未配置，请先在设置中填写 Microsoft Client ID / Secret / Redirect URI。',
                 oauthWindowOpened: '已打开 Gmail 登录窗口',
+                outlookOauthWindowOpened: '已打开 Outlook 登录窗口',
                 oauthSuccess: 'Gmail 登录成功',
+                outlookOauthSuccess: 'Outlook 登录成功',
                 queryInbox: '查询收件箱',
                 selectDomain: '选择域名',
                 loading: '加载中...',
@@ -1513,6 +1541,7 @@
                 clearUnified: '清除邮箱统一密码',
                 clearResend: '清除 Resend API Key',
                 clearGoogleSecret: '清除 Google Client Secret',
+                clearMicrosoftSecret: '清除 Microsoft Client Secret',
                 saveSettings: '保存配置',
                 settingsSaved: '配置已保存',
                 settingsLoadFailed: '配置加载失败',
@@ -1576,6 +1605,7 @@
                 localMailbox: 'Local',
                 externalMailbox: 'External',
                 gmailLogin: 'Gmail Login',
+                outlookLogin: 'Outlook Login',
                 addExternal: 'Add External',
                 connectExternal: 'Connect External Mailbox',
                 providerPreset: 'Mailbox Type',
@@ -1601,8 +1631,11 @@
                 noExternalMail: 'No email in this folder',
                 confirmRemoveExternal: 'Remove external mailbox "{email}"? Its saved account config will be deleted locally.',
                 gmailOAuthNotReady: 'Gmail OAuth2 is not configured. Fill Google Client ID / Secret / Redirect URI in settings first.',
+                outlookOAuthNotReady: 'Outlook OAuth2 is not configured. Fill Microsoft Client ID / Secret / Redirect URI in settings first.',
                 oauthWindowOpened: 'Gmail login window opened',
+                outlookOauthWindowOpened: 'Outlook login window opened',
                 oauthSuccess: 'Gmail login succeeded',
+                outlookOauthSuccess: 'Outlook login succeeded',
                 queryInbox: 'Query Inbox',
                 selectDomain: 'Select Domain',
                 loading: 'Loading...',
@@ -1691,6 +1724,7 @@
                 clearUnified: 'Clear unified mailbox password',
                 clearResend: 'Clear Resend API Key',
                 clearGoogleSecret: 'Clear Google Client Secret',
+                clearMicrosoftSecret: 'Clear Microsoft Client Secret',
                 saveSettings: 'Save Settings',
                 settingsSaved: 'Settings saved',
                 settingsLoadFailed: 'Failed to load settings',
@@ -2925,6 +2959,26 @@
             }
         }
 
+        async function startOutlookOAuth() {
+            _clearMailboxError();
+            try {
+                const status = await _imapApi('/oauth/outlook/status');
+                if (!status.enabled) {
+                    _showMailboxError(t('outlookOAuthNotReady'));
+                    return;
+                }
+                const data = await _imapApi('/oauth/outlook/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                window.open(data.url, 'memail-outlook-oauth', 'width=560,height=760');
+                _showMailboxError(t('outlookOauthWindowOpened'), 'muted');
+            } catch (e) {
+                _showMailboxError(e.message);
+            }
+        }
+
         // ---- 域名管理 ----
         async function loadDomains() {
             const domainList = document.getElementById('domain-list');
@@ -3224,16 +3278,20 @@
             document.getElementById('settings-unified-password').value = '';
             document.getElementById('settings-resend-api-key').value = '';
             document.getElementById('settings-google-client-secret').value = '';
+            document.getElementById('settings-microsoft-client-secret').value = '';
             document.getElementById('settings-clear-unified').checked = false;
             document.getElementById('settings-clear-resend').checked = false;
             document.getElementById('settings-clear-google-secret').checked = false;
+            document.getElementById('settings-clear-microsoft-secret').checked = false;
         }
 
         function _renderSettingsStatus(settings) {
             const unifiedStatus = document.getElementById('settings-unified-status');
             const resendStatus = document.getElementById('settings-resend-status');
             const googleStatus = document.getElementById('settings-google-status');
+            const microsoftStatus = document.getElementById('settings-microsoft-status');
             const gmail = settings.gmail || {};
+            const microsoft = settings.microsoft || gmail.microsoft || {};
             const unifiedState = settings.unified_password_configured ? t('configured') : t('notConfigured');
             unifiedStatus.textContent = `${unifiedState} · ${_settingsSourceLabel(settings.unified_password_source)}`;
             const resendState = settings.resend_api_key_configured ? t('configured') : t('notConfigured');
@@ -3243,13 +3301,21 @@
             googleStatus.textContent = settings.gmail_error
                 ? `${t('settingsLoadFailed')}: ${settings.gmail_error}`
                 : `OAuth2 ${googleState} · Secret ${secretState}`;
+            const microsoftState = microsoft.enabled ? t('configured') : t('notConfigured');
+            const microsoftSecretState = microsoft.microsoft_client_secret_configured ? t('configured') : t('notConfigured');
+            microsoftStatus.textContent = settings.gmail_error
+                ? `${t('settingsLoadFailed')}: ${settings.gmail_error}`
+                : `OAuth2 ${microsoftState} · Secret ${microsoftSecretState}`;
         }
 
         function _fillSettingsForm(settings) {
             const gmail = settings.gmail || {};
+            const microsoft = settings.microsoft || gmail.microsoft || {};
             document.getElementById('settings-public-base-url').value = gmail.public_base_url || '';
             document.getElementById('settings-google-client-id').value = gmail.google_client_id || '';
             document.getElementById('settings-google-redirect-uri').value = gmail.google_redirect_uri || '';
+            document.getElementById('settings-microsoft-client-id').value = microsoft.microsoft_client_id || '';
+            document.getElementById('settings-microsoft-redirect-uri').value = microsoft.microsoft_redirect_uri || '';
             _clearSettingsSecrets();
             _renderSettingsStatus(settings);
         }
@@ -3294,6 +3360,10 @@
                     google_client_secret: document.getElementById('settings-google-client-secret').value.trim(),
                     clear_google_client_secret: document.getElementById('settings-clear-google-secret').checked,
                     google_redirect_uri: document.getElementById('settings-google-redirect-uri').value.trim(),
+                    microsoft_client_id: document.getElementById('settings-microsoft-client-id').value.trim(),
+                    microsoft_client_secret: document.getElementById('settings-microsoft-client-secret').value.trim(),
+                    clear_microsoft_client_secret: document.getElementById('settings-clear-microsoft-secret').checked,
+                    microsoft_redirect_uri: document.getElementById('settings-microsoft-redirect-uri').value.trim(),
                 };
                 const resp = await fetch('/api/settings', {
                     method: 'POST',
@@ -3330,6 +3400,11 @@
                 switchTab(event.data.tab);
             } else if (event.data?.type === 'gmail-oauth-success') {
                 _showMailboxError(`${t('oauthSuccess')}: ${event.data.email || ''}`, 'success');
+                loadMailboxes().then(() => {
+                    if (event.data.id) selectExternalAccount(event.data.id);
+                });
+            } else if (event.data?.type === 'outlook-oauth-success') {
+                _showMailboxError(`${t('outlookOauthSuccess')}: ${event.data.email || ''}`, 'success');
                 loadMailboxes().then(() => {
                     if (event.data.id) selectExternalAccount(event.data.id);
                 });
