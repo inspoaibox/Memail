@@ -48,14 +48,14 @@
             box-shadow: 0 1px 0 rgba(43,42,39,0.06);
             backdrop-filter: blur(6px);
             position: relative;
-            padding: 15px 0 !important;
+            padding: 6px 0 !important;
         }
         
         .navbar::after {
             content: "";
             position: absolute;
             left: 0; right: 0; bottom: -1px;
-            height: 6px;
+            height: 4px;
             background: repeating-linear-gradient(45deg, #5b9a8b 0 10px, #ffffff 10px 20px, #4a7c9b 20px 30px, #ffffff 30px 40px);
             opacity: 0.65;
         }
@@ -63,7 +63,7 @@
         .navbar-brand {
             color: #2a5f8a !important;
             font-weight: 400;
-            font-size: 1.8rem;
+            font-size: 1.55rem;
             letter-spacing: 2px;
             font-family: 'Satisfy', cursive;
         }
@@ -177,6 +177,8 @@
         .mail-shell {
             width: min(100%, var(--content-max-width));
             margin: 0 auto;
+            padding-top: 12px !important;
+            padding-bottom: 12px !important;
         }
         @media (min-width: 992px) {
             html, body {
@@ -202,8 +204,8 @@
                 overflow: hidden;
                 align-items: stretch;
                 display: grid;
-                grid-template-columns: minmax(220px, 260px) minmax(360px, 500px) minmax(0, 1fr);
-                gap: 12px;
+                grid-template-columns: minmax(220px, 260px) minmax(280px, 360px) minmax(0, 1fr);
+                gap: 10px;
             }
             .mail-col {
                 display: flex;
@@ -231,7 +233,10 @@
                 flex-direction: column;
                 gap: 1rem;
             }
-            .mail-left .mail-query-card { flex: 0 0 auto; }
+            .mail-left .mail-query-card {
+                flex: 1 1 auto;
+                min-height: 0;
+            }
             .mail-left .mail-domain-card {
                 flex: 1 1 auto;
                 min-height: 0;
@@ -385,18 +390,20 @@
         }
         .mail-client-shell {
             gap: 0.75rem;
+            min-height: 0;
         }
         .mail-account-list {
             display: flex;
             flex-direction: column;
             gap: 4px;
+            flex: 1 1 auto;
             min-height: 0;
             overflow-y: auto;
         }
         .mail-folder-list {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
             flex: 0 0 auto;
             padding-bottom: 8px;
             border-bottom: 1px solid var(--border-color);
@@ -452,9 +459,14 @@
             gap: 6px;
         }
         .mail-account-footer {
+            flex: 0 0 auto;
             margin-top: auto;
             padding-top: 10px;
             border-top: 1px solid var(--border-color);
+        }
+        .mail-compose-item {
+            border-color: rgba(91,154,139,0.45);
+            background: rgba(91,154,139,0.08);
         }
         .account-settings-list {
             max-height: 220px;
@@ -519,15 +531,12 @@
                 <button class="btn btn-sm btn-outline-secondary" onclick="openSettings()" data-i18n-title="settings" title="设置">
                     <i class="bi bi-gear"></i>
                 </button>
-                <button class="btn btn-primary" onclick="openCompose()">
-                    <i class="bi bi-pencil-square me-1"></i><span data-i18n="compose">写邮件</span>
-                </button>
             </div>
         </div>
     </nav>
 
-    <div class="container-fluid py-4 px-4 mail-shell">
-        <div class="row g-4 mail-layout">
+    <div class="container-fluid py-2 px-3 mail-shell">
+        <div class="row g-3 mail-layout">
             <!-- 第1栏：邮箱账号 -->
             <div class="col-12 col-lg-3 mail-col mail-left" id="mail-left-column">
                 <div class="card mail-query-card">
@@ -610,6 +619,9 @@
                         <div class="mailbox-control-panel">
                             <div class="mail-sidebar-section-title mt-0" data-i18n="mailboxControls">邮箱控件</div>
                             <div id="mail-folder-list" class="mail-folder-list">
+                                <button class="mail-folder-item mail-compose-item" onclick="openCompose()">
+                                    <i class="bi bi-pencil-square"></i><span data-i18n="compose">写邮件</span>
+                                </button>
                                 <button class="mail-folder-item active" data-folder="inbox" onclick="selectFolder('inbox')">
                                     <i class="bi bi-inbox"></i><span data-i18n="inbox">收件箱</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
                                 </button>
@@ -1577,16 +1589,20 @@
 
         function renderFolderList() {
             const list = document.getElementById('mail-folder-list');
+            const composeButton = `
+                <button class="mail-folder-item mail-compose-item" onclick="openCompose()">
+                    <i class="bi bi-pencil-square"></i><span>${t('compose')}</span>
+                </button>`;
             if (currentAccountType === 'external') {
                 if (!currentExternalAccountId) {
-                    list.innerHTML = `<div class="text-muted small px-2">${t('queryHint')}</div>`;
+                    list.innerHTML = `${composeButton}<div class="text-muted small px-2">${t('queryHint')}</div>`;
                     return;
                 }
                 if (!currentExternalFolders.length) {
-                    list.innerHTML = `<div class="text-muted small px-2">${t('noFolders')}</div>`;
+                    list.innerHTML = `${composeButton}<div class="text-muted small px-2">${t('noFolders')}</div>`;
                     return;
                 }
-                list.innerHTML = currentExternalFolders.map(folder => {
+                list.innerHTML = composeButton + currentExternalFolders.map(folder => {
                     const path = folder.path || folder.name || 'INBOX';
                     const label = folder.name || folder.path || 'INBOX';
                     return `
@@ -1597,7 +1613,7 @@
                 return;
             }
 
-            list.innerHTML = `
+            list.innerHTML = composeButton + `
                 <button class="mail-folder-item ${currentTab === 'inbox' ? 'active' : ''}" data-folder="inbox" onclick="selectFolder('inbox')">
                     <i class="bi bi-inbox"></i><span>${t('inbox')}</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
                 </button>
