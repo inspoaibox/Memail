@@ -402,14 +402,14 @@ def login_page():
     """登录页面"""
     if not ACCESS_PASSWORD:
         return redirect(url_for("index"))
-    
+
     if request.method == "POST":
         password = request.form.get("password", "")
         if password == ACCESS_PASSWORD:
             session["authenticated"] = True
             return redirect(url_for("index"))
         return render_template("login.html", error="密码错误")
-    
+
     return render_template("login.html", error=None)
 
 
@@ -503,12 +503,12 @@ def inbox_query():
     password = data.get("password", "").strip() or _get_unified_password()
     offset = int(data.get("offset", 0))
     limit = int(data.get("limit", 30))
-    
+
     if not email:
         return jsonify({"success": False, "message": "请输入邮箱", "messages": []})
-    
+
     base_url = DUCKMAIL_BASE_URL.rstrip("/")
-    
+
     try:
         # 尝试登录获取 Token
         token_resp = http_session.post(
@@ -517,12 +517,12 @@ def inbox_query():
             headers={"Content-Type": "application/json"},
             timeout=30
         )
-        
+
         # 如果登录失败（邮箱不存在），尝试创建
         if token_resp.status_code != 200:
             if not DUCKMAIL_API_KEY:
                 return jsonify({"success": False, "message": "邮箱不存在且未配置 API Key，无法自动创建", "messages": []})
-            
+
             create_headers = {
                 "Authorization": f"Bearer {DUCKMAIL_API_KEY}",
                 "Content-Type": "application/json",
@@ -533,7 +533,7 @@ def inbox_query():
                 headers=create_headers,
                 timeout=30
             )
-            
+
             if create_resp.status_code not in [200, 201]:
                 error_msg = "邮箱创建失败"
                 try:
@@ -542,10 +542,10 @@ def inbox_query():
                         error_msg = error_data["violations"][0].get("message", error_msg)
                     elif "hydra:description" in error_data:
                         error_msg = error_data["hydra:description"]
-                except:
+                except Exception:
                     pass
                 return jsonify({"success": False, "message": error_msg, "messages": []})
-            
+
             # 创建成功后重新登录
             token_resp = http_session.post(
                 f"{base_url}/token",
@@ -553,12 +553,12 @@ def inbox_query():
                 headers={"Content-Type": "application/json"},
                 timeout=30
             )
-            
+
             if token_resp.status_code != 200:
                 return jsonify({"success": False, "message": "登录失败", "messages": []})
-        
+
         token = token_resp.json().get("token")
-        
+
         # 获取邮件列表（带分页参数）
         mail_resp = http_session.get(
             f"{base_url}/messages",
@@ -566,14 +566,14 @@ def inbox_query():
             headers={"Authorization": f"Bearer {token}"},
             timeout=30
         )
-        
+
         if mail_resp.status_code != 200:
             return jsonify({"success": False, "message": "获取邮件失败", "messages": []})
-        
+
         resp_data = mail_resp.json()
         messages = resp_data.get("hydra:member", []) if isinstance(resp_data, dict) else resp_data
         total = resp_data.get("hydra:totalItems", len(messages)) if isinstance(resp_data, dict) else len(messages)
-        
+
         # 过滤：只保留发给当前查询邮箱的邮件（DuckMail 会返回同前缀所有域名的邮件）
         filtered = []
         for msg in messages:
@@ -581,7 +581,7 @@ def inbox_query():
             if any(r.get("address", "").lower() == email.lower() for r in to_list):
                 filtered.append(msg)
         messages = filtered
-        
+
         # 为每封邮件提取验证码
         for msg in messages:
             subject = msg.get("subject", "")
@@ -589,7 +589,7 @@ def inbox_query():
             text = f"{subject} {intro}"
             code_match = re.search(r"\b(\d{6})\b", text)
             msg["extracted_code"] = code_match.group(1) if code_match else None
-        
+
         return jsonify({
             "success": True,
             "messages": messages,
@@ -597,7 +597,7 @@ def inbox_query():
             "offset": offset,
             "limit": limit,
         })
-        
+
     except Exception as e:
         app.logger.error(f"收件箱查询失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": "服务内部错误，请稍后重试", "messages": []})
@@ -838,7 +838,7 @@ def inbox_detail():
     email = data.get("email", "").strip()
     password = data.get("password", "").strip() or _get_unified_password()
     message_id = data.get("message_id", "").strip()
-    
+
     if not email or not message_id:
         return jsonify({"success": False, "message": "缺少必要参数"})
 
