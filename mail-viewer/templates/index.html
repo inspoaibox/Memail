@@ -678,27 +678,121 @@
             background: #f9fcfc;
             color: var(--primary-color);
         }
+        .account-settings-shell {
+            height: 100%;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .account-settings-toolbar {
+            flex: 0 0 auto;
+            display: grid;
+            grid-template-columns: minmax(240px, 1fr) minmax(170px, 220px) auto;
+            gap: 8px;
+            align-items: center;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            background: var(--surface-muted);
+        }
+        .account-settings-summary {
+            white-space: nowrap;
+            color: var(--muted-text);
+            font-size: 0.82rem;
+            padding: 0 4px;
+        }
+        .account-settings-grid {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(320px, 0.9fr) minmax(430px, 1.1fr);
+            gap: 12px;
+        }
+        .settings-account-panel {
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            background: #ffffff;
+            overflow: hidden;
+        }
+        .settings-account-panel-header {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 12px;
+            background: linear-gradient(180deg, #ffffff 0%, var(--surface-muted) 100%);
+            border-bottom: 1px solid var(--border-color);
+        }
+        .settings-account-panel-title {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-weight: 700;
+        }
+        .settings-account-panel-body {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            padding: 12px;
+        }
+        .settings-account-add-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .settings-account-add-grid .input-group,
+        .settings-account-add-grid .account-field-wide {
+            grid-column: 1 / -1;
+        }
+        .account-settings-actions {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
         .account-settings-list {
-            max-height: 220px;
+            flex: 1 1 auto;
+            min-height: 260px;
             overflow-y: auto;
             border: 1px solid var(--border-color);
             border-radius: var(--radius-sm);
             padding: 6px;
             background: var(--surface-muted);
+            scrollbar-width: thin;
+            scrollbar-color: rgba(42,87,98,0.32) transparent;
         }
         .account-settings-row {
-            display: flex;
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr) auto;
             align-items: center;
             gap: 8px;
-            min-height: 34px;
-            padding: 5px 8px;
+            min-height: 46px;
+            padding: 7px 8px;
             border-radius: var(--radius-sm);
+            border: 1px solid transparent;
         }
         .account-settings-row + .account-settings-row {
             margin-top: 4px;
         }
         .account-settings-row:hover {
-            background: var(--surface-hover);
+            background: #ffffff;
+            border-color: var(--border-color);
+        }
+        .account-settings-row-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .account-settings-empty {
+            color: var(--muted-text);
+            font-size: 0.86rem;
+            padding: 16px 10px;
+            text-align: center;
         }
         .mailbox-control-panel {
             flex: 1 1 auto;
@@ -766,6 +860,68 @@
         .modal-title {
             font-weight: 700;
             color: var(--text-color);
+        }
+
+        #settingsModal .modal-dialog {
+            max-width: min(1180px, calc(100vw - 28px));
+        }
+
+        #settingsModal .modal-content {
+            height: min(780px, calc(100vh - 32px));
+        }
+
+        #settingsModal .modal-body {
+            min-height: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+        }
+
+        #settingsModal .tab-content {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        #settingsModal .tab-pane {
+            height: 100%;
+            min-height: 0;
+            overflow-y: auto;
+            padding-right: 2px;
+        }
+
+        #settings-accounts-pane {
+            overflow: hidden !important;
+        }
+
+        #settingsModal .settings-tabs {
+            flex: 0 0 auto;
+        }
+
+        @media (max-width: 991.98px) {
+            #settingsModal .modal-dialog {
+                max-width: calc(100vw - 16px);
+                margin: 8px auto;
+            }
+            #settingsModal .modal-content {
+                height: calc(100vh - 16px);
+            }
+            .account-settings-toolbar,
+            .account-settings-grid {
+                grid-template-columns: 1fr;
+            }
+            .account-settings-actions,
+            .settings-account-add-grid {
+                grid-template-columns: 1fr;
+            }
+            .account-settings-row {
+                grid-template-columns: auto minmax(0, 1fr);
+            }
+            .account-settings-row-actions {
+                grid-column: 2;
+                justify-self: start;
+            }
         }
 
         .settings-tabs {
@@ -1111,7 +1267,7 @@
 
     <!-- 设置 Modal -->
     <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
+        <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
                     <h5 class="modal-title" id="settingsModalLabel"><i class="bi bi-gear me-2"></i><span data-i18n="settings">设置</span></h5>
@@ -1212,37 +1368,61 @@
                             </div>
                         </div>
                         <div class="tab-pane fade" id="settings-accounts-pane" role="tabpanel" aria-labelledby="settings-accounts-tab">
-                            <div id="account-settings-alert" class="alert" style="display:none;" role="alert"></div>
-                            <div class="row g-4">
-                                <div class="col-12 col-md-6">
-                                    <h6 class="mb-2"><i class="bi bi-envelope me-1"></i><span data-i18n="localMailbox">本地</span></h6>
-                                    <div class="input-group input-group-sm mb-2">
-                                        <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
-                                        <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
-                                            <i class="bi bi-plus-lg"></i>
-                                        </button>
+                            <div class="account-settings-shell">
+                                <div id="account-settings-alert" class="alert mb-0" style="display:none;" role="alert"></div>
+                                <div class="account-settings-toolbar">
+                                    <div class="input-group input-group-sm">
+                                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                        <input type="search" class="form-control" id="account-settings-search" data-i18n-ph="accountSearchPlaceholder" placeholder="搜索账号/备注/分组..." oninput="renderAccountSettingsLists()">
                                     </div>
-                                    <input type="text" class="form-control form-control-sm mb-2" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
-                                    <input type="text" class="form-control form-control-sm mb-2" id="mailbox-send-name-input" data-i18n-ph="sendDisplayNamePlaceholder" placeholder="发信时显示给收件人的名字">
-                                    <input type="text" class="form-control form-control-sm mb-2" id="mailbox-group-input" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
-                                    <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
-                                    <div id="local-account-settings-list" class="account-settings-list"></div>
+                                    <select class="form-select form-select-sm" id="account-settings-group-filter" onchange="renderAccountSettingsLists()">
+                                        <option value="" data-i18n="allGroups">全部分组</option>
+                                    </select>
+                                    <div class="account-settings-summary" id="account-settings-summary"></div>
                                 </div>
-                                <div class="col-12 col-md-6">
-                                    <h6 class="mb-2"><i class="bi bi-cloud-arrow-down me-1"></i><span data-i18n="externalMailbox">外部</span></h6>
-                                    <div class="mail-account-actions mb-2">
-                                        <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
-                                            <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
-                                        </button>
-                                        <button class="btn btn-sm btn-outline-secondary" onclick="startOutlookOAuth()">
-                                            <i class="bi bi-microsoft me-1"></i><span data-i18n="outlookLogin">Outlook 登录</span>
-                                        </button>
-                                        <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
-                                            <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
-                                        </button>
-                                    </div>
-                                    <div class="small text-muted mb-2" data-i18n="externalMailboxHint">外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。</div>
-                                    <div id="external-account-settings-list" class="account-settings-list"></div>
+                                <div class="account-settings-grid">
+                                    <section class="settings-account-panel">
+                                        <div class="settings-account-panel-header">
+                                            <div class="settings-account-panel-title"><i class="bi bi-envelope"></i><span data-i18n="localMailbox">本地</span></div>
+                                            <span class="badge text-bg-light" id="local-account-count">0</span>
+                                        </div>
+                                        <div class="settings-account-panel-body">
+                                            <div class="settings-account-add-grid mb-3">
+                                                <div class="input-group input-group-sm">
+                                                    <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
+                                                    <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
+                                                        <i class="bi bi-plus-lg"></i>
+                                                    </button>
+                                                </div>
+                                                <input type="text" class="form-control form-control-sm" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
+                                                <input type="text" class="form-control form-control-sm" id="mailbox-send-name-input" data-i18n-ph="sendDisplayNamePlaceholder" placeholder="发信时显示给收件人的名字">
+                                                <input type="text" class="form-control form-control-sm account-field-wide" id="mailbox-group-input" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
+                                            </div>
+                                            <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
+                                            <div id="local-account-settings-list" class="account-settings-list"></div>
+                                        </div>
+                                    </section>
+                                    <section class="settings-account-panel">
+                                        <div class="settings-account-panel-header">
+                                            <div class="settings-account-panel-title"><i class="bi bi-cloud-arrow-down"></i><span data-i18n="externalMailbox">外部</span></div>
+                                            <span class="badge text-bg-light" id="external-account-count">0</span>
+                                        </div>
+                                        <div class="settings-account-panel-body">
+                                            <div class="account-settings-actions mb-3">
+                                                <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
+                                                    <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
+                                                </button>
+                                                <button class="btn btn-sm btn-outline-secondary" onclick="startOutlookOAuth()">
+                                                    <i class="bi bi-microsoft me-1"></i><span data-i18n="outlookLogin">Outlook 登录</span>
+                                                </button>
+                                                <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
+                                                    <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
+                                                </button>
+                                            </div>
+                                            <div class="small text-muted mb-2" data-i18n="externalMailboxHint">外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。</div>
+                                            <div id="external-account-settings-list" class="account-settings-list"></div>
+                                        </div>
+                                    </section>
                                 </div>
                             </div>
                         </div>
@@ -1412,6 +1592,9 @@
                 accountGroup: '账号分组',
                 accountGroupPlaceholder: '分组，例如：工作邮箱',
                 defaultAccountGroup: '未分组',
+                allGroups: '全部分组',
+                accountSearchPlaceholder: '搜索账号/备注/分组...',
+                accountSummary: '共 {total} 个账号',
                 editLocalAccount: '编辑本地账号',
                 editAccount: '编辑账号',
                 copyAccountConfig: '复制配置',
@@ -1605,6 +1788,9 @@
                 accountGroup: 'Account Group',
                 accountGroupPlaceholder: 'Group, e.g. Work',
                 defaultAccountGroup: 'Ungrouped',
+                allGroups: 'All Groups',
+                accountSearchPlaceholder: 'Search accounts, notes, groups...',
+                accountSummary: '{total} accounts',
                 editLocalAccount: 'Edit Local Account',
                 editAccount: 'Edit Account',
                 copyAccountConfig: 'Copy Config',
@@ -2109,6 +2295,28 @@
             return (account?.group || '').trim() || t('defaultAccountGroup');
         }
 
+        function _accountSettingsSearchText(account, fallbackEmail = '') {
+            return [
+                fallbackEmail,
+                account?.email,
+                account?.address,
+                account?.displayName,
+                account?.display_name,
+                account?.label,
+                account?.sendName,
+                account?.send_name,
+                account?.group,
+                account?.name,
+            ].filter(Boolean).join(' ').toLowerCase();
+        }
+
+        function _accountSettingsMatches(account, fallbackEmail, search, group) {
+            const groupName = _accountGroupName(account);
+            if (group && groupName !== group) return false;
+            if (!search) return true;
+            return _accountSettingsSearchText(account, fallbackEmail).includes(search);
+        }
+
         function _messageFromAddress(msg) {
             const from = msg?.from;
             if (!from) return '';
@@ -2467,32 +2675,55 @@
         function renderAccountSettingsLists() {
             const localList = document.getElementById('local-account-settings-list');
             const externalList = document.getElementById('external-account-settings-list');
+            const groupFilter = document.getElementById('account-settings-group-filter');
+            const search = (document.getElementById('account-settings-search')?.value || '').trim().toLowerCase();
+            const groups = Array.from(new Set([
+                ...mailboxes.map(item => _accountGroupName(item)),
+                ...externalAccounts.map(item => _accountGroupName(item)),
+            ])).sort((a, b) => a.localeCompare(b));
+            if (groupFilter) {
+                const current = groupFilter.value;
+                groupFilter.innerHTML = `<option value="">${t('allGroups')}</option>` +
+                    groups.map(group => `<option value="${_escapeAttr(group)}">${_escapeHtml(group)}</option>`).join('');
+                groupFilter.value = groups.includes(current) ? current : '';
+            }
+            const activeGroup = groupFilter?.value || '';
+            const filteredMailboxes = mailboxes.filter(item => _accountSettingsMatches(item, item.address || '', search, activeGroup));
+            const filteredExternalAccounts = externalAccounts.filter(item => _accountSettingsMatches(item, item.email || '', search, activeGroup));
+            const localCount = document.getElementById('local-account-count');
+            const externalCount = document.getElementById('external-account-count');
+            const summary = document.getElementById('account-settings-summary');
+            if (localCount) localCount.textContent = `${filteredMailboxes.length}/${mailboxes.length}`;
+            if (externalCount) externalCount.textContent = `${filteredExternalAccounts.length}/${externalAccounts.length}`;
+            if (summary) summary.textContent = t('accountSummary', {total: mailboxes.length + externalAccounts.length});
             if (localList) {
-                localList.innerHTML = mailboxes.length ? mailboxes.map(item => {
+                localList.innerHTML = filteredMailboxes.length ? filteredMailboxes.map(item => {
                     const address = item.address || '';
                     const displayName = _accountDisplayName(item, address);
                     const showSubtitle = displayName && displayName !== address;
                     const sendName = (item.send_name || item.sendName || '').trim();
                     return `
                         <div class="account-settings-row">
-                            <i class="bi bi-envelope text-muted"></i>
+                            <span class="mail-account-provider-icon"><i class="bi bi-envelope"></i></span>
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
                                 ${sendName ? `<span class="mail-account-subtitle"><i class="bi bi-send me-1"></i>${_escapeHtml(sendName)}</span>` : ''}
                                 <span class="mail-account-subtitle"><i class="bi bi-folder2 me-1"></i>${_escapeHtml(_accountGroupName(item))}</span>
                             </span>
-                            <button class="btn btn-sm p-0 text-secondary" onclick="editLocalAccount('${encodeURIComponent(address)}')" title="${t('editLocalAccount')}">
-                                <i class="bi bi-pencil-square"></i>
-                            </button>
-                            <button class="btn btn-sm p-0 text-danger" onclick="removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
-                                <i class="bi bi-x-lg"></i>
-                            </button>
+                            <span class="account-settings-row-actions">
+                                <button class="btn btn-sm p-0 text-secondary" onclick="editLocalAccount('${encodeURIComponent(address)}')" title="${t('editLocalAccount')}">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                                <button class="btn btn-sm p-0 text-danger" onclick="removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </span>
                         </div>`;
-                }).join('') : `<div class="text-muted small px-2 py-2">${t('queryHint')}</div>`;
+                }).join('') : `<div class="account-settings-empty">${t('noMatch')}</div>`;
             }
             if (externalList) {
-                externalList.innerHTML = externalAccounts.length ? externalAccounts.map(account => {
+                externalList.innerHTML = filteredExternalAccounts.length ? filteredExternalAccounts.map(account => {
                     const id = encodeURIComponent(String(account.id));
                     const email = account.email || '';
                     const provider = account.name || t('externalMailbox');
@@ -2501,25 +2732,27 @@
                     const sendName = (account.sendName || account.send_name || '').trim();
                     return `
                         <div class="account-settings-row">
-                            <i class="bi bi-cloud-arrow-down text-muted"></i>
+                            <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('external', provider)}"></i></span>
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
                                 ${sendName ? `<span class="mail-account-subtitle"><i class="bi bi-send me-1"></i>${_escapeHtml(sendName)}</span>` : ''}
                                 <span class="mail-account-subtitle"><i class="bi bi-folder2 me-1"></i>${_escapeHtml(_accountGroupName(account))}</span>
                             </span>
-                            <span class="mail-account-kind">${_escapeHtml(provider)}</span>
-                            <button class="btn btn-sm p-0 text-secondary" onclick="openExternalAccountModal('copy', '${id}')" title="${t('copyAccountConfig')}">
-                                <i class="bi bi-copy"></i>
-                            </button>
-                            <button class="btn btn-sm p-0 text-secondary" onclick="openExternalAccountModal('edit', '${id}')" title="${t('editAccount')}">
-                                <i class="bi bi-pencil-square"></i>
-                            </button>
-                            <button class="btn btn-sm p-0 text-danger" onclick="removeExternalAccount('${id}')" title="${t('delete')}">
-                                <i class="bi bi-x-lg"></i>
-                            </button>
+                            <span class="account-settings-row-actions">
+                                <span class="mail-account-kind">${_escapeHtml(provider)}</span>
+                                <button class="btn btn-sm p-0 text-secondary" onclick="openExternalAccountModal('copy', '${id}')" title="${t('copyAccountConfig')}">
+                                    <i class="bi bi-copy"></i>
+                                </button>
+                                <button class="btn btn-sm p-0 text-secondary" onclick="openExternalAccountModal('edit', '${id}')" title="${t('editAccount')}">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                                <button class="btn btn-sm p-0 text-danger" onclick="removeExternalAccount('${id}')" title="${t('delete')}">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </span>
                         </div>`;
-                }).join('') : `<div class="text-muted small px-2 py-2">${t('queryHint')}</div>`;
+                }).join('') : `<div class="account-settings-empty">${t('noMatch')}</div>`;
             }
         }
 
