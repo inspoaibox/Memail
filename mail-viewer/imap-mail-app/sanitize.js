@@ -14,10 +14,11 @@ const DomUtils = require('domutils');
 // ---------------------------------------------------------------------------
 
 const ALLOWED_TAGS = new Set([
-  'a', 'abbr', 'b', 'blockquote', 'br', 'code', 'div', 'em', 'font',
+  'a', 'abbr', 'b', 'blockquote', 'br', 'caption', 'center', 'code', 'col',
+  'colgroup', 'div', 'em', 'font',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'li', 'ol',
-  'p', 'pre', 'span', 'strong', 'table', 'tbody', 'td', 'th', 'thead',
-  'tr', 'u', 'ul',
+  'p', 'pre', 'small', 'span', 'strong', 'sub', 'sup', 'table', 'tbody',
+  'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul',
 ]);
 
 const REMOVE_WITH_CONTENT = new Set([
@@ -26,30 +27,35 @@ const REMOVE_WITH_CONTENT = new Set([
 ]);
 
 const ALLOWED_ATTRS = {
-  '*': new Set(['align', 'valign']),
+  '*': new Set(['align', 'bgcolor', 'class', 'valign']),
   'a': new Set(['href', 'title', 'target', 'rel', 'style']),
+  'col': new Set(['span', 'width', 'style']),
+  'colgroup': new Set(['span', 'width', 'style']),
   'div': new Set(['style']),
   'font': new Set(['color', 'size', 'face']),
   'img': new Set(['src', 'alt', 'title', 'width', 'height', 'style']),
   'p': new Set(['style']),
   'span': new Set(['style']),
-  'table': new Set(['border', 'cellpadding', 'cellspacing', 'width', 'style']),
+  'table': new Set(['border', 'bordercolor', 'cellpadding', 'cellspacing', 'height', 'width', 'style']),
   'tbody': new Set(['style']),
+  'tfoot': new Set(['style']),
   'thead': new Set(['style']),
-  'tr': new Set(['style']),
-  'td': new Set(['colspan', 'rowspan', 'width', 'height', 'style']),
-  'th': new Set(['colspan', 'rowspan', 'width', 'height', 'style']),
+  'tr': new Set(['height', 'style']),
+  'td': new Set(['colspan', 'rowspan', 'width', 'height', 'style', 'nowrap']),
+  'th': new Set(['colspan', 'rowspan', 'width', 'height', 'style', 'nowrap']),
 };
 
 const ALLOWED_CSS_PROPS = new Set([
   'background', 'background-color', 'border', 'border-bottom', 'border-collapse',
-  'border-left', 'border-right', 'border-spacing', 'border-top', 'color',
+  'border-color', 'border-left', 'border-right', 'border-spacing', 'border-style',
+  'border-top', 'border-width', 'color',
   'display', 'font', 'font-family', 'font-size', 'font-style', 'font-weight',
   'height', 'letter-spacing', 'line-height', 'margin', 'margin-bottom',
   'margin-left', 'margin-right', 'margin-top', 'max-width', 'min-width',
+  'overflow', 'overflow-wrap', 'overflow-x',
   'padding', 'padding-bottom', 'padding-left', 'padding-right', 'padding-top',
-  'text-align', 'text-decoration', 'vertical-align', 'white-space', 'width',
-  'word-break',
+  'table-layout', 'text-align', 'text-decoration', 'vertical-align', 'white-space',
+  'width', 'word-break', 'word-wrap',
 ]);
 
 const SAFE_URL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);

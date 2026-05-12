@@ -1141,6 +1141,9 @@
                             <div class="row g-3">
                                 <div class="col-12">
                                     <h6 class="mb-2" data-i18n="sendConfig">发信配置</h6>
+                                    <label class="form-label" for="settings-admin-password" data-i18n="adminPassword">后台登录密码</label>
+                                    <input type="password" class="form-control" id="settings-admin-password" data-i18n-ph="adminPasswordPlaceholder" placeholder="留空则保持当前密码">
+                                    <div class="small text-muted mt-1 mb-3" id="settings-admin-status"></div>
                                     <label class="form-label" for="settings-unified-password" data-i18n="unifiedPassword">邮箱统一密码</label>
                                     <input type="password" class="form-control" id="settings-unified-password" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
                                     <div class="form-check mt-2">
@@ -1216,6 +1219,7 @@
                                         </button>
                                     </div>
                                     <input type="text" class="form-control form-control-sm mb-2" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
+                                    <input type="text" class="form-control form-control-sm mb-2" id="mailbox-send-name-input" data-i18n-ph="sendDisplayNamePlaceholder" placeholder="发信时显示给收件人的名字">
                                     <input type="text" class="form-control form-control-sm mb-2" id="mailbox-group-input" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
                                     <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
                                     <div id="local-account-settings-list" class="account-settings-list"></div>
@@ -1339,6 +1343,10 @@
                         <input type="text" class="form-control" id="external-display-name" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
                     </div>
                     <div class="mb-3">
+                        <label class="form-label" for="external-send-name" data-i18n="sendDisplayName">发件显示名</label>
+                        <input type="text" class="form-control" id="external-send-name" data-i18n-ph="sendDisplayNamePlaceholder" placeholder="发信时显示给收件人的名字">
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label" for="external-group" data-i18n="accountGroup">账号分组</label>
                         <input type="text" class="form-control" id="external-group" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
                     </div>
@@ -1367,6 +1375,20 @@
     <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        const CSRF_TOKEN = {{ csrf_token|tojson }};
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (url, options = {}) => {
+            const opts = { ...options };
+            const method = String(opts.method || 'GET').toUpperCase();
+            const path = typeof url === 'string' ? url : (url?.url || '');
+            if (CSRF_TOKEN && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && (!/^https?:\/\//i.test(path) || path.startsWith(window.location.origin))) {
+                const headers = new Headers(opts.headers || {});
+                headers.set('X-CSRF-Token', CSRF_TOKEN);
+                opts.headers = headers;
+            }
+            return nativeFetch(url, opts);
+        };
+
         // ---- i18n ----
         const LANGS = {
             zh: {
@@ -1381,6 +1403,8 @@
                 mailboxAdded: '邮箱已添加',
                 displayName: '显示名字',
                 displayNamePlaceholder: '显示名字 / 备注',
+                sendDisplayName: '发件显示名',
+                sendDisplayNamePlaceholder: '发信时显示给收件人的名字',
                 accountGroup: '账号分组',
                 accountGroupPlaceholder: '分组，例如：工作邮箱',
                 defaultAccountGroup: '未分组',
@@ -1424,6 +1448,7 @@
                 gmailLogin: 'Gmail 登录',
                 outlookLogin: 'Outlook 登录',
                 addExternal: '添加外部',
+                outlookRequiresOAuth: 'Outlook.com 官方要求 OAuth2/Modern Auth，请使用上方“Outlook 登录”。手动密码方式只适合少数仍允许 Basic Auth 的企业邮箱。',
                 connectExternal: '连接外部邮箱',
                 providerPreset: '邮箱类型',
                 autoDetectProvider: '自动识别',
@@ -1433,7 +1458,7 @@
                 smtpPort: 'SMTP 端口',
                 accountEmail: '邮箱地址',
                 accountPassword: '密码 / 应用专用密码',
-                externalPasswordHint: '建议选择自动识别。QQ/163/Outlook 等通常需要应用专用密码或授权码；Gmail 推荐使用 OAuth2。',
+                externalPasswordHint: '建议选择自动识别。QQ/163 等通常需要应用专用密码或授权码；Gmail 和 Outlook 推荐使用 OAuth2 登录。',
                 addAccount: '添加账号',
                 adding: '添加中...',
                 externalAdded: '外部邮箱已添加',
@@ -1543,6 +1568,9 @@
                 clearGoogleSecret: '清除 Google Client Secret',
                 clearMicrosoftSecret: '清除 Microsoft Client Secret',
                 saveSettings: '保存配置',
+                adminPassword: '后台登录密码',
+                adminPasswordPlaceholder: '留空则保持当前密码，至少 10 位',
+                legacyPasswordEnabled: '兼容旧 ACCESS_PASSWORD 已启用',
                 settingsSaved: '配置已保存',
                 settingsLoadFailed: '配置加载失败',
                 settingsSaveFailed: '配置保存失败',
@@ -1564,6 +1592,8 @@
                 mailboxAdded: 'Mailbox added',
                 displayName: 'Display Name',
                 displayNamePlaceholder: 'Display name / note',
+                sendDisplayName: 'Sender Display Name',
+                sendDisplayNamePlaceholder: 'Name shown to recipients when sending',
                 accountGroup: 'Account Group',
                 accountGroupPlaceholder: 'Group, e.g. Work',
                 defaultAccountGroup: 'Ungrouped',
@@ -1607,6 +1637,7 @@
                 gmailLogin: 'Gmail Login',
                 outlookLogin: 'Outlook Login',
                 addExternal: 'Add External',
+                outlookRequiresOAuth: 'Outlook.com requires OAuth2/Modern Auth. Use "Outlook Login" above. Manual password mode only works for rare tenants that still allow Basic Auth.',
                 connectExternal: 'Connect External Mailbox',
                 providerPreset: 'Mailbox Type',
                 autoDetectProvider: 'Auto detect',
@@ -1616,7 +1647,7 @@
                 smtpPort: 'SMTP Port',
                 accountEmail: 'Email Address',
                 accountPassword: 'Password / App Password',
-                externalPasswordHint: 'Auto detect is recommended. Outlook, QQ, 163 and others usually require an app password or authorization code; Gmail is better with OAuth2.',
+                externalPasswordHint: 'Auto detect is recommended. QQ, 163 and others usually require an app password or authorization code; Gmail and Outlook are better with OAuth2.',
                 addAccount: 'Add Account',
                 adding: 'Adding...',
                 externalAdded: 'External mailbox added',
@@ -1726,6 +1757,9 @@
                 clearGoogleSecret: 'Clear Google Client Secret',
                 clearMicrosoftSecret: 'Clear Microsoft Client Secret',
                 saveSettings: 'Save Settings',
+                adminPassword: 'Admin Login Password',
+                adminPasswordPlaceholder: 'Leave blank to keep current password, at least 10 chars',
+                legacyPasswordEnabled: 'Legacy ACCESS_PASSWORD is enabled',
                 settingsSaved: 'Settings saved',
                 settingsLoadFailed: 'Failed to load settings',
                 settingsSaveFailed: 'Failed to save settings',
@@ -1829,11 +1863,23 @@
 
         function _renderMailBodyIframe(iframe, mailContent) {
             const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-            iframe.setAttribute('scrolling', 'no');
-            iframe.style.overflow = 'hidden';
+            iframe.setAttribute('scrolling', 'auto');
+            iframe.style.overflow = 'auto';
+            const mailBodyCss = `
+                html,body{margin:0;padding:0;background:transparent;}
+                body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:0;overflow-wrap:anywhere;word-break:normal;line-height:1.55;}
+                img{max-width:100%;height:auto;}
+                a{color:#4a7c9b;}
+                table{max-width:100%;border-collapse:collapse;table-layout:auto;}
+                table[width="100%"]{width:100%;}
+                caption{text-align:left;}
+                col,colgroup{display:table-column;}
+                th,td{vertical-align:top;word-break:normal;overflow-wrap:break-word;}
+                pre{white-space:pre-wrap;overflow-wrap:anywhere;}
+            `;
 
             iframeDoc.open();
-            iframeDoc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><base target="_blank"><style>html,body{margin:0;padding:0;background:transparent;}body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:0;word-break:break-word;}img{max-width:100%;height:auto;}a{color:#4a7c9b;}</style></head><body>${mailContent}</body></html>`);
+            iframeDoc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><base target="_blank"><style>${mailBodyCss}</style></head><body>${mailContent}</body></html>`);
             iframeDoc.close();
 
             // 强制所有链接在新标签页打开（覆盖邮件中显式设置的 target）
@@ -2006,7 +2052,7 @@
             const payload = contentType.includes('application/json') ? await resp.json() : await resp.text();
             if (!resp.ok) {
                 const message = typeof payload === 'string'
-                    ? payload
+                    ? payload.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
                     : (payload.error || payload.message || `${t('loadFailed')} (${resp.status})`);
                 const err = new Error(message);
                 if (payload && typeof payload === 'object') err.checks = payload.checks;
@@ -2076,6 +2122,28 @@
 
         function _normalizeExternalFolders(folders) {
             return (Array.isArray(folders) ? folders : []).filter(folder => folder && !folder.noselect);
+        }
+
+        function _isSentFolder(folder) {
+            const value = `${folder?.specialUse || ''} ${folder?.name || ''} ${folder?.path || ''}`.toLowerCase();
+            return value.includes('\\sent')
+                || value.includes('sent')
+                || value.includes('已发送')
+                || value.includes('已發送')
+                || value.includes('寄件');
+        }
+
+        function _findExternalSentFolder() {
+            return currentExternalFolders.find(_isSentFolder) || null;
+        }
+
+        async function _refreshExternalFolders(accountId) {
+            const folders = await _imapApi(`/accounts/${encodeURIComponent(accountId)}/folders`);
+            currentExternalFolders = _normalizeExternalFolders(folders);
+            _writeExternalFolderCache(accountId, currentExternalFolders);
+            renderFolderList();
+            _updateFolderChrome();
+            return currentExternalFolders;
         }
 
         function _pickExternalFolder(folders) {
@@ -2392,12 +2460,14 @@
                     const address = item.address || '';
                     const displayName = _accountDisplayName(item, address);
                     const showSubtitle = displayName && displayName !== address;
+                    const sendName = (item.send_name || item.sendName || '').trim();
                     return `
                         <div class="account-settings-row">
                             <i class="bi bi-envelope text-muted"></i>
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
+                                ${sendName ? `<span class="mail-account-subtitle"><i class="bi bi-send me-1"></i>${_escapeHtml(sendName)}</span>` : ''}
                                 <span class="mail-account-subtitle"><i class="bi bi-folder2 me-1"></i>${_escapeHtml(_accountGroupName(item))}</span>
                             </span>
                             <button class="btn btn-sm p-0 text-secondary" onclick="editLocalAccount('${encodeURIComponent(address)}')" title="${t('editLocalAccount')}">
@@ -2416,12 +2486,14 @@
                     const provider = account.name || t('externalMailbox');
                     const displayName = _accountDisplayName(account, email);
                     const showSubtitle = displayName && displayName !== email;
+                    const sendName = (account.sendName || account.send_name || '').trim();
                     return `
                         <div class="account-settings-row">
                             <i class="bi bi-cloud-arrow-down text-muted"></i>
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
+                                ${sendName ? `<span class="mail-account-subtitle"><i class="bi bi-send me-1"></i>${_escapeHtml(sendName)}</span>` : ''}
                                 <span class="mail-account-subtitle"><i class="bi bi-folder2 me-1"></i>${_escapeHtml(_accountGroupName(account))}</span>
                             </span>
                             <span class="mail-account-kind">${_escapeHtml(provider)}</span>
@@ -2458,7 +2530,12 @@
                         </button>`;
                     return;
                 }
-                list.innerHTML = composeButton + currentExternalFolders.map(folder => {
+                const sentFolder = currentExternalFolders.find(_isSentFolder);
+                const foldersToRender = sentFolder ? currentExternalFolders : [
+                    ...currentExternalFolders,
+                    { path: '__memail_sent_pending__', name: t('sent'), specialUse: '\\Sent', virtual: true },
+                ];
+                list.innerHTML = composeButton + foldersToRender.map(folder => {
                     const path = folder.path || folder.name || 'INBOX';
                     const label = folder.name || folder.path || 'INBOX';
                     return `
@@ -2488,9 +2565,11 @@
         async function addMailbox() {
             const input = document.getElementById('mailbox-address-input');
             const displayInput = document.getElementById('mailbox-display-name-input');
+            const sendNameInput = document.getElementById('mailbox-send-name-input');
             const groupInput = document.getElementById('mailbox-group-input');
             const address = input.value.trim().toLowerCase();
             const displayName = (displayInput?.value || '').trim();
+            const sendName = (sendNameInput?.value || '').trim();
             const group = (groupInput?.value || '').trim();
             _clearMailboxError();
             if (!_isValidEmail(address)) {
@@ -2503,12 +2582,13 @@
                 const resp = await fetch('/api/mailboxes', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ address, display_name: displayName, group }),
+                    body: JSON.stringify({ address, display_name: displayName, send_name: sendName, group }),
                 });
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.message || t('loadFailed'));
                 input.value = '';
                 if (displayInput) displayInput.value = '';
+                if (sendNameInput) sendNameInput.value = '';
                 if (groupInput) groupInput.value = '';
                 mailboxes = data.mailboxes || [];
                 accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
@@ -2547,13 +2627,15 @@
             if (!account) return;
             const nextName = prompt(t('displayName'), _accountDisplayName(account, address));
             if (nextName === null) return;
+            const nextSendName = prompt(t('sendDisplayName'), account.send_name || account.sendName || '');
+            if (nextSendName === null) return;
             const nextGroup = prompt(t('accountGroup'), account.group || '');
             if (nextGroup === null) return;
             try {
                 const resp = await fetch(`/api/mailboxes/${encodeURIComponent(address)}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ display_name: nextName.trim(), group: nextGroup.trim() }),
+                    body: JSON.stringify({ display_name: nextName.trim(), send_name: nextSendName.trim(), group: nextGroup.trim() }),
                 });
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.message || t('settingsSaveFailed'));
@@ -2592,7 +2674,18 @@
             const decodedFolder = decodeURIComponent(String(folder || ''));
             if (currentAccountType === 'external') {
                 const switchSeq = ++externalAccountSwitchSeq;
-                currentExternalFolder = decodedFolder || 'INBOX';
+                if (decodedFolder === '__memail_sent_pending__') {
+                    try {
+                        await _refreshExternalFolders(currentExternalAccountId);
+                    } catch (e) {
+                        document.getElementById('mail-list').innerHTML = `<div class="error-state"><p>${t('foldersLoadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                        return;
+                    }
+                    const sentFolder = _findExternalSentFolder();
+                    currentExternalFolder = sentFolder?.path || decodedFolder;
+                } else {
+                    currentExternalFolder = decodedFolder || 'INBOX';
+                }
                 _resetExternalMessageState();
                 renderFolderList();
                 _updateFolderChrome();
@@ -2721,8 +2814,12 @@
             document.getElementById('external-custom-fields').classList.toggle('d-none', preset !== 'custom');
             if (preset === 'mxroute') {
                 document.getElementById('external-provider-hint').textContent = 'MXroute glacier.mxrouting.net / IMAP 993 / SMTP 465';
+            } else if (preset === 'outlook' || preset === 'office365') {
+                document.getElementById('external-provider-hint').textContent = t('outlookRequiresOAuth');
             } else if (externalAccountFormMode === 'edit') {
                 document.getElementById('external-provider-hint').textContent = t('passwordKeepHint');
+            } else {
+                document.getElementById('external-provider-hint').textContent = t('autoDetectProvider');
             }
         }
 
@@ -2790,6 +2887,8 @@
             const hint = document.getElementById('external-provider-hint');
             hint.textContent = detected === 'auto'
                 ? t('autoDetectProvider')
+                : detected === 'outlook'
+                    ? t('outlookRequiresOAuth')
                 : `${t('autoDetectProvider')}: ${detected}`;
         }
 
@@ -2816,6 +2915,7 @@
         function _fillExternalFormFromAccount(account, mode) {
             document.getElementById('external-email').value = mode === 'copy' ? '' : (account?.email || '');
             document.getElementById('external-display-name').value = mode === 'copy' ? '' : _accountDisplayName(account, account?.email || '');
+            document.getElementById('external-send-name').value = mode === 'copy' ? '' : (account?.sendName || account?.send_name || '');
             document.getElementById('external-group').value = account?.group || '';
             document.getElementById('external-password').value = '';
             document.getElementById('external-host').value = account?.host || '';
@@ -2853,6 +2953,7 @@
             } else {
                 document.getElementById('external-email').value = '';
                 document.getElementById('external-display-name').value = '';
+                document.getElementById('external-send-name').value = '';
                 document.getElementById('external-group').value = '';
                 document.getElementById('external-password').value = '';
                 document.getElementById('external-host').value = '';
@@ -2869,12 +2970,17 @@
             const preset = document.getElementById('external-preset').value;
             const email = document.getElementById('external-email').value.trim().toLowerCase();
             const displayName = document.getElementById('external-display-name').value.trim();
+            const sendName = document.getElementById('external-send-name').value.trim();
             const group = document.getElementById('external-group').value.trim();
             const password = document.getElementById('external-password').value;
             const host = document.getElementById('external-host').value.trim();
             const port = document.getElementById('external-port').value.trim();
             const smtpHost = document.getElementById('external-smtp-host').value.trim();
             const smtpPort = document.getElementById('external-smtp-port').value.trim();
+            if (preset === 'outlook' && externalAccountFormMode !== 'edit') {
+                _showExternalAccountAlert('warning', t('outlookRequiresOAuth'));
+                return;
+            }
             if (!_isValidEmail(email)) {
                 _showExternalAccountAlert('danger', t('mailboxInvalid'));
                 return;
@@ -2893,7 +2999,7 @@
             btn.disabled = true;
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${externalAccountFormMode === 'edit' ? t('updating') : t('adding')}`;
             try {
-                const payload = { preset, email, password, displayName, group };
+                const payload = { preset, email, password, displayName, sendName, group };
                 if (preset !== 'auto') payload.preset = preset;
                 if (preset === 'custom' || externalAccountFormMode === 'edit') {
                     payload.host = host;
@@ -3275,6 +3381,7 @@
         }
 
         function _clearSettingsSecrets() {
+            document.getElementById('settings-admin-password').value = '';
             document.getElementById('settings-unified-password').value = '';
             document.getElementById('settings-resend-api-key').value = '';
             document.getElementById('settings-google-client-secret').value = '';
@@ -3286,12 +3393,17 @@
         }
 
         function _renderSettingsStatus(settings) {
+            const adminStatus = document.getElementById('settings-admin-status');
             const unifiedStatus = document.getElementById('settings-unified-status');
             const resendStatus = document.getElementById('settings-resend-status');
             const googleStatus = document.getElementById('settings-google-status');
             const microsoftStatus = document.getElementById('settings-microsoft-status');
             const gmail = settings.gmail || {};
             const microsoft = settings.microsoft || gmail.microsoft || {};
+            const adminState = settings.admin_password_configured ? t('configured') : t('notConfigured');
+            adminStatus.textContent = settings.legacy_access_password_enabled
+                ? `${adminState} · ${t('legacyPasswordEnabled')}`
+                : adminState;
             const unifiedState = settings.unified_password_configured ? t('configured') : t('notConfigured');
             unifiedStatus.textContent = `${unifiedState} · ${_settingsSourceLabel(settings.unified_password_source)}`;
             const resendState = settings.resend_api_key_configured ? t('configured') : t('notConfigured');
@@ -3351,6 +3463,7 @@
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('saveSettings')}`;
             try {
                 const payload = {
+                    admin_password: document.getElementById('settings-admin-password').value.trim(),
                     unified_password: document.getElementById('settings-unified-password').value.trim(),
                     clear_unified_password: document.getElementById('settings-clear-unified').checked,
                     resend_api_key: document.getElementById('settings-resend-api-key').value.trim(),
@@ -3856,6 +3969,12 @@
             const folderPath = currentExternalFolder || 'INBOX';
             if (!silent && !append) resetMailDetail();
             const mailList = document.getElementById('mail-list');
+            if (folderPath === '__memail_sent_pending__') {
+                if (!silent) {
+                    mailList.innerHTML = `<div class="empty-state"><i class="bi bi-send d-block"></i><p>${t('noSentMail')}</p></div>`;
+                }
+                return;
+            }
             const before = append && currentExternalMessages.length
                 ? Math.min(...currentExternalMessages.map(m => Number(m.seq)).filter(Boolean))
                 : null;
@@ -4213,6 +4332,7 @@
                     email,
                     name: _accountDisplayName(currentExternalAccount, email),
                     provider: currentExternalAccount.name || 'external',
+                    sendName: currentExternalAccount.sendName || currentExternalAccount.send_name || '',
                     hasSmtp: Boolean(currentExternalAccount.smtp),
                 };
             }
@@ -4225,6 +4345,7 @@
                     email,
                     name: _accountDisplayName(account, email),
                     provider: 'local',
+                    sendName: account?.send_name || account?.sendName || '',
                     hasSmtp: true,
                 };
             }
@@ -4261,6 +4382,7 @@
             const detailContent = document.getElementById('mail-detail-content');
             const title = mode === 'reply' ? t('replyEmail') : t('composeEmail');
             const providerIcon = _accountProviderIcon(sender.type, sender.provider);
+            const defaultSendName = sender.sendName || '';
             detailContent.innerHTML = `
                 <div class="compose-page">
                     <div class="compose-page-header">
@@ -4281,6 +4403,10 @@
                     </div>
                     <div id="compose-alert" class="alert" style="display:none;" role="alert"></div>
                     <div class="compose-form-grid">
+                        <div>
+                            <label class="form-label" for="compose-from-name">${t('sendDisplayName')}</label>
+                            <input type="text" class="form-control" id="compose-from-name" value="${_escapeAttr(defaultSendName)}" placeholder="${_escapeAttr(t('sendDisplayNamePlaceholder'))}">
+                        </div>
                         <div>
                             <label class="form-label" for="compose-to">${t('to')}</label>
                             <input type="text" class="form-control" id="compose-to" placeholder="${_escapeAttr(t('toPlaceholder'))}">
@@ -4343,6 +4469,8 @@
 
             const to = document.getElementById('compose-to').value.trim();
             const subject = document.getElementById('compose-subject').value.trim();
+            const fromNameInput = document.getElementById('compose-from-name');
+            const fromName = fromNameInput ? fromNameInput.value.trim() : '';
             const body = editor.getText().trim();
             const htmlBody = editor.root.innerHTML;
             const sender = currentComposeSender || _currentSenderAccount();
@@ -4391,7 +4519,7 @@
                     await _imapApi(`/accounts/${encodeURIComponent(sender.id)}/send`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ to, subject, text: body, html: htmlBody }),
+                        body: JSON.stringify({ to, subject, text: body, html: htmlBody, fromName }),
                     });
                     data = { success: true };
                 } else {
@@ -4400,7 +4528,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             from_email: sender.email,
-                            from_name: sender.name && sender.name !== sender.email ? sender.name : sender.email.split('@')[0],
+                            from_name: fromName || sender.email.split('@')[0],
                             to,
                             subject,
                             text: body,
@@ -4419,6 +4547,10 @@
                     alertDiv.textContent = t('sentSuccess');
                     alertDiv.style.display = 'block';
                     btn.innerHTML = `<i class="bi bi-check-lg me-1"></i>${t('sent')}`;
+                    if (sender.type === 'external') {
+                        _clearExternalFolderCache(sender.id);
+                        await _refreshExternalFolders(sender.id).catch(() => {});
+                    }
                     setTimeout(() => {
                         currentComposeSender = null;
                         resetMailDetail();

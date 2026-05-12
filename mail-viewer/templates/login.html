@@ -28,6 +28,12 @@
             border-radius: 16px;
             box-shadow: 0 4px 20px rgba(91,154,139,0.15);
         }
+        .security-note {
+            font-size: 0.82rem;
+            color: #6b7c84;
+            text-align: center;
+            margin-top: 14px;
+        }
         .login-title {
             font-family: 'Satisfy', cursive;
             color: #2a5f8a;
@@ -70,24 +76,46 @@
         </div>
         {% endif %}
 
-        <form method="POST">
+        <form method="POST" autocomplete="off">
+            <div class="mb-3">
+                <label class="form-label" data-i18n="username">管理员账号</label>
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-person"></i></span>
+                    <input type="text" class="form-control" name="username" value="{{ username or '' }}" data-i18n-ph="enterUsername" placeholder="可留空" autocomplete="username">
+                </div>
+            </div>
             <div class="mb-4">
                 <label class="form-label" data-i18n="password">访问密码</label>
                 <div class="input-group">
                     <span class="input-group-text"><i class="bi bi-key"></i></span>
-                    <input type="password" class="form-control" name="password" data-i18n-ph="enterPassword" placeholder="请输入密码" autofocus required>
+                    <input type="password" class="form-control" name="password" data-i18n-ph="enterPassword" placeholder="请输入密码" autocomplete="current-password" autofocus required>
                 </div>
             </div>
             <button type="submit" class="btn btn-primary w-100">
                 <i class="bi bi-box-arrow-in-right me-2"></i><span data-i18n="login">登录</span>
             </button>
+            <div class="security-note" data-i18n="securityNote">多次失败会临时锁定登录入口</div>
         </form>
     </div>
 
     <script>
         const LANGS = {
-            zh: { password: '访问密码', enterPassword: '请输入密码', login: '登录' },
-            en: { password: 'Password', enterPassword: 'Enter password', login: 'Login' }
+            zh: {
+                username: '管理员账号',
+                enterUsername: '可留空',
+                password: '访问密码',
+                enterPassword: '请输入密码',
+                login: '登录',
+                securityNote: '多次失败会临时锁定登录入口',
+            },
+            en: {
+                username: 'Admin Username',
+                enterUsername: 'Optional',
+                password: 'Password',
+                enterPassword: 'Enter password',
+                login: 'Login',
+                securityNote: 'Too many failures will temporarily lock login',
+            }
         };
         let currentLang = localStorage.getItem('manymail-lang') || 'zh';
 

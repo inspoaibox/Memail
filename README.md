@@ -86,7 +86,28 @@ SMTP_HOSTNAME=mail.yourdomain.com
 DOMAINS=yourdomain.com
 ```
 
-Most other values in `.env.example` are optional. `APP_SECRET` is used as the default JWT/API/session/encryption secret unless you override the advanced keys. Gmail OAuth2, Resend, and the unified mailbox password are configured later from the Web UI gear icon.
+Most other values in `.env.example` are optional. `APP_SECRET` is used as the default JWT/API/session/encryption secret unless you override the advanced keys. Gmail OAuth2, Resend, the unified mailbox password, and the admin login password are configured later from the Web UI gear icon.
+
+For production, prefer a hashed admin password instead of relying only on plain `ACCESS_PASSWORD`:
+
+```bash
+python - <<'PY'
+from werkzeug.security import generate_password_hash
+print(generate_password_hash("replace-with-a-strong-password"))
+PY
+```
+
+Then add it to `.env`:
+
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD_HASH=the-generated-hash
+SESSION_TIMEOUT_MINUTES=60
+LOGIN_MAX_ATTEMPTS=5
+LOGIN_LOCK_MINUTES=15
+```
+
+When `ADMIN_PASSWORD_HASH` is configured, it takes precedence; the legacy `ACCESS_PASSWORD` is only a bootstrap fallback and is not accepted as a second login password.
 
 ### 2. Start With Local Builds
 
@@ -189,6 +210,7 @@ Memail no longer requires every operational setting to be baked into `.env`. Aft
 
 - Resend API Key for outbound mail.
 - Unified mailbox password used by the built-in inbox viewer.
+- Admin login password for rotating the Web UI administrator password.
 - Gmail OAuth2 Public Base URL, Client ID, Client Secret, and Redirect URI.
 
 These settings are saved to Docker volumes and survive container restarts, image rebuilds, and GitHub-built image updates. Sensitive values are encrypted with `CONFIG_ENCRYPTION_KEY`; if it is omitted, `docker-compose.yml` falls back to `IMAP_ACCOUNTS_SECRET`, then `SECRET_KEY`, then `APP_SECRET`.
@@ -355,7 +377,8 @@ Memail/
 | **Email Render** | HTML sanitization (bleach + CSSSanitizer), iframe sandbox |
 | **Network** | Server-side image proxy (prevents IP leakage) |
 | **Storage** | Auto-cleanup via MongoDB TTL index (default 3 days) |
-| **Web** | Login-protected viewer, HttpOnly session cookies |
+| **Web** | Login-protected viewer, hashed admin password support, failed-login lockout, session timeout, HttpOnly session cookies |
+| **Request Protection** | CSRF token validation for write requests plus anti-framing, MIME-sniffing, and referrer security headers |
 | **Credential Storage** | External IMAP accounts and runtime settings are saved encrypted with `IMAP_ACCOUNTS_SECRET` / `CONFIG_ENCRYPTION_KEY` / `APP_SECRET` fallback |
 
 <br>

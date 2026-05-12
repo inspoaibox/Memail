@@ -4,6 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
+const MailComposer = require('nodemailer/lib/mail-composer');
 const MailClient = require('./client');
 const { fromPreset, PRESETS, DOMAIN_MAP, autoDetect } = require('./config');
 const { prepareHtmlForRender } = require('./sanitize');
@@ -157,6 +158,15 @@ function loadSettings() {
 function saveSettings() {
   const dir = path.dirname(SETTINGS_FILE);
   fs.mkdirSync(dir, { recursive: true });
+  const existing = (() => {
+    if (!fs.existsSync(SETTINGS_FILE)) return {};
+    try {
+      const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  })();
   const data = {
     public_base_url: runtimeSettings.public_base_url || '',
     google_client_id: runtimeSettings.google_client_id || '',
@@ -164,10 +174,20 @@ function saveSettings() {
     microsoft_client_id: runtimeSettings.microsoft_client_id || '',
     microsoft_redirect_uri: runtimeSettings.microsoft_redirect_uri || '',
   };
-  const encryptedSecret = encryptSecret(runtimeSettings.google_client_secret || '');
-  if (encryptedSecret) data.google_client_secret_encrypted = encryptedSecret;
-  const encryptedMicrosoftSecret = encryptSecret(runtimeSettings.microsoft_client_secret || '');
-  if (encryptedMicrosoftSecret) data.microsoft_client_secret_encrypted = encryptedMicrosoftSecret;
+  const encryptedSecret = runtimeSettings.clear_google_client_secret ? null : encryptSecret(runtimeSettings.google_client_secret || '');
+  if (encryptedSecret) {
+    data.google_client_secret_encrypted = encryptedSecret;
+  } else if (!runtimeSettings.clear_google_client_secret && existing.google_client_secret_encrypted) {
+    data.google_client_secret_encrypted = existing.google_client_secret_encrypted;
+  }
+  const encryptedMicrosoftSecret = runtimeSettings.clear_microsoft_client_secret ? null : encryptSecret(runtimeSettings.microsoft_client_secret || '');
+  if (encryptedMicrosoftSecret) {
+    data.microsoft_client_secret_encrypted = encryptedMicrosoftSecret;
+  } else if (!runtimeSettings.clear_microsoft_client_secret && existing.microsoft_client_secret_encrypted) {
+    data.microsoft_client_secret_encrypted = existing.microsoft_client_secret_encrypted;
+  }
+  delete runtimeSettings.clear_google_client_secret;
+  delete runtimeSettings.clear_microsoft_client_secret;
   const tmpPath = `${SETTINGS_FILE}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
   fs.renameSync(tmpPath, SETTINGS_FILE);
@@ -234,6 +254,10 @@ function normalizeDisplayName(value, fallback = '') {
   return (trimmed || fallback).slice(0, 80);
 }
 
+function normalizeSendName(value) {
+  return normalizeDisplayName(value, '');
+}
+
 function normalizeAccountGroup(value) {
   return String(value || '').trim().slice(0, 40);
 }
@@ -279,7 +303,19 @@ function buildAccountFromRequest(body, fallbackAccount = null) {
   const email = String(body?.email || fallbackAccount?.auth?.user || '').trim().toLowerCase();
   const password = body?.password !== undefined ? String(body.password || '') : (fallbackAccount?.auth?.pass || '');
   const displayName = body?.displayName !== undefined ? body.displayName : fallbackAccount?.displayName;
+  const sendName = body?.sendName !== undefined ? body.sendName : fallbackAccount?.sendName;
   const group = body?.group !== undefined ? body.group : fallbackAccount?.group;
+  if (fallbackAccount?.oauth?.provider) {
+    if (email && email !== String(fallbackAccount.auth?.user || '').toLowerCase()) {
+      throw new Error('OAuth 账号不能直接修改邮箱地址，请重新登录授权');
+    }
+    return {
+      ...fallbackAccount,
+      displayName: normalizeDisplayName(displayName, fallbackAccount.auth?.user || email),
+      sendName: normalizeSendName(sendName),
+      group: normalizeAccountGroup(group),
+    };
+  }
   if (!email) throw new Error('请填写邮箱');
   if (!password) throw new Error('请填写邮箱密码或授权码');
 
@@ -313,6 +349,7 @@ function buildAccountFromRequest(body, fallbackAccount = null) {
     });
   }
   account.displayName = normalizeDisplayName(displayName, email);
+  account.sendName = normalizeSendName(sendName);
   account.group = normalizeAccountGroup(group);
   return account;
 }
@@ -325,6 +362,7 @@ function accountSummary(id, account, extra = {}) {
     name: account?.name || detectPreset(email) || 'custom',
     email,
     displayName: normalizeDisplayName(account?.displayName, email),
+    sendName: normalizeSendName(account?.sendName),
     group: normalizeAccountGroup(account?.group),
     host: account?.host || '',
     port: account?.port || 993,
@@ -412,6 +450,35 @@ async function createSmtpTransport(account) {
   });
 }
 
+function buildRawMessage(mailOptions) {
+  return new MailComposer(mailOptions).compile().build();
+}
+
+function isSelectableFolder(folder) {
+  return folder && !folder.flags?.has('\\Noselect') && !folder.flags?.has('\\NonExistent');
+}
+
+function findSentFolder(folders) {
+  const selectable = (Array.isArray(folders) ? folders : []).filter(isSelectableFolder);
+  return (
+    selectable.find(f => f.specialUse === '\\Sent') ||
+    selectable.find(f => f.flags?.has('\\Sent')) ||
+    selectable.find(f => /^(sent|sent messages|sent mail|已发送|已發送|寄件備份|寄件备份)$/i.test(String(f.name || f.path || '').trim())) ||
+    selectable.find(f => /sent|已发送|已發送|寄件/i.test(String(f.name || f.path || ''))) ||
+    null
+  );
+}
+
+async function appendToSentFolder(client, rawMessage) {
+  await client.ensureConnected();
+  const folders = await client.client.list();
+  const sentFolder = findSentFolder(folders);
+  if (!sentFolder?.path) {
+    throw new Error('未找到已发送文件夹');
+  }
+  return client.client.append(sentFolder.path, rawMessage, ['\\Seen'], new Date());
+}
+
 function buildDiagnosticMessage(imapResult, smtpResult, account, err) {
   const parts = [formatConnectionError(err, account)];
   if (imapResult) {
@@ -449,8 +516,8 @@ function formatConnectionError(err, account) {
     hints.push('Gmail 推荐使用 OAuth2 登录；如果用密码方式，需要应用专用密码且账号已允许 IMAP');
   }
   if (preset === 'outlook') {
-    hints.push('Outlook/Hotmail 请确认账号已开启 IMAP，并优先使用应用专用密码；企业账号还可能被管理员禁用 IMAP');
-    hints.push('如果账号已启用微软安全默认值或组织禁用基础认证，密码/应用密码方式会失败，需要后续接入 Microsoft OAuth2');
+    hints.push('Outlook.com 官方要求 OAuth2/Modern Auth，普通密码/应用密码方式会走 Basic Auth，很多账号会被直接拒绝');
+    hints.push('请在邮箱账号设置里使用“Outlook 登录”完成 Microsoft OAuth2 授权；只有少数仍允许 Basic Auth 的企业租户才可能用密码方式成功');
   }
 
   if (/AUTHENTICATE failed|Authentication unsuccessful|LOGIN failed|Invalid credentials/i.test(responseText)) {
@@ -724,13 +791,17 @@ app.post('/api/settings', (req, res) => {
 
   if (data.clear_google_client_secret) {
     runtimeSettings.google_client_secret = '';
+    runtimeSettings.clear_google_client_secret = true;
   } else if (typeof data.google_client_secret === 'string' && data.google_client_secret.trim()) {
     runtimeSettings.google_client_secret = data.google_client_secret.trim();
+    runtimeSettings.clear_google_client_secret = false;
   }
   if (data.clear_microsoft_client_secret) {
     runtimeSettings.microsoft_client_secret = '';
+    runtimeSettings.clear_microsoft_client_secret = true;
   } else if (typeof data.microsoft_client_secret === 'string' && data.microsoft_client_secret.trim()) {
     runtimeSettings.microsoft_client_secret = data.microsoft_client_secret.trim();
+    runtimeSettings.clear_microsoft_client_secret = false;
   }
 
   try {
@@ -897,6 +968,8 @@ app.post('/api/accounts', async (req, res) => {
   for (const [existingId, existing] of clients) {
     if (existing.account.auth.user === email) {
       existing.account.displayName = account.displayName;
+      existing.account.sendName = account.sendName;
+      existing.account.group = account.group;
       saveAccounts();
       return res.json(accountSummary(existingId, existing.account, { exists: true }));
     }
@@ -933,11 +1006,15 @@ app.post('/api/accounts', async (req, res) => {
 
 // 已连接账户列表
 app.get('/api/accounts', (req, res) => {
-  const list = [];
-  clients.forEach((c, id) => {
-    list.push(accountSummary(id, c.account));
-  });
-  res.json(list);
+  try {
+    const list = [];
+    clients.forEach((c, id) => {
+      list.push(accountSummary(id, c.account));
+    });
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message || '账户列表加载失败' });
+  }
 });
 
 // 账户排序
@@ -1021,6 +1098,7 @@ app.get('/api/accounts/:id/folders', async (req, res) => {
       path: f.path,
       name: f.name,
       noselect: f.flags?.has('\\Noselect') || false,
+      specialUse: f.specialUse || '',
     })));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1241,25 +1319,41 @@ app.post('/api/accounts/:id/send', async (req, res) => {
   const subject = String(req.body?.subject || '').trim();
   const text = String(req.body?.text || '').trim();
   const html = String(req.body?.html || '').trim();
+  const requestedFromName = String(req.body?.fromName || '').trim();
   if (!to) return res.status(400).json({ error: '请填写收件人' });
   if (!subject) return res.status(400).json({ error: '请填写主题' });
   if (!text && !html) return res.status(400).json({ error: '请填写邮件正文' });
 
   const account = client.account;
   const fromEmail = account.auth?.user || '';
-  const fromName = normalizeDisplayName(account.displayName, fromEmail);
+  const fromName = normalizeSendName(requestedFromName)
+    || normalizeSendName(account.sendName)
+    || normalizeDisplayName(fromEmail.split('@')[0], fromEmail);
+  const mailOptions = {
+    from: fromName && fromName !== fromEmail ? `${fromName} <${fromEmail}>` : fromEmail,
+    to: to.split(',').map(item => item.trim()).filter(Boolean),
+    subject,
+    text,
+    html,
+    replyTo: fromEmail,
+  };
   let transport;
   try {
     transport = await createSmtpTransport(account);
-    const info = await transport.sendMail({
-      from: fromName && fromName !== fromEmail ? `${fromName} <${fromEmail}>` : fromEmail,
-      to: to.split(',').map(item => item.trim()).filter(Boolean),
-      subject,
-      text,
-      html,
-      replyTo: fromEmail,
-    });
-    res.json({ ok: true, messageId: info.messageId || '' });
+    const info = await transport.sendMail(mailOptions);
+    let sentSaved = false;
+    try {
+      const rawMessage = await buildRawMessage({
+        ...mailOptions,
+        messageId: info.messageId || undefined,
+        date: new Date(),
+      });
+      await appendToSentFolder(client, rawMessage);
+      sentSaved = true;
+    } catch (appendErr) {
+      console.warn(`保存已发送失败 (${fromEmail}): ${appendErr.message}`);
+    }
+    res.json({ ok: true, messageId: info.messageId || '', sentSaved });
   } catch (err) {
     res.status(502).json({ error: err.message || '发送失败' });
   } finally {
@@ -1496,4 +1590,12 @@ restoreAccounts().then(() => {
   app.listen(PORT, () => {
     console.log(`IMAP Mail Client 已启动: http://localhost:${PORT}`);
   });
+});
+
+app.use((err, req, res, next) => {
+  console.error(`IMAP API 未处理错误 ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  return res.status(500).json({ error: err.message || 'IMAP 服务内部错误' });
 });

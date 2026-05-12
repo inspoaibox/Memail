@@ -1,20 +1,24 @@
 import ipaddress
 import base64
+import hmac
 import json
 import hashlib
 import html as html_lib
 import os
 import re
+import secrets
 import socket
+import time
 import uuid
 import requests
 import bleach
 from functools import wraps
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from bleach.css_sanitizer import CSSSanitizer
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from urllib.parse import urlparse, urljoin, quote
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for, Response, stream_with_context
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 APP_SECRET = os.getenv("APP_SECRET", "")
@@ -25,6 +29,7 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=IS_PRODUCTION,
+    PERMANENT_SESSION_LIFETIME=timedelta(minutes=int(os.getenv("SESSION_TIMEOUT_MINUTES", "60"))),
 )
 
 if app.secret_key == "mail-viewer-secret-key-change-me":
@@ -33,6 +38,11 @@ if app.secret_key == "mail-viewer-secret-key-change-me":
 
 # 访问密码（从环境变量读取）
 ACCESS_PASSWORD = os.getenv("ACCESS_PASSWORD", "")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").strip()
+ADMIN_PASSWORD_HASH = (os.getenv("ADMIN_PASSWORD_HASH") or os.getenv("ACCESS_PASSWORD_HASH") or "").strip()
+SESSION_TIMEOUT_MINUTES = int(os.getenv("SESSION_TIMEOUT_MINUTES", "60"))
+LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "15"))
 
 # DuckMail API 配置
 DUCKMAIL_BASE_URL = os.getenv("DUCKMAIL_BASE_URL", "http://127.0.0.1:8080")
@@ -52,36 +62,42 @@ CONFIG_ENCRYPTION_KEY = (
 )
 MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 1024)))
 _EMAIL_ALLOWED_TAGS = [
-    "a", "abbr", "b", "blockquote", "br", "code", "div", "em", "font",
+    "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
+    "colgroup", "div", "em", "font",
     "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "li", "ol",
-    "p", "pre", "span", "strong", "table", "tbody", "td", "th", "thead",
-    "tr", "u", "ul",
+    "p", "pre", "small", "span", "strong", "sub", "sup", "table", "tbody",
+    "td", "tfoot", "th", "thead", "tr", "u", "ul",
 ]
 _EMAIL_ALLOWED_ATTRIBUTES = {
-    "*": ["align", "valign"],
+    "*": ["align", "bgcolor", "class", "valign"],
     "a": ["href", "title", "target", "rel", "style"],
+    "col": ["span", "width", "style"],
+    "colgroup": ["span", "width", "style"],
     "div": ["style"],
     "font": ["color", "size", "face"],
     "img": ["src", "alt", "title", "width", "height", "style"],
     "p": ["style"],
     "span": ["style"],
-    "table": ["border", "cellpadding", "cellspacing", "width", "style"],
+    "table": ["border", "bordercolor", "cellpadding", "cellspacing", "height", "width", "style"],
     "tbody": ["style"],
+    "tfoot": ["style"],
     "thead": ["style"],
-    "tr": ["style"],
-    "td": ["colspan", "rowspan", "width", "height", "style"],
-    "th": ["colspan", "rowspan", "width", "height", "style"],
+    "tr": ["height", "style"],
+    "td": ["colspan", "rowspan", "width", "height", "style", "nowrap"],
+    "th": ["colspan", "rowspan", "width", "height", "style", "nowrap"],
 }
 _EMAIL_CSS_SANITIZER = CSSSanitizer(
     allowed_css_properties=[
         "background", "background-color", "border", "border-bottom", "border-collapse",
-        "border-left", "border-right", "border-spacing", "border-top", "color",
+        "border-color", "border-left", "border-right", "border-spacing", "border-style",
+        "border-top", "border-width", "color",
         "display", "font", "font-family", "font-size", "font-style", "font-weight",
         "height", "letter-spacing", "line-height", "margin", "margin-bottom",
         "margin-left", "margin-right", "margin-top", "max-width", "min-width",
+        "overflow", "overflow-wrap", "overflow-x",
         "padding", "padding-bottom", "padding-left", "padding-right", "padding-top",
-        "text-align", "text-decoration", "vertical-align", "white-space", "width",
-        "word-break",
+        "table-layout", "text-align", "text-decoration", "vertical-align", "white-space",
+        "width", "word-break", "word-wrap",
     ]
 )
 
@@ -151,12 +167,31 @@ def _get_viewer_secret(name: str) -> str:
     return _decrypt_setting(_read_viewer_settings().get(name))
 
 
+def _get_admin_password_hash() -> str:
+    return _decrypt_setting(_read_viewer_settings().get("admin_password_hash")) or ADMIN_PASSWORD_HASH
+
+
+def _admin_auth_enabled() -> bool:
+    return bool(_get_admin_password_hash() or ACCESS_PASSWORD)
+
+
+def _verify_admin_credentials(username: str, password: str) -> bool:
+    password_hash = _get_admin_password_hash()
+    if password_hash:
+        if ADMIN_USERNAME and username.strip() != ADMIN_USERNAME:
+            return False
+        return check_password_hash(password_hash, password)
+    return bool(ACCESS_PASSWORD and hmac.compare_digest(password, ACCESS_PASSWORD))
+
+
 def _get_unified_password() -> str:
     return _get_viewer_secret("unified_password") or UNIFIED_PASSWORD
 
 
 def _update_viewer_runtime_settings(data: dict) -> dict:
     settings = _read_viewer_settings()
+    if data.get("admin_password"):
+        settings["admin_password_hash"] = _encrypt_setting(generate_password_hash(data["admin_password"].strip()))
     if data.get("clear_unified_password"):
         settings.pop("unified_password", None)
     elif data.get("unified_password"):
@@ -386,19 +421,105 @@ def _normalize_account_order(order: list) -> list[str]:
 
 
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
-_require_production_value("ACCESS_PASSWORD", ACCESS_PASSWORD)
+if IS_PRODUCTION and not _get_admin_password_hash() and not ACCESS_PASSWORD:
+    raise RuntimeError("ADMIN_PASSWORD_HASH or ACCESS_PASSWORD must be configured for production")
 _require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
 _require_production_value("DUCKMAIL_API_KEY", DUCKMAIL_API_KEY)
 _require_production_value("IMAP_MAIL_BASE_URL", IMAP_MAIL_BASE_URL)
 _require_production_value("CONFIG_ENCRYPTION_KEY", CONFIG_ENCRYPTION_KEY, {"mail-viewer-secret-key-change-me"})
 
 
+_LOGIN_BUCKETS: dict[str, dict] = {}
+CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _login_bucket_key(username: str) -> str:
+    return f"{_client_ip()}:{username.strip().lower() or '-'}"
+
+
+def _login_bucket(username: str) -> dict:
+    key = _login_bucket_key(username)
+    bucket = _LOGIN_BUCKETS.setdefault(key, {"attempts": 0, "locked_until": 0.0})
+    now = time.time()
+    if bucket.get("locked_until", 0) <= now and bucket.get("attempts", 0) <= 0:
+        bucket["locked_until"] = 0.0
+    return bucket
+
+
+def _is_login_locked(username: str) -> bool:
+    return _login_bucket(username).get("locked_until", 0.0) > time.time()
+
+
+def _register_login_failure(username: str):
+    bucket = _login_bucket(username)
+    bucket["attempts"] = int(bucket.get("attempts", 0)) + 1
+    if bucket["attempts"] >= LOGIN_MAX_ATTEMPTS:
+        bucket["locked_until"] = time.time() + LOGIN_LOCK_MINUTES * 60
+
+
+def _clear_login_failures(username: str):
+    _LOGIN_BUCKETS.pop(_login_bucket_key(username), None)
+
+
+def _csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def _wants_json_response() -> bool:
+    return request.is_json or request.path.startswith("/api/") or request.path.startswith("/imap/api/")
+
+
+@app.before_request
+def enforce_session_security():
+    if request.endpoint in {"login_page", "static"}:
+        return None
+    if not _admin_auth_enabled():
+        return None
+    if session.get("authenticated"):
+        now = time.time()
+        last_seen = float(session.get("last_seen", now))
+        if SESSION_TIMEOUT_MINUTES > 0 and now - last_seen > SESSION_TIMEOUT_MINUTES * 60:
+            session.clear()
+            if _wants_json_response():
+                return jsonify({"success": False, "message": "登录已过期，请重新登录"}), 401
+            return redirect(url_for("login_page"))
+        session["last_seen"] = now
+        session.permanent = True
+    if request.method in CSRF_METHODS and session.get("authenticated"):
+        sent_token = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
+        if not sent_token or not hmac.compare_digest(str(sent_token), str(session.get("csrf_token", ""))):
+            return jsonify({"success": False, "message": "CSRF 校验失败，请刷新页面后重试"}), 403
+    return None
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 def login_required(f):
     """登录验证装饰器"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if ACCESS_PASSWORD and not session.get("authenticated"):
-            if request.is_json:
+        if _admin_auth_enabled() and not session.get("authenticated"):
+            if _wants_json_response():
                 return jsonify({"success": False, "message": "未授权访问"}), 401
             return redirect(url_for("login_page"))
         return f(*args, **kwargs)
@@ -480,6 +601,7 @@ def _rewrite_imap_html(html: str) -> str:
 
 def _proxy_imap_response(subpath: str = ""):
     target = urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", subpath.lstrip("/"))
+    is_api_request = subpath.strip("/").startswith("api/")
     headers = {}
     for key, value in request.headers.items():
         key_lower = key.lower()
@@ -488,16 +610,32 @@ def _proxy_imap_response(subpath: str = ""):
         if key_lower in {"accept", "content-type", "x-requested-with"}:
             headers[key] = value
     body = None if request.method in {"GET", "HEAD"} else request.get_data()
-    resp = http_session.request(
-        method=request.method,
-        url=target,
-        params=request.args,
-        data=body,
-        headers=headers,
-        timeout=60,
-        allow_redirects=False,
-    )
+    try:
+        resp = http_session.request(
+            method=request.method,
+            url=target,
+            params=request.args,
+            data=body,
+            headers=headers,
+            timeout=60,
+            allow_redirects=False,
+        )
+    except requests.RequestException as e:
+        app.logger.warning(f"IMAP 代理请求失败: {e}", exc_info=True)
+        response = jsonify({
+            "error": "IMAP 服务暂时不可用，请稍后重试",
+            "detail": str(e),
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response, 502
+
     content_type = resp.headers.get("Content-Type", "")
+    if is_api_request and "text/html" in content_type and resp.status_code >= 400:
+        message = _extract_plain_text(resp.text) or f"IMAP 服务异常 HTTP {resp.status_code}"
+        response = jsonify({"error": message})
+        response.headers["Cache-Control"] = "no-store"
+        return response, resp.status_code
+
     payload = resp.content
     if "text/html" in content_type:
         payload = _rewrite_imap_html(resp.text).encode(resp.encoding or "utf-8")
@@ -508,6 +646,8 @@ def _proxy_imap_response(subpath: str = ""):
             if header == "Location" and value.startswith("/"):
                 value = "/imap" + value
             proxied.headers[header] = value
+    if is_api_request:
+        proxied.headers["Cache-Control"] = "no-store"
     return proxied
 
 
@@ -611,29 +751,40 @@ def _find_attachment_download_url(base_url: str, message_id: str, attachment_id:
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
     """登录页面"""
-    if not ACCESS_PASSWORD:
+    if not _admin_auth_enabled():
         return redirect(url_for("index"))
 
     if request.method == "POST":
+        username = request.form.get("username", "")
         password = request.form.get("password", "")
-        if password == ACCESS_PASSWORD:
+        if _is_login_locked(username):
+            return render_template("login.html", error="登录失败次数过多，请稍后再试", username=username)
+        if _verify_admin_credentials(username, password):
+            session.clear()
             session["authenticated"] = True
+            session["username"] = username.strip() or ADMIN_USERNAME or "admin"
+            session["login_at"] = time.time()
+            session["last_seen"] = time.time()
+            session["csrf_token"] = secrets.token_urlsafe(32)
+            session.permanent = True
+            _clear_login_failures(username)
             return redirect(url_for("index"))
-        return render_template("login.html", error="密码错误")
+        _register_login_failure(username)
+        return render_template("login.html", error="用户名或密码错误", username=username)
 
-    return render_template("login.html", error=None)
+    return render_template("login.html", error=None, username="")
 
 
 @app.route("/logout")
 def logout():
-    session.pop("authenticated", None)
+    session.clear()
     return redirect(url_for("login_page"))
 
 
 @app.route("/")
 @login_required
 def index():
-    return render_template("index.html")
+    return render_template("index.html", csrf_token=_csrf_token())
 
 
 @app.route("/imap")
@@ -947,6 +1098,8 @@ def get_runtime_settings():
     return jsonify({
         "success": True,
         "settings": {
+            "admin_password_configured": bool(_get_admin_password_hash()),
+            "legacy_access_password_enabled": bool(ACCESS_PASSWORD),
             "unified_password_configured": bool(_get_unified_password()),
             "unified_password_source": "runtime" if _decrypt_setting(local_settings.get("unified_password")) else ("env" if UNIFIED_PASSWORD else "none"),
             "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
@@ -963,6 +1116,8 @@ def get_runtime_settings():
 def save_runtime_settings():
     """保存后台运行配置。空白敏感字段表示保留原值。"""
     data = request.json or {}
+    if data.get("admin_password") and len(data.get("admin_password", "")) < 10:
+        return jsonify({"success": False, "message": "后台登录密码至少需要 10 位"}), 400
     try:
         local_settings = _update_viewer_runtime_settings(data)
     except Exception as e:
@@ -992,6 +1147,8 @@ def save_runtime_settings():
     return jsonify({
         "success": True,
         "settings": {
+            "admin_password_configured": bool(_get_admin_password_hash()),
+            "legacy_access_password_enabled": bool(ACCESS_PASSWORD),
             "unified_password_configured": bool(unified_runtime or UNIFIED_PASSWORD),
             "unified_password_source": "runtime" if unified_runtime else ("env" if UNIFIED_PASSWORD else "none"),
             "resend_api_key_configured": bool(resend_runtime or RESEND_API_KEY),
@@ -1187,6 +1344,7 @@ def list_mailboxes():
             **item,
             "address": address,
             "display_name": _normalize_display_name(item.get("display_name", ""), address),
+            "send_name": _normalize_display_name(item.get("send_name", ""), ""),
             "group": _normalize_account_group(item.get("group", "")),
         })
     mailboxes = normalized
@@ -1203,6 +1361,7 @@ def add_mailbox():
     data = request.json or {}
     address = _normalize_mailbox_address(data.get("address", ""))
     display_name = _normalize_display_name(data.get("display_name", ""), address)
+    send_name = _normalize_display_name(data.get("send_name", ""), "")
     group = _normalize_account_group(data.get("group", ""))
     if not address:
         return jsonify({"success": False, "message": "邮箱地址格式不正确"}), 400
@@ -1215,12 +1374,14 @@ def add_mailbox():
     existing = next((item for item in mailboxes if item.get("address") == address), None)
     if existing:
         existing["display_name"] = display_name
+        existing["send_name"] = send_name
         existing["group"] = group
         existing["updated_at"] = now
     else:
         mailboxes.append({
             "address": address,
             "display_name": display_name,
+            "send_name": send_name,
             "group": group,
             "created_at": now,
             "updated_at": now,
@@ -1234,7 +1395,7 @@ def add_mailbox():
     _write_viewer_settings(settings)
     return jsonify({
         "success": True,
-        "mailbox": {"address": address, "display_name": display_name, "group": group},
+        "mailbox": {"address": address, "display_name": display_name, "send_name": send_name, "group": group},
         "mailboxes": mailboxes,
         "account_order": order,
     })
@@ -1255,6 +1416,7 @@ def update_mailbox(address):
     if not existing:
         return jsonify({"success": False, "message": "邮箱不存在"}), 404
     existing["display_name"] = _normalize_display_name(data.get("display_name", ""), normalized)
+    existing["send_name"] = _normalize_display_name(data.get("send_name", ""), "")
     existing["group"] = _normalize_account_group(data.get("group", ""))
     existing["updated_at"] = datetime.now(timezone.utc).isoformat()
     settings["mailboxes"] = mailboxes
