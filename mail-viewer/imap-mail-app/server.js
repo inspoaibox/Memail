@@ -194,17 +194,81 @@ function normalizeDisplayName(value, fallback = '') {
   return (trimmed || fallback).slice(0, 80);
 }
 
+function normalizeSmtpConfig(smtp) {
+  if (!smtp?.host) return null;
+  const port = parseInt(smtp.port, 10) || 465;
+  return {
+    host: String(smtp.host || '').trim(),
+    port,
+    secure: smtp.secure !== undefined ? smtp.secure !== false : port === 465,
+    requireTLS: smtp.requireTLS !== undefined ? !!smtp.requireTLS : port === 587 || port === 25,
+  };
+}
+
 function effectiveSmtp(account) {
   if (account?.smtp?.host) return account.smtp;
   const preset = account?.name || detectPreset(account?.auth?.user);
   const smtp = PRESETS[preset]?.smtp;
-  if (!smtp?.host) return null;
+  return normalizeSmtpConfig(smtp);
+}
+
+function buildCustomAccount({ email, password, displayName, host, port, smtpHost, smtpPort, name }) {
+  if (!host) throw new Error('自定义配置需要填写 IMAP 服务器地址');
+  const imapPort = parseInt(port, 10) || 993;
+  const normalizedEmail = String(email || '').trim().toLowerCase();
   return {
-    host: smtp.host,
-    port: smtp.port || 465,
-    secure: smtp.secure !== false,
-    requireTLS: !!smtp.requireTLS,
+    name: String(name || normalizedEmail.split('@')[1] || 'custom').trim().toLowerCase(),
+    host: String(host || '').trim(),
+    port: imapPort,
+    secure: imapPort !== 143,
+    smtp: normalizeSmtpConfig({
+      host: String(smtpHost || '').trim(),
+      port: parseInt(smtpPort, 10) || 465,
+    }),
+    auth: { user: normalizedEmail, pass: password },
+    displayName: normalizeDisplayName(displayName, normalizedEmail),
   };
+}
+
+function buildAccountFromRequest(body, fallbackAccount = null) {
+  const preset = body?.preset || fallbackAccount?.name || 'auto';
+  const email = String(body?.email || fallbackAccount?.auth?.user || '').trim().toLowerCase();
+  const password = body?.password !== undefined ? String(body.password || '') : (fallbackAccount?.auth?.pass || '');
+  const displayName = body?.displayName !== undefined ? body.displayName : fallbackAccount?.displayName;
+  if (!email) throw new Error('请填写邮箱');
+  if (!password) throw new Error('请填写邮箱密码或授权码');
+
+  let account;
+  const hasManualConfig = body?.host || body?.smtpHost || body?.port || body?.smtpPort;
+  if (fallbackAccount && preset !== 'custom' && hasManualConfig) {
+    account = buildCustomAccount({
+      email,
+      password,
+      displayName,
+      host: body?.host || fallbackAccount?.host || '',
+      port: body?.port || fallbackAccount?.port || 993,
+      smtpHost: body?.smtpHost || fallbackAccount?.smtp?.host || '',
+      smtpPort: body?.smtpPort || fallbackAccount?.smtp?.port || 465,
+      name: body?.name || fallbackAccount?.name || email.split('@')[1] || 'custom',
+    });
+  } else if (!preset || preset === 'auto') {
+    account = autoDetect(email, password);
+  } else if (preset !== 'custom') {
+    account = fromPreset(preset, email, password);
+  } else {
+    account = buildCustomAccount({
+      email,
+      password,
+      displayName,
+      host: body?.host || fallbackAccount?.host || '',
+      port: body?.port || fallbackAccount?.port || 993,
+      smtpHost: body?.smtpHost || fallbackAccount?.smtp?.host || '',
+      smtpPort: body?.smtpPort || fallbackAccount?.smtp?.port || 465,
+      name: body?.name || fallbackAccount?.name || email.split('@')[1] || 'custom',
+    });
+  }
+  account.displayName = normalizeDisplayName(displayName, email);
+  return account;
 }
 
 function accountSummary(id, account, extra = {}) {
@@ -215,6 +279,9 @@ function accountSummary(id, account, extra = {}) {
     name: account?.name || detectPreset(email) || 'custom',
     email,
     displayName: normalizeDisplayName(account?.displayName, email),
+    host: account?.host || '',
+    port: account?.port || 993,
+    secure: account?.secure !== false,
     smtp: smtp ? {
       host: smtp.host,
       port: smtp.port,
@@ -248,12 +315,13 @@ function resultFail(protocol, config, err) {
 }
 
 async function verifySmtp(account) {
-  if (!account.smtp?.host) return null;
+  const smtp = effectiveSmtp(account);
+  if (!smtp?.host) return null;
   const transport = nodemailer.createTransport({
-    host: account.smtp.host,
-    port: account.smtp.port || 465,
-    secure: account.smtp.secure !== false,
-    requireTLS: !!account.smtp.requireTLS,
+    host: smtp.host,
+    port: smtp.port || 465,
+    secure: smtp.secure !== false,
+    requireTLS: !!smtp.requireTLS,
     auth: account.auth?.pass ? account.auth : undefined,
     connectionTimeout: 12000,
     greetingTimeout: 12000,
@@ -262,9 +330,9 @@ async function verifySmtp(account) {
   });
   try {
     await transport.verify();
-    return resultOk('smtp', account.smtp);
+    return resultOk('smtp', smtp);
   } catch (err) {
-    return resultFail('smtp', account.smtp, err);
+    return resultFail('smtp', smtp, err);
   } finally {
     transport.close();
   }
@@ -633,43 +701,13 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
 // 添加账户
 app.post('/api/accounts', async (req, res) => {
   if (!requirePersistenceSecret(res)) return;
-  const { preset, host, port, email, password, displayName } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: '请填写邮箱和密码' });
-  }
-
   let account;
-  if (!preset || preset === 'auto') {
-    try {
-      account = autoDetect(email, password);
-    } catch (e) {
-      return res.status(400).json({ error: e.message });
-    }
-  } else if (preset !== 'custom') {
-    try {
-      account = fromPreset(preset, email, password);
-    } catch (e) {
-      return res.status(400).json({ error: e.message });
-    }
-  } else {
-    if (!host) return res.status(400).json({ error: '自定义配置需要填写服务器地址' });
-    const smtpHost = String(req.body.smtpHost || '').trim();
-    const smtpPort = parseInt(req.body.smtpPort, 10) || 465;
-    account = {
-      name: email.split('@')[1] || 'custom',
-      host,
-      port: parseInt(port, 10) || 993,
-      secure: true,
-      smtp: smtpHost ? {
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        requireTLS: smtpPort === 587,
-      } : null,
-      auth: { user: email, pass: password },
-    };
+  try {
+    account = buildAccountFromRequest(req.body);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
   }
-  account.displayName = normalizeDisplayName(displayName, email);
+  const email = account.auth.user;
 
   // 检查是否已连接同一邮箱
   for (const [existingId, existing] of clients) {
@@ -688,7 +726,7 @@ app.post('/api/accounts', async (req, res) => {
     try {
       smtpCheck = await verifySmtp(account);
     } catch (smtpErr) {
-      smtpCheck = resultFail('smtp', account.smtp || {}, smtpErr);
+      smtpCheck = resultFail('smtp', effectiveSmtp(account) || {}, smtpErr);
     }
     const id = ++clientId;
     clients.set(id, client);
@@ -700,7 +738,7 @@ app.post('/api/accounts', async (req, res) => {
     try {
       smtpCheck = await verifySmtp(account);
     } catch (smtpErr) {
-      smtpCheck = resultFail('smtp', account.smtp || {}, smtpErr);
+      smtpCheck = resultFail('smtp', effectiveSmtp(account) || {}, smtpErr);
     }
     res.status(500).json({
       error: buildDiagnosticMessage(imapCheck, smtpCheck, account, err),
@@ -730,15 +768,51 @@ app.post('/api/accounts/reorder', (req, res) => {
 });
 
 // 更新账户信息
-app.patch('/api/accounts/:id', (req, res) => {
+app.patch('/api/accounts/:id', async (req, res) => {
   if (!requirePersistenceSecret(res)) return;
   const id = parseInt(req.params.id, 10);
   const client = clients.get(id);
   if (!client) return res.status(404).json({ error: '账户不存在' });
-  const email = client.account.auth?.user || '';
-  client.account.displayName = normalizeDisplayName(req.body?.displayName, email);
-  saveAccounts();
-  res.json(accountSummary(id, client.account));
+  let account;
+  try {
+    account = buildAccountFromRequest(req.body || {}, client.account);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  for (const [existingId, existing] of clients) {
+    if (existingId !== id && existing.account.auth.user === account.auth.user) {
+      return res.status(409).json({ error: '该邮箱账号已存在，不能重复保存' });
+    }
+  }
+
+  const updatedClient = createMailClient(account);
+  try {
+    await updatedClient.connect();
+    const imapCheck = resultOk('imap', account);
+    let smtpCheck = null;
+    try {
+      smtpCheck = await verifySmtp(account);
+    } catch (smtpErr) {
+      smtpCheck = resultFail('smtp', effectiveSmtp(account) || {}, smtpErr);
+    }
+    try { await client.disconnect(); } catch {}
+    clients.set(id, updatedClient);
+    saveAccounts();
+    res.json(accountSummary(id, account, { checks: { imap: imapCheck, smtp: smtpCheck } }));
+  } catch (err) {
+    const imapCheck = resultFail('imap', account, err);
+    let smtpCheck = null;
+    try {
+      smtpCheck = await verifySmtp(account);
+    } catch (smtpErr) {
+      smtpCheck = resultFail('smtp', effectiveSmtp(account) || {}, smtpErr);
+    }
+    res.status(500).json({
+      error: buildDiagnosticMessage(imapCheck, smtpCheck, account, err),
+      checks: { imap: imapCheck, smtp: smtpCheck },
+    });
+  }
 });
 
 // 断开账户
@@ -1195,7 +1269,7 @@ app.post('/api/accounts/batch', async (req, res) => {
       try {
         smtpCheck = await verifySmtp(account);
       } catch (smtpErr) {
-        smtpCheck = resultFail('smtp', account.smtp || {}, smtpErr);
+        smtpCheck = resultFail('smtp', effectiveSmtp(account) || {}, smtpErr);
       }
       const id = ++clientId;
       clients.set(id, client);
@@ -1216,7 +1290,7 @@ app.post('/api/accounts/batch', async (req, res) => {
       try {
         smtpCheck = await verifySmtp(fallbackAccount);
       } catch (smtpErr) {
-        smtpCheck = resultFail('smtp', fallbackAccount.smtp || {}, smtpErr);
+        smtpCheck = resultFail('smtp', effectiveSmtp(fallbackAccount) || {}, smtpErr);
       }
       results.push({
         email,

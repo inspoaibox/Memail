@@ -23,6 +23,11 @@ const PRESETS = {
     domains: ['outlook.com', 'hotmail.com', 'live.com', 'msn.com'],
     aliases: ['hotmail', 'live'],
   }),
+  mxroute: provider({
+    imap: { host: 'glacier.mxrouting.net', port: 993, secure: true },
+    smtp: { host: 'glacier.mxrouting.net', port: 465, secure: true },
+    aliases: ['mxrouting', 'glacier'],
+  }),
   office365: provider({
     imap: { host: 'outlook.office365.com', port: 993, secure: true },
     smtp: { host: 'smtp.office365.com', port: 587, secure: false, requireTLS: true },

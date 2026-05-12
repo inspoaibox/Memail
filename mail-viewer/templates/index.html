@@ -1267,6 +1267,7 @@
                         <label class="form-label" for="external-preset" data-i18n="providerPreset">邮箱类型</label>
                         <select class="form-select" id="external-preset" onchange="handleExternalPresetChange()">
                             <option value="auto">auto</option>
+                            <option value="mxroute">mxroute</option>
                             <option value="outlook">outlook</option>
                             <option value="gmail">gmail</option>
                             <option value="custom">custom</option>
@@ -1303,7 +1304,7 @@
                         <label class="form-label" for="external-password" data-i18n="accountPassword">密码 / 应用专用密码</label>
                         <input type="password" class="form-control" id="external-password" autocomplete="new-password">
                     </div>
-                    <div class="small text-muted" data-i18n="externalPasswordHint">Outlook、QQ、163 等通常需要应用专用密码；Gmail 推荐使用 OAuth2。</div>
+                    <div class="small text-muted" id="external-password-hint" data-i18n="externalPasswordHint">Outlook、QQ、163 等通常需要应用专用密码；Gmail 推荐使用 OAuth2。</div>
                     <div class="small mt-2" id="external-check-result" style="display:none;"></div>
                 </div>
                 <div class="modal-footer">
@@ -1333,7 +1334,12 @@
                 mailboxAdded: '邮箱已添加',
                 displayName: '显示名字',
                 displayNamePlaceholder: '显示名字 / 备注',
-                editDisplayName: '修改显示名字',
+                editAccount: '编辑账号',
+                copyAccountConfig: '复制配置',
+                updateAccount: '更新账号',
+                updating: '更新中...',
+                externalUpdated: '外部邮箱已更新',
+                passwordKeepHint: '编辑时留空则保持原密码 / 授权码',
                 confirmRemoveMailbox: '从列表移除邮箱 "{email}" 吗？邮件数据不会被删除。',
                 accountSettings: '邮箱账号设置',
                 systemSettings: '系统设置',
@@ -1502,7 +1508,12 @@
                 mailboxAdded: 'Mailbox added',
                 displayName: 'Display Name',
                 displayNamePlaceholder: 'Display name / note',
-                editDisplayName: 'Edit display name',
+                editAccount: 'Edit Account',
+                copyAccountConfig: 'Copy Config',
+                updateAccount: 'Update Account',
+                updating: 'Updating...',
+                externalUpdated: 'External mailbox updated',
+                passwordKeepHint: 'Leave blank while editing to keep the current password / app password',
                 confirmRemoveMailbox: 'Remove mailbox "{email}" from the list? Mail data is not deleted.',
                 accountSettings: 'Mailbox Settings',
                 systemSettings: 'System Settings',
@@ -1729,6 +1740,8 @@
         let suppressAccountClick = false;
         let currentComposeSender = null;
         let quillEditor = null;
+        let externalAccountFormMode = 'add';
+        let editingExternalAccountId = null;
         const PAGE_SIZE = 30;
         const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
@@ -2023,6 +2036,12 @@
             } catch (e) {}
         }
 
+        function _clearExternalFolderCache(accountId) {
+            try {
+                localStorage.removeItem(_externalFolderCacheKey(accountId));
+            } catch (e) {}
+        }
+
         function _accountOrderKey(type, id) {
             return `${type}:${id}`;
         }
@@ -2299,7 +2318,10 @@
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
                             </span>
                             <span class="mail-account-kind">${_escapeHtml(provider)}</span>
-                            <button class="btn btn-sm p-0 text-secondary" onclick="editExternalAccountDisplayName('${id}')" title="${t('editDisplayName')}">
+                            <button class="btn btn-sm p-0 text-secondary" onclick="openExternalAccountModal('copy', '${id}')" title="${t('copyAccountConfig')}">
+                                <i class="bi bi-copy"></i>
+                            </button>
+                            <button class="btn btn-sm p-0 text-secondary" onclick="openExternalAccountModal('edit', '${id}')" title="${t('editAccount')}">
                                 <i class="bi bi-pencil-square"></i>
                             </button>
                             <button class="btn btn-sm p-0 text-danger" onclick="removeExternalAccount('${id}')" title="${t('delete')}">
@@ -2523,34 +2545,6 @@
             }
         }
 
-        async function editExternalAccountDisplayName(encodedId) {
-            const id = decodeURIComponent(String(encodedId));
-            const account = _externalAccountById(id);
-            if (!account) return;
-            const email = account.email || '';
-            const currentName = _accountDisplayName(account, email);
-            const nextName = prompt(t('displayName'), currentName);
-            if (nextName === null) return;
-            try {
-                const updated = await _imapApi(`/accounts/${encodeURIComponent(id)}`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ displayName: nextName.trim() }),
-                });
-                externalAccounts = externalAccounts.map(item => (
-                    String(item.id) === String(id) ? { ...item, ...updated } : item
-                ));
-                if (String(currentExternalAccountId) === String(id)) {
-                    currentExternalAccount = { ...currentExternalAccount, ...updated };
-                }
-                renderMailboxes();
-                _updateFolderChrome();
-                _showMailboxError(t('settingsSaved'), 'success');
-            } catch (e) {
-                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
-            }
-        }
-
         function _getExternalAccountModal() {
             if (!externalAccountModal) {
                 externalAccountModal = new bootstrap.Modal(document.getElementById('externalAccountModal'));
@@ -2589,6 +2583,11 @@
         function handleExternalPresetChange() {
             const preset = document.getElementById('external-preset').value;
             document.getElementById('external-custom-fields').classList.toggle('d-none', preset !== 'custom');
+            if (preset === 'mxroute') {
+                document.getElementById('external-provider-hint').textContent = 'MXroute glacier.mxrouting.net / IMAP 993 / SMTP 465';
+            } else if (externalAccountFormMode === 'edit') {
+                document.getElementById('external-provider-hint').textContent = t('passwordKeepHint');
+            }
         }
 
         function detectExternalPreset(email) {
@@ -2600,6 +2599,7 @@
                 'hotmail.com': 'outlook',
                 'live.com': 'outlook',
                 'msn.com': 'outlook',
+                'mxrouting.net': 'mxroute',
                 'qq.com': 'qq',
                 'foxmail.com': 'qq',
                 '163.com': '163',
@@ -2657,30 +2657,77 @@
                 : `${t('autoDetectProvider')}: ${detected}`;
         }
 
-        async function openExternalAccountModal() {
+        function _setExternalAccountFormAction(mode) {
+            const btn = document.getElementById('btn-add-external-account');
+            const title = document.getElementById('externalAccountModalLabel');
+            const isEdit = mode === 'edit';
+            btn.onclick = submitExternalAccount;
+            btn.innerHTML = isEdit
+                ? `<i class="bi bi-save me-1"></i>${t('updateAccount')}`
+                : `<i class="bi bi-plus-lg me-1"></i>${t('addAccount')}`;
+            title.innerHTML = `<i class="bi bi-plug me-2"></i><span>${isEdit ? t('editAccount') : t('connectExternal')}</span>`;
+        }
+
+        async function _prepareExternalPresetOptions(preferred = 'auto') {
             const presetSelect = document.getElementById('external-preset');
+            await loadExternalPresets();
+            const options = Array.from(new Set(['auto', ...externalPresets, 'custom']));
+            const labels = { auto: t('autoDetectProvider'), mailcom: 'mail.com', mxroute: 'mxroute' };
+            presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(labels[value] || value)}</option>`).join('');
+            presetSelect.value = options.includes(preferred) ? preferred : 'auto';
+        }
+
+        function _fillExternalFormFromAccount(account, mode) {
+            document.getElementById('external-email').value = mode === 'copy' ? '' : (account?.email || '');
+            document.getElementById('external-display-name').value = mode === 'copy' ? '' : _accountDisplayName(account, account?.email || '');
+            document.getElementById('external-password').value = '';
+            document.getElementById('external-host').value = account?.host || '';
+            document.getElementById('external-port').value = account?.port || 993;
+            document.getElementById('external-smtp-host').value = account?.smtp?.host || '';
+            document.getElementById('external-smtp-port').value = account?.smtp?.port || 465;
+            const hint = document.getElementById('external-provider-hint');
+            hint.textContent = mode === 'copy' ? t('copyAccountConfig') : (mode === 'edit' ? t('passwordKeepHint') : t('autoDetectProvider'));
+            _updateExternalPasswordHint(mode === 'edit' ? 'edit' : 'add');
+        }
+
+        function _updateExternalPasswordHint(mode) {
+            const el = document.getElementById('external-password-hint');
+            if (el) el.textContent = mode === 'edit' ? t('passwordKeepHint') : t('externalPasswordHint');
+        }
+
+        async function openExternalAccountModal(mode = 'add', encodedId = '') {
             const alert = document.getElementById('external-account-alert');
             alert.style.display = 'none';
             _renderExternalCheckResult(null);
-            await loadExternalPresets();
-            const options = Array.from(new Set(['auto', ...externalPresets, 'custom']));
-            const labels = { auto: t('autoDetectProvider'), mailcom: 'mail.com' };
-            const current = presetSelect.value || 'auto';
-            presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(labels[value] || value)}</option>`).join('');
-            presetSelect.value = options.includes(current) ? current : 'auto';
-            document.getElementById('external-email').value = '';
-            document.getElementById('external-display-name').value = '';
-            document.getElementById('external-password').value = '';
-            document.getElementById('external-host').value = '';
-            document.getElementById('external-port').value = '993';
-            document.getElementById('external-smtp-host').value = '';
-            document.getElementById('external-smtp-port').value = '465';
-            document.getElementById('external-provider-hint').textContent = t('autoDetectProvider');
+            externalAccountFormMode = mode === 'edit' ? 'edit' : 'add';
+            editingExternalAccountId = mode === 'edit' ? decodeURIComponent(String(encodedId)) : null;
+            _updateExternalPasswordHint(externalAccountFormMode);
+
+            const account = encodedId ? _externalAccountById(decodeURIComponent(String(encodedId))) : null;
+            const preferred = account?.name && externalPresets.includes(account.name) ? account.name : (account ? 'custom' : 'auto');
+            await _prepareExternalPresetOptions(mode === 'copy' ? 'custom' : preferred);
+            _setExternalAccountFormAction(externalAccountFormMode);
+
+            if (account) {
+                if (mode === 'copy') {
+                    document.getElementById('external-preset').value = 'custom';
+                }
+                _fillExternalFormFromAccount(account, mode);
+            } else {
+                document.getElementById('external-email').value = '';
+                document.getElementById('external-display-name').value = '';
+                document.getElementById('external-password').value = '';
+                document.getElementById('external-host').value = '';
+                document.getElementById('external-port').value = '993';
+                document.getElementById('external-smtp-host').value = '';
+                document.getElementById('external-smtp-port').value = '465';
+                document.getElementById('external-provider-hint').textContent = t('autoDetectProvider');
+            }
             handleExternalPresetChange();
             _getExternalAccountModal().show();
         }
 
-        async function addExternalAccount() {
+        async function submitExternalAccount() {
             const preset = document.getElementById('external-preset').value;
             const email = document.getElementById('external-email').value.trim().toLowerCase();
             const displayName = document.getElementById('external-display-name').value.trim();
@@ -2693,7 +2740,7 @@
                 _showExternalAccountAlert('danger', t('mailboxInvalid'));
                 return;
             }
-            if (!password) {
+            if (externalAccountFormMode !== 'edit' && !password) {
                 _showExternalAccountAlert('danger', t('accountPassword'));
                 return;
             }
@@ -2705,24 +2752,31 @@
 
             const btn = document.getElementById('btn-add-external-account');
             btn.disabled = true;
-            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('adding')}`;
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${externalAccountFormMode === 'edit' ? t('updating') : t('adding')}`;
             try {
                 const payload = { preset, email, password, displayName };
                 if (preset !== 'auto') payload.preset = preset;
-                if (preset === 'custom') {
+                if (preset === 'custom' || externalAccountFormMode === 'edit') {
                     payload.host = host;
                     payload.port = port || 993;
                     payload.smtpHost = smtpHost;
                     payload.smtpPort = smtpPort || 465;
                 }
-                const account = await _imapApi('/accounts', {
-                    method: 'POST',
+                if (!password) delete payload.password;
+                const isEdit = externalAccountFormMode === 'edit' && editingExternalAccountId;
+                const account = await _imapApi(isEdit ? `/accounts/${encodeURIComponent(editingExternalAccountId)}` : '/accounts', {
+                    method: isEdit ? 'PATCH' : 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
                 _renderExternalCheckResult(account.checks);
-                _showExternalAccountAlert('success', t('externalAdded'));
+                _showExternalAccountAlert('success', isEdit ? t('externalUpdated') : t('externalAdded'));
                 await loadMailboxes();
+                if (isEdit && account?.id) {
+                    _clearExternalFolderCache(account.id);
+                    currentExternalFolders = [];
+                    currentExternalFolder = 'INBOX';
+                }
                 if (account?.id) {
                     const key = _accountOrderKey('external', account.id);
                     if (!accountOrder.includes(key)) {
@@ -2730,6 +2784,7 @@
                         await persistAccountOrder();
                     }
                 }
+                renderMailboxes();
                 _getExternalAccountModal().hide();
                 await selectExternalAccount(account.id);
             } catch (e) {
@@ -2737,8 +2792,12 @@
                 _showExternalAccountAlert('danger', e.message);
             } finally {
                 btn.disabled = false;
-                btn.innerHTML = `<i class="bi bi-plus-lg me-1"></i>${t('addAccount')}`;
+                _setExternalAccountFormAction(externalAccountFormMode);
             }
+        }
+
+        async function addExternalAccount() {
+            await submitExternalAccount();
         }
 
         async function startGmailOAuth() {
