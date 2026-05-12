@@ -194,6 +194,10 @@ function normalizeDisplayName(value, fallback = '') {
   return (trimmed || fallback).slice(0, 80);
 }
 
+function normalizeAccountGroup(value) {
+  return String(value || '').trim().slice(0, 40);
+}
+
 function normalizeSmtpConfig(smtp) {
   if (!smtp?.host) return null;
   const port = parseInt(smtp.port, 10) || 465;
@@ -235,6 +239,7 @@ function buildAccountFromRequest(body, fallbackAccount = null) {
   const email = String(body?.email || fallbackAccount?.auth?.user || '').trim().toLowerCase();
   const password = body?.password !== undefined ? String(body.password || '') : (fallbackAccount?.auth?.pass || '');
   const displayName = body?.displayName !== undefined ? body.displayName : fallbackAccount?.displayName;
+  const group = body?.group !== undefined ? body.group : fallbackAccount?.group;
   if (!email) throw new Error('请填写邮箱');
   if (!password) throw new Error('请填写邮箱密码或授权码');
 
@@ -268,6 +273,7 @@ function buildAccountFromRequest(body, fallbackAccount = null) {
     });
   }
   account.displayName = normalizeDisplayName(displayName, email);
+  account.group = normalizeAccountGroup(group);
   return account;
 }
 
@@ -279,6 +285,7 @@ function accountSummary(id, account, extra = {}) {
     name: account?.name || detectPreset(email) || 'custom',
     email,
     displayName: normalizeDisplayName(account?.displayName, email),
+    group: normalizeAccountGroup(account?.group),
     host: account?.host || '',
     port: account?.port || 993,
     secure: account?.secure !== false,
@@ -689,6 +696,7 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
     }
     const account = buildGmailAccount(email, token);
     account.displayName = normalizeDisplayName(profile.name || profile.email, email);
+    account.group = normalizeAccountGroup('');
     const client = createMailClient(account);
     await client.connect();
     const id = setClient(account, client);

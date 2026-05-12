@@ -357,6 +357,13 @@ def _normalize_display_name(value: str, fallback: str = "") -> str:
     return value or fallback
 
 
+def _normalize_account_group(value: str) -> str:
+    value = (value or "").strip()
+    if len(value) > 40:
+        value = value[:40]
+    return value
+
+
 def _normalize_account_order(order: list) -> list[str]:
     if not isinstance(order, list):
         return []
@@ -1173,6 +1180,7 @@ def list_mailboxes():
             **item,
             "address": address,
             "display_name": _normalize_display_name(item.get("display_name", ""), address),
+            "group": _normalize_account_group(item.get("group", "")),
         })
     mailboxes = normalized
     return jsonify({
@@ -1188,6 +1196,7 @@ def add_mailbox():
     data = request.json or {}
     address = _normalize_mailbox_address(data.get("address", ""))
     display_name = _normalize_display_name(data.get("display_name", ""), address)
+    group = _normalize_account_group(data.get("group", ""))
     if not address:
         return jsonify({"success": False, "message": "邮箱地址格式不正确"}), 400
 
@@ -1199,11 +1208,13 @@ def add_mailbox():
     existing = next((item for item in mailboxes if item.get("address") == address), None)
     if existing:
         existing["display_name"] = display_name
+        existing["group"] = group
         existing["updated_at"] = now
     else:
         mailboxes.append({
             "address": address,
             "display_name": display_name,
+            "group": group,
             "created_at": now,
             "updated_at": now,
         })
@@ -1216,9 +1227,36 @@ def add_mailbox():
     _write_viewer_settings(settings)
     return jsonify({
         "success": True,
-        "mailbox": {"address": address, "display_name": display_name},
+        "mailbox": {"address": address, "display_name": display_name, "group": group},
         "mailboxes": mailboxes,
         "account_order": order,
+    })
+
+
+@app.route("/api/mailboxes/<path:address>", methods=["PATCH"])
+@login_required
+def update_mailbox(address):
+    normalized = _normalize_mailbox_address(address)
+    if not normalized:
+        return jsonify({"success": False, "message": "邮箱地址格式不正确"}), 400
+    data = request.json or {}
+    settings = _read_viewer_settings()
+    mailboxes = settings.get("mailboxes", [])
+    if not isinstance(mailboxes, list):
+        mailboxes = []
+    existing = next((item for item in mailboxes if item.get("address") == normalized), None)
+    if not existing:
+        return jsonify({"success": False, "message": "邮箱不存在"}), 404
+    existing["display_name"] = _normalize_display_name(data.get("display_name", ""), normalized)
+    existing["group"] = _normalize_account_group(data.get("group", ""))
+    existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+    settings["mailboxes"] = mailboxes
+    _write_viewer_settings(settings)
+    return jsonify({
+        "success": True,
+        "mailbox": existing,
+        "mailboxes": mailboxes,
+        "account_order": _normalize_account_order(settings.get("account_order", [])),
     })
 
 

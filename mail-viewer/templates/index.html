@@ -570,6 +570,24 @@
         .mail-account-item.drag-over {
             box-shadow: inset 3px 0 0 var(--accent-color), 0 0 0 1px rgba(183,130,47,0.28);
         }
+        .mail-account-group {
+            margin: 8px 2px 4px;
+            padding: 0 4px;
+            color: var(--muted-text);
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .mail-account-group::after {
+            content: "";
+            height: 1px;
+            flex: 1 1 auto;
+            background: var(--border-color);
+        }
         .mail-folder-item {
             border: 1px solid var(--border-color);
             background: #ffffff;
@@ -1177,6 +1195,7 @@
                                         </button>
                                     </div>
                                     <input type="text" class="form-control form-control-sm mb-2" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
+                                    <input type="text" class="form-control form-control-sm mb-2" id="mailbox-group-input" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
                                     <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
                                     <div id="local-account-settings-list" class="account-settings-list"></div>
                                 </div>
@@ -1296,6 +1315,10 @@
                         <input type="text" class="form-control" id="external-display-name" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
                     </div>
                     <div class="mb-3">
+                        <label class="form-label" for="external-group" data-i18n="accountGroup">账号分组</label>
+                        <input type="text" class="form-control" id="external-group" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label" for="external-email" data-i18n="accountEmail">邮箱地址</label>
                         <input type="email" class="form-control" id="external-email" placeholder="name@qq.com" oninput="handleExternalEmailInput()">
                         <div class="small text-muted mt-1" id="external-provider-hint"></div>
@@ -1334,6 +1357,10 @@
                 mailboxAdded: '邮箱已添加',
                 displayName: '显示名字',
                 displayNamePlaceholder: '显示名字 / 备注',
+                accountGroup: '账号分组',
+                accountGroupPlaceholder: '分组，例如：工作邮箱',
+                defaultAccountGroup: '未分组',
+                editLocalAccount: '编辑本地账号',
                 editAccount: '编辑账号',
                 copyAccountConfig: '复制配置',
                 updateAccount: '更新账号',
@@ -1508,6 +1535,10 @@
                 mailboxAdded: 'Mailbox added',
                 displayName: 'Display Name',
                 displayNamePlaceholder: 'Display name / note',
+                accountGroup: 'Account Group',
+                accountGroupPlaceholder: 'Group, e.g. Work',
+                defaultAccountGroup: 'Ungrouped',
+                editLocalAccount: 'Edit Local Account',
                 editAccount: 'Edit Account',
                 copyAccountConfig: 'Copy Config',
                 updateAccount: 'Update Account',
@@ -1982,6 +2013,10 @@
             return (account?.displayName || account?.display_name || account?.label || fallbackEmail || account?.email || '').trim();
         }
 
+        function _accountGroupName(account) {
+            return (account?.group || '').trim() || t('defaultAccountGroup');
+        }
+
         function _messageFromAddress(msg) {
             const from = msg?.from;
             if (!from) return '';
@@ -2062,13 +2097,48 @@
             }
         }
 
+        function _accountFromOrderKey(key) {
+            if (key.startsWith('local:')) {
+                const address = key.slice(6);
+                const item = mailboxes.find(mailbox => mailbox.address === address);
+                return item ? { type: 'local', id: address, account: item } : null;
+            }
+            if (key.startsWith('external:')) {
+                const id = key.slice(9);
+                const item = externalAccounts.find(account => String(account.id) === String(id));
+                return item ? { type: 'external', id: String(item.id), account: item } : null;
+            }
+            return null;
+        }
+
+        function _groupedAccountEntries() {
+            _ensureAccountOrder();
+            const buckets = new Map();
+            accountOrder.forEach(key => {
+                const entry = _accountFromOrderKey(key);
+                if (!entry) return;
+                const group = _accountGroupName(entry.account);
+                if (!buckets.has(group)) buckets.set(group, []);
+                buckets.get(group).push(entry);
+            });
+            return Array.from(buckets.entries());
+        }
+
         function _applyAccountOrderFromDom() {
             const items = Array.from(document.querySelectorAll('#mail-account-list .mail-account-item'));
             accountOrder = items.map(item => _accountOrderKey(item.dataset.accountType, item.dataset.accountId));
             const localOrder = accountOrder.filter(key => key.startsWith('local:')).map(key => key.slice(6));
             const externalOrder = accountOrder.filter(key => key.startsWith('external:')).map(key => key.slice(9));
-            mailboxes.sort((a, b) => localOrder.indexOf(a.address) - localOrder.indexOf(b.address));
-            externalAccounts.sort((a, b) => externalOrder.indexOf(String(a.id)) - externalOrder.indexOf(String(b.id)));
+            mailboxes.sort((a, b) => {
+                const ai = localOrder.indexOf(a.address);
+                const bi = localOrder.indexOf(b.address);
+                return (ai === -1 ? 99999 : ai) - (bi === -1 ? 99999 : bi);
+            });
+            externalAccounts.sort((a, b) => {
+                const ai = externalOrder.indexOf(String(a.id));
+                const bi = externalOrder.indexOf(String(b.id));
+                return (ai === -1 ? 99999 : ai) - (bi === -1 ? 99999 : bi);
+            });
             return { externalOrder };
         }
 
@@ -2234,43 +2304,41 @@
                 parts.push(`<div class="text-warning small px-2">${t('externalLoadFailed')}: ${_escapeHtml(externalError)}</div>`);
             }
 
-            const localById = new Map(mailboxes.map(item => [item.address, item]));
-            const externalById = new Map(externalAccounts.map(item => [String(item.id), item]));
-            const rows = accountOrder.map(key => {
-                if (key.startsWith('local:')) {
-                    const address = key.slice(6);
-                    const item = localById.get(address);
-                    if (!item) return '';
-                    const displayName = _accountDisplayName(item, address);
-                    const showSubtitle = displayName && displayName !== address;
-                    return `
+            const rows = [];
+            _groupedAccountEntries().forEach(([group, entries]) => {
+                rows.push(`<div class="mail-account-group">${_escapeHtml(group)}</div>`);
+                entries.forEach(entry => {
+                    if (entry.type === 'local') {
+                        const address = entry.id;
+                        const item = entry.account;
+                        const displayName = _accountDisplayName(item, address);
+                        const showSubtitle = displayName && displayName !== address;
+                        rows.push(`
                         <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" draggable="true" data-account-type="local" data-account-id="${_escapeAttr(address)}" onclick="if(!suppressAccountClick) selectMailbox('${encodeURIComponent(address)}')">
                             <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('local')}"></i></span>
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
                             </span>
-                        </button>`;
-                }
-                if (key.startsWith('external:')) {
-                    const account = externalById.get(key.slice(9));
-                    if (!account) return '';
-                    const id = encodeURIComponent(String(account.id));
-                    const email = account.email || '';
-                    const provider = account.name || t('externalMailbox');
-                    const displayName = _accountDisplayName(account, email);
-                    const showSubtitle = displayName && displayName !== email;
-                    return `
+                        </button>`);
+                    } else if (entry.type === 'external') {
+                        const account = entry.account;
+                        const id = encodeURIComponent(String(account.id));
+                        const email = account.email || '';
+                        const provider = account.name || t('externalMailbox');
+                        const displayName = _accountDisplayName(account, email);
+                        const showSubtitle = displayName && displayName !== email;
+                        rows.push(`
                         <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" draggable="true" data-account-type="external" data-account-id="${_escapeAttr(String(account.id))}" onclick="if(!suppressAccountClick) selectExternalAccount('${id}')">
                             <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('external', provider)}"></i></span>
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
                             </span>
-                        </button>`;
-                }
-                return '';
-            }).filter(Boolean);
+                        </button>`);
+                    }
+                });
+            });
             parts.push(...rows);
 
             if (!mailboxes.length && !externalAccounts.length && !localError && !externalError) {
@@ -2296,7 +2364,11 @@
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
+                                <span class="mail-account-subtitle"><i class="bi bi-folder2 me-1"></i>${_escapeHtml(_accountGroupName(item))}</span>
                             </span>
+                            <button class="btn btn-sm p-0 text-secondary" onclick="editLocalAccount('${encodeURIComponent(address)}')" title="${t('editLocalAccount')}">
+                                <i class="bi bi-pencil-square"></i>
+                            </button>
                             <button class="btn btn-sm p-0 text-danger" onclick="removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
                                 <i class="bi bi-x-lg"></i>
                             </button>
@@ -2316,6 +2388,7 @@
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
+                                <span class="mail-account-subtitle"><i class="bi bi-folder2 me-1"></i>${_escapeHtml(_accountGroupName(account))}</span>
                             </span>
                             <span class="mail-account-kind">${_escapeHtml(provider)}</span>
                             <button class="btn btn-sm p-0 text-secondary" onclick="openExternalAccountModal('copy', '${id}')" title="${t('copyAccountConfig')}">
@@ -2381,8 +2454,10 @@
         async function addMailbox() {
             const input = document.getElementById('mailbox-address-input');
             const displayInput = document.getElementById('mailbox-display-name-input');
+            const groupInput = document.getElementById('mailbox-group-input');
             const address = input.value.trim().toLowerCase();
             const displayName = (displayInput?.value || '').trim();
+            const group = (groupInput?.value || '').trim();
             _clearMailboxError();
             if (!_isValidEmail(address)) {
                 _showMailboxError(t('mailboxInvalid'));
@@ -2394,12 +2469,13 @@
                 const resp = await fetch('/api/mailboxes', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ address, display_name: displayName }),
+                    body: JSON.stringify({ address, display_name: displayName, group }),
                 });
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.message || t('loadFailed'));
                 input.value = '';
                 if (displayInput) displayInput.value = '';
+                if (groupInput) groupInput.value = '';
                 mailboxes = data.mailboxes || [];
                 accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
                 renderMailboxes();
@@ -2428,6 +2504,32 @@
                 renderMailboxes();
                 renderFolderList();
                 renderAccountSettingsLists();
+            }
+        }
+
+        async function editLocalAccount(encodedAddress) {
+            const address = decodeURIComponent(String(encodedAddress));
+            const account = mailboxes.find(item => item.address === address);
+            if (!account) return;
+            const nextName = prompt(t('displayName'), _accountDisplayName(account, address));
+            if (nextName === null) return;
+            const nextGroup = prompt(t('accountGroup'), account.group || '');
+            if (nextGroup === null) return;
+            try {
+                const resp = await fetch(`/api/mailboxes/${encodeURIComponent(address)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ display_name: nextName.trim(), group: nextGroup.trim() }),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('settingsSaveFailed'));
+                mailboxes = data.mailboxes || mailboxes;
+                accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
+                renderMailboxes();
+                _updateFolderChrome();
+                _showMailboxError(t('settingsSaved'), 'success');
+            } catch (e) {
+                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
             }
         }
 
@@ -2680,6 +2782,7 @@
         function _fillExternalFormFromAccount(account, mode) {
             document.getElementById('external-email').value = mode === 'copy' ? '' : (account?.email || '');
             document.getElementById('external-display-name').value = mode === 'copy' ? '' : _accountDisplayName(account, account?.email || '');
+            document.getElementById('external-group').value = account?.group || '';
             document.getElementById('external-password').value = '';
             document.getElementById('external-host').value = account?.host || '';
             document.getElementById('external-port').value = account?.port || 993;
@@ -2716,6 +2819,7 @@
             } else {
                 document.getElementById('external-email').value = '';
                 document.getElementById('external-display-name').value = '';
+                document.getElementById('external-group').value = '';
                 document.getElementById('external-password').value = '';
                 document.getElementById('external-host').value = '';
                 document.getElementById('external-port').value = '993';
@@ -2731,6 +2835,7 @@
             const preset = document.getElementById('external-preset').value;
             const email = document.getElementById('external-email').value.trim().toLowerCase();
             const displayName = document.getElementById('external-display-name').value.trim();
+            const group = document.getElementById('external-group').value.trim();
             const password = document.getElementById('external-password').value;
             const host = document.getElementById('external-host').value.trim();
             const port = document.getElementById('external-port').value.trim();
@@ -2754,7 +2859,7 @@
             btn.disabled = true;
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${externalAccountFormMode === 'edit' ? t('updating') : t('adding')}`;
             try {
-                const payload = { preset, email, password, displayName };
+                const payload = { preset, email, password, displayName, group };
                 if (preset !== 'auto') payload.preset = preset;
                 if (preset === 'custom' || externalAccountFormMode === 'edit') {
                     payload.host = host;
