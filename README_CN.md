@@ -135,6 +135,12 @@ echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
 首次启动：
 
 ```bash
+docker-compose pull
+docker-compose up -d
+docker-compose ps
+
+或者
+
 docker compose pull
 docker compose up -d
 docker compose ps
