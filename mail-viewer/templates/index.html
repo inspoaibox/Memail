@@ -1450,7 +1450,7 @@
                 outlookLogin: 'Outlook 登录',
                 addExternal: '添加外部',
                 gmailSupportsAppPassword: 'Gmail 支持两种方式：推荐使用“Gmail 登录”OAuth2；也可以在这里输入 16 位 Google 应用专用密码，普通 Google 密码不能用于 IMAP。',
-                outlookRequiresOAuth: 'Outlook.com 官方要求 OAuth2/Modern Auth，请使用上方“Outlook 登录”。手动密码方式只适合少数仍允许 Basic Auth 的企业邮箱。',
+                outlookRequiresOAuth: 'Outlook 支持手动 IMAP/SMTP 服务器配置；但 Microsoft 官方认证方式是 OAuth2/Modern Auth。本表单会用邮箱+密码尝试传统认证，如果服务器拒绝，请改用“Outlook 登录”授权或确认账号允许应用密码/传统认证。',
                 connectExternal: '连接外部邮箱',
                 providerPreset: '邮箱类型',
                 autoDetectProvider: '自动识别',
@@ -1460,7 +1460,7 @@
                 smtpPort: 'SMTP 端口',
                 accountEmail: '邮箱地址',
                 accountPassword: '密码 / 应用专用密码',
-                externalPasswordHint: '建议选择自动识别。QQ/163 通常需要授权码；Gmail 可用 16 位应用专用密码或 OAuth2；Outlook 推荐 OAuth2。',
+                externalPasswordHint: '建议选择自动识别。QQ/163 通常需要授权码；Gmail 可用 16 位应用专用密码或 OAuth2；Outlook 可手动尝试，失败时用 OAuth2。',
                 addAccount: '添加账号',
                 adding: '添加中...',
                 externalAdded: '外部邮箱已添加',
@@ -1641,7 +1641,7 @@
                 outlookLogin: 'Outlook Login',
                 addExternal: 'Add External',
                 gmailSupportsAppPassword: 'Gmail supports two modes: use Gmail OAuth2, or enter a 16-character Google app password here. A normal Google account password will not work for IMAP.',
-                outlookRequiresOAuth: 'Outlook.com requires OAuth2/Modern Auth. Use "Outlook Login" above. Manual password mode only works for rare tenants that still allow Basic Auth.',
+                outlookRequiresOAuth: 'Outlook supports manual IMAP/SMTP server settings, but Microsoft lists OAuth2/Modern Auth as the auth method. This form tries legacy email+password auth; if the server rejects it, use "Outlook Login" or confirm app-password/legacy auth is allowed.',
                 connectExternal: 'Connect External Mailbox',
                 providerPreset: 'Mailbox Type',
                 autoDetectProvider: 'Auto detect',
@@ -1651,7 +1651,7 @@
                 smtpPort: 'SMTP Port',
                 accountEmail: 'Email Address',
                 accountPassword: 'Password / App Password',
-                externalPasswordHint: 'Auto detect is recommended. QQ/163 usually need authorization codes; Gmail works with a 16-character app password or OAuth2; Outlook is best with OAuth2.',
+                externalPasswordHint: 'Auto detect is recommended. QQ/163 usually need authorization codes; Gmail works with a 16-character app password or OAuth2; Outlook can be tried manually, then use OAuth2 if rejected.',
                 addAccount: 'Add Account',
                 adding: 'Adding...',
                 externalAdded: 'External mailbox added',
@@ -2927,7 +2927,7 @@
             const labels = {
                 auto: t('autoDetectProvider'),
                 gmail: 'Gmail / Google',
-                outlook: 'Outlook OAuth2',
+                outlook: 'Outlook / Hotmail',
                 office365: 'Office 365',
                 mailcom: 'mail.com',
                 mxroute: 'MXroute',
@@ -3002,10 +3002,6 @@
             const port = document.getElementById('external-port').value.trim();
             const smtpHost = document.getElementById('external-smtp-host').value.trim();
             const smtpPort = document.getElementById('external-smtp-port').value.trim();
-            if (preset === 'outlook' && externalAccountFormMode !== 'edit') {
-                _showExternalAccountAlert('warning', t('outlookRequiresOAuth'));
-                return;
-            }
             if (!_isValidEmail(email)) {
                 _showExternalAccountAlert('danger', t('mailboxInvalid'));
                 return;

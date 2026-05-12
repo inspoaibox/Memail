@@ -244,6 +244,15 @@ https://mail.yourdomain.com/imap/api/oauth/gmail/callback
 
 For Google Workspace, IMAP, app passwords, and third-party clients can be restricted by administrator policy. If password login is rejected even with a correct app password, enable the relevant access as an admin or use OAuth2.
 
+### Outlook / Hotmail External Mail
+
+Outlook.com supports manual IMAP/SMTP server settings:
+
+- IMAP: `outlook.office365.com:993`, SSL/TLS
+- SMTP: `smtp-mail.outlook.com:587`, STARTTLS
+
+Manual server settings do not always mean plain email+password Basic Auth is accepted. Microsoft lists OAuth2/Modern Auth as the authentication method. Memail still lets you try manual email+password/app-password login from Add External; if the server returns `basic authentication is disabled` or `535 5.7.139`, use Outlook OAuth2 sign-in or confirm that app passwords, IMAP, and SMTP AUTH are allowed for the Microsoft account or tenant.
+
 ### 4. Verify
 
 ```bash

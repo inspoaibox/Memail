@@ -538,8 +538,8 @@ function formatConnectionError(err, account) {
     hints.push('也可以在邮箱账号设置里配置 Google OAuth 后使用“Gmail 登录”授权接入');
   }
   if (preset === 'outlook') {
-    hints.push('Outlook.com 官方要求 OAuth2/Modern Auth，普通密码/应用密码方式会走 Basic Auth，很多账号会被直接拒绝');
-    hints.push('请在邮箱账号设置里使用“Outlook 登录”完成 Microsoft OAuth2 授权；只有少数仍允许 Basic Auth 的企业租户才可能用密码方式成功');
+    hints.push('Outlook 支持手动填写 IMAP/SMTP 服务器，但 Microsoft 官方认证方式通常是 OAuth2/Modern Auth');
+    hints.push('当前表单会使用邮箱+密码尝试传统认证；如果服务器返回 Basic Auth disabled，请改用“Outlook 登录”授权');
   }
 
   if (/AUTHENTICATE failed|Authentication unsuccessful|LOGIN failed|Invalid credentials/i.test(responseText)) {

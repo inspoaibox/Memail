@@ -249,6 +249,15 @@ https://mail.yourdomain.com/imap/api/oauth/gmail/callback
 
 如果使用 Google Workspace，IMAP、应用专用密码和第三方客户端可能受管理员策略影响；这种情况下即使密码正确也可能被拒绝，需要管理员开启相应访问或改用 OAuth2。
 
+### Outlook / Hotmail 外部邮箱
+
+Outlook.com 支持手动填写 IMAP/SMTP 服务器配置：
+
+- IMAP：`outlook.office365.com:993`，SSL/TLS
+- SMTP：`smtp-mail.outlook.com:587`，STARTTLS
+
+注意：手动填写服务器不等于一定支持“邮箱密码 Basic Auth”。Microsoft 官方文档中的认证方式是 OAuth2/Modern Auth。Memail 的“添加外部”表单会允许你手动尝试邮箱+密码/应用密码；如果服务器返回 `basic authentication is disabled` 或 `535 5.7.139`，说明当前账号不接受这种传统认证，需要使用“Outlook 登录”OAuth2 授权，或在 Microsoft 账号/组织策略中确认应用密码、IMAP 和 SMTP AUTH 是否被允许。
+
 ### 4. 验证
 
 ```bash
