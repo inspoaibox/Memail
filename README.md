@@ -217,9 +217,16 @@ These settings are saved to Docker volumes and survive container restarts, image
 
 Keep `.env` for bootstrapping values that must exist before the UI can start, such as database connection, login password, API keys used between internal services, session/JWT secrets, and encryption keys.
 
-### Gmail OAuth2 For External IMAP Accounts
+### Gmail External IMAP: App Password Or OAuth2
 
-The external IMAP aggregator persists account configuration and encrypts sensitive credentials with `IMAP_ACCOUNTS_SECRET`, falling back to `APP_SECRET` in the default Compose setup. Gmail can use OAuth2 instead of an app password:
+The external IMAP aggregator persists account configuration and encrypts sensitive credentials with `IMAP_ACCOUNTS_SECRET`, falling back to `APP_SECRET` in the default Compose setup.
+
+Gmail supports two connection modes:
+
+- **App password**: for personal Gmail accounts, enable 2-Step Verification and create a 16-character Google app password. In Memail, add an external account with `Gmail / Google` or auto-detect and paste that app password. A normal Google account password will not work for IMAP/SMTP.
+- **OAuth2 sign-in**: useful for long-term use, Workspace accounts, or avoiding stored mailbox passwords. OAuth2 uses the `https://mail.google.com/` scope, which is a sensitive/restricted Gmail scope; public multi-user apps may need Google review. For personal/internal use, configure the OAuth app and test users in Google Cloud.
+
+To configure Gmail OAuth2:
 
 1. Create a Web application OAuth Client in Google Cloud Console.
 2. Add this Authorized redirect URI:
@@ -235,7 +242,7 @@ https://mail.yourdomain.com/imap/api/oauth/gmail/callback
    - Google Client Secret
    - Redirect URI: `https://mail.yourdomain.com/imap/api/oauth/gmail/callback`
 
-Gmail IMAP OAuth2 uses the `https://mail.google.com/` scope. If Google OAuth is not configured, Gmail can still connect with an app password through regular IMAP.
+For Google Workspace, IMAP, app passwords, and third-party clients can be restricted by administrator policy. If password login is rejected even with a correct app password, enable the relevant access as an admin or use OAuth2.
 
 ### 4. Verify
 

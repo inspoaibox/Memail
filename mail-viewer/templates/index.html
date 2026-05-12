@@ -1162,6 +1162,7 @@
                                 <div class="col-12"><hr></div>
                                 <div class="col-12">
                                     <h6 class="mb-2">Gmail OAuth2</h6>
+                                    <div class="small text-muted mb-2" data-i18n="gmailOAuthSetupHint">Gmail OAuth 使用 https://mail.google.com/ 权限；如果不想申请 OAuth，可直接添加 Gmail 并填写 16 位应用专用密码。</div>
                                 </div>
                                 <div class="col-12 col-md-6">
                                     <label class="form-label" for="settings-public-base-url">Public Base URL</label>
@@ -1448,6 +1449,7 @@
                 gmailLogin: 'Gmail 登录',
                 outlookLogin: 'Outlook 登录',
                 addExternal: '添加外部',
+                gmailSupportsAppPassword: 'Gmail 支持两种方式：推荐使用“Gmail 登录”OAuth2；也可以在这里输入 16 位 Google 应用专用密码，普通 Google 密码不能用于 IMAP。',
                 outlookRequiresOAuth: 'Outlook.com 官方要求 OAuth2/Modern Auth，请使用上方“Outlook 登录”。手动密码方式只适合少数仍允许 Basic Auth 的企业邮箱。',
                 connectExternal: '连接外部邮箱',
                 providerPreset: '邮箱类型',
@@ -1458,7 +1460,7 @@
                 smtpPort: 'SMTP 端口',
                 accountEmail: '邮箱地址',
                 accountPassword: '密码 / 应用专用密码',
-                externalPasswordHint: '建议选择自动识别。QQ/163 等通常需要应用专用密码或授权码；Gmail 和 Outlook 推荐使用 OAuth2 登录。',
+                externalPasswordHint: '建议选择自动识别。QQ/163 通常需要授权码；Gmail 可用 16 位应用专用密码或 OAuth2；Outlook 推荐 OAuth2。',
                 addAccount: '添加账号',
                 adding: '添加中...',
                 externalAdded: '外部邮箱已添加',
@@ -1473,6 +1475,7 @@
                 noExternalMail: '此文件夹暂无邮件',
                 confirmRemoveExternal: '移除外部邮箱 "{email}" 吗？账号配置会从本机持久化存储中删除。',
                 gmailOAuthNotReady: 'Gmail OAuth2 未配置，请先在设置中填写 Google Client ID / Secret / Redirect URI。',
+                gmailOAuthSetupHint: 'Gmail OAuth 使用 https://mail.google.com/ 权限；如果不想申请 OAuth，可直接添加 Gmail 并填写 16 位应用专用密码。',
                 outlookOAuthNotReady: 'Outlook OAuth2 未配置，请先在设置中填写 Microsoft Client ID / Secret / Redirect URI。',
                 oauthWindowOpened: '已打开 Gmail 登录窗口',
                 outlookOauthWindowOpened: '已打开 Outlook 登录窗口',
@@ -1637,6 +1640,7 @@
                 gmailLogin: 'Gmail Login',
                 outlookLogin: 'Outlook Login',
                 addExternal: 'Add External',
+                gmailSupportsAppPassword: 'Gmail supports two modes: use Gmail OAuth2, or enter a 16-character Google app password here. A normal Google account password will not work for IMAP.',
                 outlookRequiresOAuth: 'Outlook.com requires OAuth2/Modern Auth. Use "Outlook Login" above. Manual password mode only works for rare tenants that still allow Basic Auth.',
                 connectExternal: 'Connect External Mailbox',
                 providerPreset: 'Mailbox Type',
@@ -1647,7 +1651,7 @@
                 smtpPort: 'SMTP Port',
                 accountEmail: 'Email Address',
                 accountPassword: 'Password / App Password',
-                externalPasswordHint: 'Auto detect is recommended. QQ, 163 and others usually require an app password or authorization code; Gmail and Outlook are better with OAuth2.',
+                externalPasswordHint: 'Auto detect is recommended. QQ/163 usually need authorization codes; Gmail works with a 16-character app password or OAuth2; Outlook is best with OAuth2.',
                 addAccount: 'Add Account',
                 adding: 'Adding...',
                 externalAdded: 'External mailbox added',
@@ -1662,6 +1666,7 @@
                 noExternalMail: 'No email in this folder',
                 confirmRemoveExternal: 'Remove external mailbox "{email}"? Its saved account config will be deleted locally.',
                 gmailOAuthNotReady: 'Gmail OAuth2 is not configured. Fill Google Client ID / Secret / Redirect URI in settings first.',
+                gmailOAuthSetupHint: 'Gmail OAuth uses the https://mail.google.com/ scope. If you do not want OAuth review, add Gmail manually with a 16-character app password.',
                 outlookOAuthNotReady: 'Outlook OAuth2 is not configured. Fill Microsoft Client ID / Secret / Redirect URI in settings first.',
                 oauthWindowOpened: 'Gmail login window opened',
                 outlookOauthWindowOpened: 'Outlook login window opened',
@@ -2814,6 +2819,8 @@
             document.getElementById('external-custom-fields').classList.toggle('d-none', preset !== 'custom');
             if (preset === 'mxroute') {
                 document.getElementById('external-provider-hint').textContent = 'MXroute glacier.mxrouting.net / IMAP 993 / SMTP 465';
+            } else if (preset === 'gmail') {
+                document.getElementById('external-provider-hint').textContent = t('gmailSupportsAppPassword');
             } else if (preset === 'outlook' || preset === 'office365') {
                 document.getElementById('external-provider-hint').textContent = t('outlookRequiresOAuth');
             } else if (externalAccountFormMode === 'edit') {
@@ -2880,6 +2887,14 @@
             return map[domain] || 'auto';
         }
 
+        function _isGmailPresetOrAddress(preset, email) {
+            const normalizedPreset = String(preset || '').toLowerCase();
+            const normalizedEmail = String(email || '').toLowerCase();
+            return normalizedPreset === 'gmail' ||
+                normalizedEmail.endsWith('@gmail.com') ||
+                normalizedEmail.endsWith('@googlemail.com');
+        }
+
         function handleExternalEmailInput() {
             const presetSelect = document.getElementById('external-preset');
             if (presetSelect.value !== 'auto') return;
@@ -2887,6 +2902,8 @@
             const hint = document.getElementById('external-provider-hint');
             hint.textContent = detected === 'auto'
                 ? t('autoDetectProvider')
+                : detected === 'gmail'
+                    ? t('gmailSupportsAppPassword')
                 : detected === 'outlook'
                     ? t('outlookRequiresOAuth')
                 : `${t('autoDetectProvider')}: ${detected}`;
@@ -2907,7 +2924,15 @@
             const presetSelect = document.getElementById('external-preset');
             await loadExternalPresets();
             const options = Array.from(new Set(['auto', ...externalPresets, 'custom']));
-            const labels = { auto: t('autoDetectProvider'), mailcom: 'mail.com', mxroute: 'mxroute' };
+            const labels = {
+                auto: t('autoDetectProvider'),
+                gmail: 'Gmail / Google',
+                outlook: 'Outlook OAuth2',
+                office365: 'Office 365',
+                mailcom: 'mail.com',
+                mxroute: 'MXroute',
+                custom: 'Custom IMAP',
+            };
             presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(labels[value] || value)}</option>`).join('');
             presetSelect.value = options.includes(preferred) ? preferred : 'auto';
         }
@@ -2999,7 +3024,9 @@
             btn.disabled = true;
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${externalAccountFormMode === 'edit' ? t('updating') : t('adding')}`;
             try {
+                const normalizedPassword = _isGmailPresetOrAddress(preset, email) ? password.replace(/\s+/g, '') : password;
                 const payload = { preset, email, password, displayName, sendName, group };
+                payload.password = normalizedPassword;
                 if (preset !== 'auto') payload.preset = preset;
                 if (preset === 'custom' || externalAccountFormMode === 'edit') {
                     payload.host = host;

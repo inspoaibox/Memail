@@ -22,6 +22,7 @@ const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || path.join(__dirname, 'account
 const SETTINGS_FILE = process.env.SETTINGS_FILE || path.join(path.dirname(ACCOUNTS_FILE), 'settings.json');
 const ACCOUNTS_SECRET = process.env.IMAP_ACCOUNTS_SECRET || process.env.SECRET_KEY || process.env.APP_SECRET || '';
 const GOOGLE_SCOPE = 'https://mail.google.com/';
+const GOOGLE_AUTH_SCOPE = `${GOOGLE_SCOPE} openid email profile`;
 const MICROSOFT_SCOPE = 'offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send openid email profile';
 const MICROSOFT_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 const MICROSOFT_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
@@ -116,7 +117,7 @@ function getGoogleOAuthSettings() {
     google_client_id: clientId,
     google_client_secret_configured: Boolean(clientSecret),
     google_redirect_uri: redirectUri,
-    scope: GOOGLE_SCOPE,
+    scope: GOOGLE_AUTH_SCOPE,
   };
 }
 
@@ -298,10 +299,29 @@ function buildCustomAccount({ email, password, displayName, host, port, smtpHost
   };
 }
 
+function isGmailAccount(preset, email) {
+  const normalizedPreset = String(preset || '').trim().toLowerCase();
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  return normalizedPreset === 'gmail' ||
+    normalizedEmail.endsWith('@gmail.com') ||
+    normalizedEmail.endsWith('@googlemail.com');
+}
+
+function normalizeManualPassword(preset, email, password) {
+  const raw = String(password || '');
+  if (!raw) return raw;
+  if (isGmailAccount(preset, email)) {
+    // Google displays app passwords in grouped blocks; IMAP/SMTP should receive the compact token.
+    return raw.replace(/\s+/g, '');
+  }
+  return raw;
+}
+
 function buildAccountFromRequest(body, fallbackAccount = null) {
   const preset = body?.preset || fallbackAccount?.name || 'auto';
   const email = String(body?.email || fallbackAccount?.auth?.user || '').trim().toLowerCase();
-  const password = body?.password !== undefined ? String(body.password || '') : (fallbackAccount?.auth?.pass || '');
+  const rawPassword = body?.password !== undefined ? String(body.password || '') : (fallbackAccount?.auth?.pass || '');
+  const password = normalizeManualPassword(preset, email, rawPassword);
   const displayName = body?.displayName !== undefined ? body.displayName : fallbackAccount?.displayName;
   const sendName = body?.sendName !== undefined ? body.sendName : fallbackAccount?.sendName;
   const group = body?.group !== undefined ? body.group : fallbackAccount?.group;
@@ -513,7 +533,9 @@ function formatConnectionError(err, account) {
     hints.push('如果刚开启 IMAP，请等待几分钟后重试；服务器应为 imap.qq.com:993');
   }
   if (preset === 'gmail') {
-    hints.push('Gmail 推荐使用 OAuth2 登录；如果用密码方式，需要应用专用密码且账号已允许 IMAP');
+    hints.push('个人 Gmail 可以用 16 位应用专用密码通过 IMAP/SMTP 登录，普通 Google 登录密码不会通过');
+    hints.push('请确认 Gmail 已开启 IMAP；如果是 Google Workspace，管理员可能禁用应用专用密码或要求 OAuth2');
+    hints.push('也可以在邮箱账号设置里配置 Google OAuth 后使用“Gmail 登录”授权接入');
   }
   if (preset === 'outlook') {
     hints.push('Outlook.com 官方要求 OAuth2/Modern Auth，普通密码/应用密码方式会走 Basic Auth，很多账号会被直接拒绝');
@@ -757,7 +779,7 @@ app.get('/api/oauth/gmail/status', (req, res) => {
   res.json({
     enabled: settings.enabled,
     redirectUri: settings.google_redirect_uri,
-    scope: GOOGLE_SCOPE,
+    scope: GOOGLE_AUTH_SCOPE,
   });
 });
 
@@ -826,12 +848,12 @@ app.post('/api/oauth/gmail/start', (req, res) => {
   const clientId = getGoogleClientId();
   const redirectUri = getGoogleRedirectUri();
   const state = crypto.randomBytes(24).toString('hex');
-  oauthStates.set(state, { createdAt: Date.now() });
+  oauthStates.set(state, { createdAt: Date.now(), provider: 'gmail' });
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: `${GOOGLE_SCOPE} openid email`,
+    scope: GOOGLE_AUTH_SCOPE,
     access_type: 'offline',
     prompt: 'consent',
     include_granted_scopes: 'true',
@@ -853,7 +875,7 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
   }
   const stateInfo = oauthStates.get(state);
   oauthStates.delete(state);
-  if (!stateInfo || Date.now() - stateInfo.createdAt > 10 * 60 * 1000) {
+  if (!stateInfo || stateInfo.provider !== 'gmail' || Date.now() - stateInfo.createdAt > 10 * 60 * 1000) {
     return res.status(400).send('Invalid or expired OAuth state');
   }
 
