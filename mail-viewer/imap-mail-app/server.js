@@ -256,6 +256,32 @@ async function verifySmtp(account) {
   }
 }
 
+async function createSmtpTransport(account) {
+  if (!account.smtp?.host) {
+    throw new Error('该账号未配置 SMTP，无法发信');
+  }
+  let auth = account.auth?.pass ? account.auth : undefined;
+  if (account.oauth?.provider === 'gmail') {
+    const token = await refreshOAuthToken(account);
+    auth = {
+      type: 'OAuth2',
+      user: account.auth?.user || '',
+      accessToken: token.access_token,
+    };
+  }
+  return nodemailer.createTransport({
+    host: account.smtp.host,
+    port: account.smtp.port || 465,
+    secure: account.smtp.secure !== false,
+    requireTLS: !!account.smtp.requireTLS,
+    auth,
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 30000,
+    logger: false,
+  });
+}
+
 function buildDiagnosticMessage(imapResult, smtpResult, account, err) {
   const parts = [formatConnectionError(err, account)];
   if (imapResult) {
@@ -394,6 +420,12 @@ function buildGmailAccount(email, token) {
     host: PRESETS.gmail.host,
     port: PRESETS.gmail.port,
     secure: PRESETS.gmail.secure,
+    smtp: {
+      host: PRESETS.gmail.smtp.host,
+      port: PRESETS.gmail.smtp.port,
+      secure: PRESETS.gmail.smtp.secure !== false,
+      requireTLS: !!PRESETS.gmail.smtp.requireTLS,
+    },
     auth: { user: email },
     oauth: {
       provider: 'gmail',
@@ -925,6 +957,40 @@ app.delete('/api/accounts/:id/mails/:uid', async (req, res) => {
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// 使用外部账号 SMTP 发信
+app.post('/api/accounts/:id/send', async (req, res) => {
+  const client = clients.get(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).json({ error: '账户不存在' });
+  const to = String(req.body?.to || '').trim();
+  const subject = String(req.body?.subject || '').trim();
+  const text = String(req.body?.text || '').trim();
+  const html = String(req.body?.html || '').trim();
+  if (!to) return res.status(400).json({ error: '请填写收件人' });
+  if (!subject) return res.status(400).json({ error: '请填写主题' });
+  if (!text && !html) return res.status(400).json({ error: '请填写邮件正文' });
+
+  const account = client.account;
+  const fromEmail = account.auth?.user || '';
+  const fromName = normalizeDisplayName(account.displayName, fromEmail);
+  let transport;
+  try {
+    transport = await createSmtpTransport(account);
+    const info = await transport.sendMail({
+      from: fromName && fromName !== fromEmail ? `${fromName} <${fromEmail}>` : fromEmail,
+      to: to.split(',').map(item => item.trim()).filter(Boolean),
+      subject,
+      text,
+      html,
+      replyTo: fromEmail,
+    });
+    res.json({ ok: true, messageId: info.messageId || '' });
+  } catch (err) {
+    res.status(502).json({ error: err.message || '发送失败' });
+  } finally {
+    if (transport) transport.close();
   }
 });
 

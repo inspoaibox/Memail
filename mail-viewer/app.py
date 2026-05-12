@@ -275,15 +275,31 @@ def _extract_plain_text(value: str) -> str:
     return value.strip()
 
 
-def _call_openai_chat(channel: dict, api_key: str, model: str, content: str) -> str:
+def _normalize_ai_translation(value: str, wants_html: bool) -> str:
+    value = (value or "").strip()
+    value = re.sub(r"^```(?:html)?\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*```$", "", value)
+    if wants_html:
+        return _prepare_html_for_render(value)
+    return value
+
+
+def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
     base_url = channel.get("base_url", "").rstrip("/")
+    system_prompt = (
+        "你是专业邮件翻译助手。请把用户提供的邮件 HTML 翻译为中文。"
+        "必须保留原始 HTML 结构、表格、段落、列表、链接、按钮文本、图片和行内样式；"
+        "只翻译可见文本，不要解释，不要使用 Markdown，不要包裹代码块，只输出翻译后的 HTML。"
+        if wants_html else
+        "你是专业邮件翻译助手。请只输出中文译文，保留原邮件结构、链接文本和关键信息，不要添加解释。"
+    )
     resp = http_session.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={
             "model": model,
             "messages": [
-                {"role": "system", "content": "你是专业邮件翻译助手。请只输出中文译文，保留原邮件结构、链接文本和关键信息，不要添加解释。"},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
             ],
             "temperature": 0.2,
@@ -296,9 +312,15 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str) -> 
     return (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
 
-def _call_gemini(channel: dict, api_key: str, model: str, content: str) -> str:
+def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
     base_url = channel.get("base_url", "").rstrip("/")
     model_name = model if model.startswith("models/") else f"models/{model}"
+    prompt = (
+        "请把下面邮件 HTML 翻译为中文。必须保留原始 HTML 结构、表格、段落、列表、链接、按钮文本、图片和行内样式；"
+        "只翻译可见文本，不要解释，不要使用 Markdown，不要包裹代码块，只输出翻译后的 HTML。\n\n"
+        if wants_html else
+        "请把下面邮件翻译为中文。只输出中文译文，保留结构、链接文本和关键信息，不要添加解释。\n\n"
+    )
     resp = http_session.post(
         f"{base_url}/{model_name}:generateContent",
         params={"key": api_key},
@@ -306,7 +328,7 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str) -> str:
             "contents": [{
                 "role": "user",
                 "parts": [{
-                    "text": "请把下面邮件翻译为中文。只输出中文译文，保留结构、链接文本和关键信息，不要添加解释。\n\n" + content
+                    "text": prompt + content
                 }],
             }],
             "generationConfig": {"temperature": 0.2},
@@ -1098,7 +1120,9 @@ def save_ai_default_model():
 @login_required
 def translate_mail_to_chinese():
     data = request.json or {}
-    content = _extract_plain_text(data.get("html", "") or data.get("text", ""))
+    html_content = (data.get("html", "") or "").strip()
+    wants_html = bool(html_content)
+    content = html_content or _extract_plain_text(data.get("text", ""))
     subject = _extract_plain_text(data.get("subject", ""))
     if subject:
         content = f"主题：{subject}\n\n{content}"
@@ -1119,15 +1143,16 @@ def translate_mail_to_chinese():
 
     try:
         if channel.get("provider") == "gemini":
-            translated = _call_gemini(channel, api_key, model, content)
+            translated = _call_gemini(channel, api_key, model, content, wants_html)
         else:
-            translated = _call_openai_chat(channel, api_key, model, content)
+            translated = _call_openai_chat(channel, api_key, model, content, wants_html)
     except Exception as e:
         app.logger.warning(f"邮件翻译失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 502
     if not translated:
         return jsonify({"success": False, "message": "模型没有返回翻译内容"}), 502
-    return jsonify({"success": True, "translation": translated})
+    translated = _normalize_ai_translation(translated, wants_html)
+    return jsonify({"success": True, "translation": translated, "format": "html" if wants_html else "text"})
 
 
 @app.route("/api/mailboxes", methods=["GET"])

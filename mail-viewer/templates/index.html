@@ -800,8 +800,70 @@
             padding: 12px 14px;
             margin-bottom: 14px;
             color: var(--text-color);
-            white-space: pre-wrap;
             line-height: 1.7;
+        }
+
+        .mail-translation-panel iframe {
+            width: 100%;
+            border: 0;
+            min-height: 120px;
+            background: transparent;
+        }
+
+        .compose-page {
+            display: flex;
+            flex-direction: column;
+            min-height: 100%;
+            gap: 12px;
+            padding: 2px 0 10px;
+        }
+
+        .compose-page-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .compose-page-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 0 0 auto;
+        }
+
+        .compose-form-grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .compose-from-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+            padding: 4px 10px;
+            color: var(--muted-text);
+            background: var(--surface-muted);
+            font-size: 0.82rem;
+        }
+
+        .compose-page #compose-editor {
+            min-height: 320px;
+        }
+
+        .compose-page .ql-toolbar {
+            border-color: var(--border-color);
+            border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+            background: var(--surface-muted);
+        }
+
+        .compose-page .ql-container {
+            border-color: var(--border-color);
+            border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+            font-size: 0.95rem;
+            min-height: 320px;
         }
 
         .alert {
@@ -1254,49 +1316,6 @@
         </div>
     </div>
 
-    <!-- 撰写/回复邮件 Modal -->
-    <div class="modal fade" id="composeModal" tabindex="-1" aria-labelledby="composeModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
-                    <h5 class="modal-title" id="composeModalLabel"><i class="bi bi-pencil-square me-2"></i><span data-i18n="composeEmail">撰写邮件</span></h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div id="compose-alert" class="alert" style="display:none;" role="alert"></div>
-                    <div class="mb-3">
-                        <label class="form-label" data-i18n="from">发件人</label>
-                        <div class="input-group">
-                            <input type="text" class="form-control" id="compose-from-prefix" data-i18n-ph="prefix" placeholder="前缀">
-                            <span class="input-group-text">@</span>
-                            <select class="form-select" id="compose-from-domain" style="max-width:200px;">
-                                <option value="" data-i18n="loading">加载中...</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label" data-i18n="to">收件人</label>
-                        <input type="text" class="form-control" id="compose-to" data-i18n-ph="toPlaceholder" placeholder="收件人邮箱，多个用逗号分隔">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label" data-i18n="subject">主题</label>
-                        <input type="text" class="form-control" id="compose-subject" data-i18n-ph="subjectPlaceholder" placeholder="邮件主题">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label" data-i18n="body">正文</label>
-                        <div id="compose-editor" style="min-height:200px;"></div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
-                    <button type="button" class="btn btn-primary" id="btn-send-email" onclick="sendEmail()">
-                        <i class="bi bi-send me-1"></i><span data-i18n="send">发送</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
@@ -1405,6 +1424,9 @@
                 mailDetail: '邮件详情',
                 selectMailHint: '请选择一封邮件查看详情',
                 composeEmail: '撰写邮件',
+                composeSelectAccount: '请先在左侧选择一个邮箱账号再写邮件',
+                sendingFrom: '发件账号',
+                smtpUnavailable: '当前外部账号没有 SMTP 配置，无法发信',
                 from: '发件人',
                 prefix: '前缀',
                 to: '收件人',
@@ -1571,6 +1593,9 @@
                 mailDetail: 'Mail Detail',
                 selectMailHint: 'Select an email to view details',
                 composeEmail: 'Compose Email',
+                composeSelectAccount: 'Select a mailbox account on the left before composing',
+                sendingFrom: 'Sending From',
+                smtpUnavailable: 'This external account has no SMTP config and cannot send mail',
                 from: 'From',
                 prefix: 'Prefix',
                 to: 'To',
@@ -1702,6 +1727,8 @@
         let aiChannels = [];
         let aiDefaultModel = {};
         let suppressAccountClick = false;
+        let currentComposeSender = null;
+        let quillEditor = null;
         const PAGE_SIZE = 30;
         const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
@@ -1872,9 +1899,19 @@
                         html: msg.html || '',
                     }),
                 });
-                const data = await resp.json();
+                const contentType = resp.headers.get('content-type') || '';
+                const data = contentType.includes('application/json')
+                    ? await resp.json()
+                    : { success: false, message: (await resp.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() };
                 if (!data.success) throw new Error(data.message || t('translationFailed'));
-                panel.innerHTML = `<div class="fw-semibold mb-2"><i class="bi bi-translate me-1"></i>${t('translationResult')}</div>${_escapeHtml(data.translation || '')}`;
+                panel.innerHTML = `
+                    <div class="fw-semibold mb-2"><i class="bi bi-translate me-1"></i>${t('translationResult')}</div>
+                    <iframe id="mail-translation-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`;
+                const frame = document.getElementById('mail-translation-frame');
+                const translated = data.format === 'html'
+                    ? (data.translation || '')
+                    : _escapeHtml(data.translation || '').replace(/\n/g, '<br>');
+                _renderMailBodyIframe(frame, translated || `<i style="color:#6c757d;">${t('emptyContent')}</i>`);
             } catch (e) {
                 panel.innerHTML = `<div class="text-danger">${t('translationFailed')}: ${_escapeHtml(e.message)}</div>`;
             } finally {
@@ -1930,6 +1967,16 @@
 
         function _accountDisplayName(account, fallbackEmail = '') {
             return (account?.displayName || account?.display_name || account?.label || fallbackEmail || account?.email || '').trim();
+        }
+
+        function _messageFromAddress(msg) {
+            const from = msg?.from;
+            if (!from) return '';
+            if (typeof from === 'string') {
+                const matched = from.match(/<([^>]+)>/) || from.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+                return matched ? (matched[1] || matched[0]).trim() : from.trim();
+            }
+            return (from.address || from.email || '').trim();
         }
 
         function _accountProviderIcon(type, provider = '') {
@@ -2378,6 +2425,8 @@
             renderMailboxes();
             renderFolderList();
             document.getElementById('btn-refresh-mail').disabled = false;
+            currentComposeSender = null;
+            quillEditor = null;
             await selectFolder(currentTab || 'inbox');
         }
 
@@ -2421,6 +2470,8 @@
             renderFolderList();
             _updateFolderChrome();
             document.getElementById('btn-refresh-mail').disabled = false;
+            currentComposeSender = null;
+            quillEditor = null;
             resetMailDetail();
             queryExternalMails(false, false, switchSeq);
             if (cachedFolders) return;
@@ -3373,6 +3424,8 @@
         }
 
         function resetMailDetail() {
+            currentComposeSender = null;
+            quillEditor = null;
             document.getElementById('mail-detail-content').innerHTML = `
                 <div class="text-center text-muted py-5">
                     <i class="bi bi-envelope-paper" style="font-size:3rem;opacity:0.3;"></i>
@@ -3889,17 +3942,9 @@
 
         // ---- 撰写 / 回复 / 发送邮件 ----
 
-        let composeModal = null;
-        let quillEditor = null;
-
-        function _getComposeModal() {
-            if (!composeModal) {
-                composeModal = new bootstrap.Modal(document.getElementById('composeModal'));
-            }
-            return composeModal;
-        }
-
         function _getQuillEditor() {
+            const editorEl = document.getElementById('compose-editor');
+            if (!editorEl) return null;
             if (!quillEditor) {
                 quillEditor = new Quill('#compose-editor', {
                     theme: 'snow',
@@ -3920,96 +3965,162 @@
             return quillEditor;
         }
 
-        function _syncComposeDomains() {
-            const sel = document.getElementById('compose-from-domain');
-            const prev = sel.value;
-            sel.innerHTML = activeDomains.length
-                ? activeDomains.map(d => `<option value="${d}">${d}</option>`).join('')
-                : `<option value="">${t('noDomains')}</option>`;
-            if (activeDomains.includes(prev)) sel.value = prev;
+        function _currentSenderAccount() {
+            if (currentAccountType === 'external' && currentExternalAccount) {
+                const email = currentExternalAccount.email || '';
+                return {
+                    type: 'external',
+                    id: currentExternalAccount.id,
+                    email,
+                    name: _accountDisplayName(currentExternalAccount, email),
+                    provider: currentExternalAccount.name || 'external',
+                    hasSmtp: Boolean(currentExternalAccount.smtp),
+                };
+            }
+            const email = currentMailbox || currentEmail;
+            if (currentAccountType === 'local' && email) {
+                const account = mailboxes.find(item => item.address === email);
+                return {
+                    type: 'local',
+                    id: email,
+                    email,
+                    name: _accountDisplayName(account, email),
+                    provider: 'local',
+                    hasSmtp: true,
+                };
+            }
+            return null;
         }
 
-        function _resetComposeForm() {
-            document.getElementById('compose-from-prefix').value = '';
-            document.getElementById('compose-to').value = '';
-            document.getElementById('compose-subject').value = '';
-            _getQuillEditor().setContents([]);
-            const alert = document.getElementById('compose-alert');
-            alert.style.display = 'none';
-            alert.className = 'alert';
-            document.getElementById('btn-send-email').disabled = false;
-            document.getElementById('btn-send-email').innerHTML = `<i class="bi bi-send me-1"></i>${t('send')}`;
-            document.getElementById('composeModalLabel').innerHTML = `<i class="bi bi-pencil-square me-2"></i>${t('composeEmail')}`;
+        function _showComposeError(message) {
+            const detailContent = document.getElementById('mail-detail-content');
+            detailContent.innerHTML = `
+                <div class="empty-state">
+                    <i class="bi bi-pencil-square d-block"></i>
+                    <p>${_escapeHtml(message)}</p>
+                </div>`;
+        }
+
+        function _renderComposePage(mode = 'compose', options = {}) {
+            const sender = _currentSenderAccount();
+            if (!sender) {
+                currentComposeSender = null;
+                quillEditor = null;
+                _showComposeError(t('composeSelectAccount'));
+                return;
+            }
+            if (sender.type === 'external' && !sender.hasSmtp) {
+                currentComposeSender = null;
+                quillEditor = null;
+                _showComposeError(t('smtpUnavailable'));
+                return;
+            }
+
+            currentComposeSender = sender;
+            quillEditor = null;
+            document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
+            const detailContent = document.getElementById('mail-detail-content');
+            const title = mode === 'reply' ? t('replyEmail') : t('composeEmail');
+            const providerIcon = _accountProviderIcon(sender.type, sender.provider);
+            detailContent.innerHTML = `
+                <div class="compose-page">
+                    <div class="compose-page-header">
+                        <div class="min-w-0">
+                            <h5 class="mb-2"><i class="bi ${mode === 'reply' ? 'bi-reply' : 'bi-pencil-square'} me-2"></i>${title}</h5>
+                            <span class="compose-from-pill">
+                                <i class="bi ${providerIcon}"></i>
+                                <span>${t('sendingFrom')}: ${_escapeHtml(sender.name || sender.email)}</span>
+                                ${sender.name && sender.name !== sender.email ? `<span class="text-muted">&lt;${_escapeHtml(sender.email)}&gt;</span>` : ''}
+                            </span>
+                        </div>
+                        <div class="compose-page-actions">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetMailDetail()">${t('cancel')}</button>
+                            <button type="button" class="btn btn-primary btn-sm" id="btn-send-email" onclick="sendEmail()">
+                                <i class="bi bi-send me-1"></i>${t('send')}
+                            </button>
+                        </div>
+                    </div>
+                    <div id="compose-alert" class="alert" style="display:none;" role="alert"></div>
+                    <div class="compose-form-grid">
+                        <div>
+                            <label class="form-label" for="compose-to">${t('to')}</label>
+                            <input type="text" class="form-control" id="compose-to" placeholder="${_escapeAttr(t('toPlaceholder'))}">
+                        </div>
+                        <div>
+                            <label class="form-label" for="compose-subject">${t('subject')}</label>
+                            <input type="text" class="form-control" id="compose-subject" placeholder="${_escapeAttr(t('subjectPlaceholder'))}">
+                        </div>
+                        <div>
+                            <label class="form-label" for="compose-editor">${t('body')}</label>
+                            <div id="compose-editor"></div>
+                        </div>
+                    </div>
+                </div>`;
+
+            const toInput = document.getElementById('compose-to');
+            const subjectInput = document.getElementById('compose-subject');
+            toInput.value = options.to || '';
+            subjectInput.value = options.subject || '';
+
+            const editor = _getQuillEditor();
+            if (editor && options.quoteText) {
+                editor.setContents([]);
+                editor.insertText(0, '\n\n');
+                const quoteStart = editor.getLength();
+                editor.insertText(quoteStart, options.quoteText);
+                editor.formatText(quoteStart, options.quoteText.length, 'color', '#6c757d');
+                editor.setSelection(0, 0);
+            }
+            toInput.focus();
         }
 
         function openCompose() {
-            _resetComposeForm();
-            _syncComposeDomains();
-            // 如果当前已查询邮箱，自动填充发件人
-            if (currentAccountType === 'local' && currentEmail) {
-                const [prefix, domain] = currentEmail.split('@');
-                document.getElementById('compose-from-prefix').value = prefix || '';
-                const domainSel = document.getElementById('compose-from-domain');
-                if (activeDomains.includes(domain)) domainSel.value = domain;
-            }
-            _getComposeModal().show();
+            _renderComposePage('compose');
         }
 
         function openReply() {
             const msg = window._currentDetailMsg;
             if (!msg) return;
 
-            _resetComposeForm();
-            _syncComposeDomains();
-            document.getElementById('composeModalLabel').innerHTML = `<i class="bi bi-reply me-2"></i>${t('replyEmail')}`;
-
-            // 填充收件人 = 原发件人
-            document.getElementById('compose-to').value = msg.from?.address || '';
-
-            // 填充主题
             const origSubject = msg.subject || '';
-            document.getElementById('compose-subject').value = origSubject.startsWith('Re: ') ? origSubject : `Re: ${origSubject}`;
-
-            // 填充发件人 = 当前查询的邮箱
-            if (currentAccountType === 'local' && currentEmail) {
-                const [prefix, domain] = currentEmail.split('@');
-                document.getElementById('compose-from-prefix').value = prefix || '';
-                const domainSel = document.getElementById('compose-from-domain');
-                if (activeDomains.includes(domain)) domainSel.value = domain;
-            }
-
-            // 引用原文
+            const replySubject = /^Re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`;
             const origDate = msg.createdAt ? new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
-            const origFrom = msg.from?.address || '';
+            const origFrom = _messageFromAddress(msg);
             const origText = msg.text || '';
-            const editor = _getQuillEditor();
-            editor.setContents([]);
-            editor.insertText(0, '\n\n');
-            const quoteStart = editor.getLength();
             const quoteText = `--- Original Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${origText}`;
-            editor.insertText(quoteStart, quoteText);
-            editor.formatText(quoteStart, quoteText.length, 'color', '#6c757d');
-            editor.setSelection(0, 0);
-
-            _getComposeModal().show();
+            _renderComposePage('reply', {
+                to: origFrom,
+                subject: replySubject,
+                quoteText,
+            });
         }
 
         async function sendEmail() {
             const alertDiv = document.getElementById('compose-alert');
             const btn = document.getElementById('btn-send-email');
+            const editor = _getQuillEditor();
+            if (!alertDiv || !btn || !editor) return;
             alertDiv.style.display = 'none';
 
-            const fromPrefix = document.getElementById('compose-from-prefix').value.trim();
-            const fromDomain = document.getElementById('compose-from-domain').value;
             const to = document.getElementById('compose-to').value.trim();
             const subject = document.getElementById('compose-subject').value.trim();
-            const editor = _getQuillEditor();
             const body = editor.getText().trim();
             const htmlBody = editor.root.innerHTML;
+            const sender = currentComposeSender || _currentSenderAccount();
+            const senderStillSelected = sender && (
+                (sender.type === 'local' && currentAccountType === 'local' && sender.email === (currentMailbox || currentEmail)) ||
+                (sender.type === 'external' && currentAccountType === 'external' && String(sender.id) === String(currentExternalAccountId))
+            );
 
-            if (!fromPrefix || !fromDomain) {
+            if (!sender || !senderStillSelected) {
                 alertDiv.className = 'alert alert-danger';
-                alertDiv.textContent = t('fillFrom');
+                alertDiv.textContent = t('composeSelectAccount');
+                alertDiv.style.display = 'block';
+                return;
+            }
+            if (sender.type === 'external' && !sender.hasSmtp) {
+                alertDiv.className = 'alert alert-danger';
+                alertDiv.textContent = t('smtpUnavailable');
                 alertDiv.style.display = 'block';
                 return;
             }
@@ -4032,34 +4143,47 @@
                 return;
             }
 
-            const fromEmail = `${fromPrefix}@${fromDomain}`;
-
             btn.disabled = true;
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('sending')}`;
 
             try {
-                const resp = await fetch('/api/send', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        from_email: fromEmail,
-                        from_name: fromPrefix,
-                        to: to,
-                        subject: subject,
-                        text: body,
-                        html: htmlBody,
-                        reply_to: fromEmail,
-                    })
-                });
-                const data = await resp.json();
+                let data;
+                if (sender.type === 'external') {
+                    await _imapApi(`/accounts/${encodeURIComponent(sender.id)}/send`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ to, subject, text: body, html: htmlBody }),
+                    });
+                    data = { success: true };
+                } else {
+                    const resp = await fetch('/api/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            from_email: sender.email,
+                            from_name: sender.name && sender.name !== sender.email ? sender.name : sender.email.split('@')[0],
+                            to,
+                            subject,
+                            text: body,
+                            html: htmlBody,
+                            reply_to: sender.email,
+                        })
+                    });
+                    const contentType = resp.headers.get('content-type') || '';
+                    data = contentType.includes('application/json')
+                        ? await resp.json()
+                        : { success: false, message: (await resp.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() };
+                }
 
                 if (data.success) {
                     alertDiv.className = 'alert alert-success';
                     alertDiv.textContent = t('sentSuccess');
                     alertDiv.style.display = 'block';
                     btn.innerHTML = `<i class="bi bi-check-lg me-1"></i>${t('sent')}`;
-                    // 2秒后自动关闭弹窗
-                    setTimeout(() => { _getComposeModal().hide(); }, 2000);
+                    setTimeout(() => {
+                        currentComposeSender = null;
+                        resetMailDetail();
+                    }, 1200);
                 } else {
                     alertDiv.className = 'alert alert-danger';
                     alertDiv.textContent = data.message || t('sendFailed');
@@ -4069,7 +4193,7 @@
                 }
             } catch (e) {
                 alertDiv.className = 'alert alert-danger';
-                alertDiv.textContent = t('networkError') + ': ' + e.message;
+                alertDiv.textContent = `${t('sendFailed')}: ${e.message}`;
                 alertDiv.style.display = 'block';
                 btn.disabled = false;
                 btn.innerHTML = `<i class="bi bi-send me-1"></i>${t('send')}`;
