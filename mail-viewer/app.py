@@ -61,6 +61,8 @@ CONFIG_ENCRYPTION_KEY = (
     or ""
 )
 MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 1024)))
+AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "45"))
+AI_TRANSLATION_MAX_CHARS = int(os.getenv("AI_TRANSLATION_MAX_CHARS", "12000"))
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
     "colgroup", "div", "em", "font",
@@ -310,6 +312,30 @@ def _extract_plain_text(value: str) -> str:
     return value.strip()
 
 
+def _html_needs_structured_translation(html: str) -> bool:
+    """Only ask the model to preserve HTML when the message actually has structure."""
+    if not html:
+        return False
+    return bool(re.search(
+        r"(?i)<\s*(table|thead|tbody|tfoot|tr|td|th|ul|ol|li|img|button)\b",
+        html,
+    ))
+
+
+def _prepare_translation_payload(html_content: str, text_content: str) -> tuple[str, bool, int, bool]:
+    """Return content, wants_html, original length, truncated flag."""
+    html_content = (html_content or "").strip()
+    text_content = (text_content or "").strip()
+    wants_html = bool(html_content and _html_needs_structured_translation(html_content))
+    content = html_content if wants_html else _extract_plain_text(text_content or html_content)
+    original_length = len(content)
+    truncated = False
+    if len(content) > AI_TRANSLATION_MAX_CHARS:
+        content = content[:AI_TRANSLATION_MAX_CHARS]
+        truncated = True
+    return content, wants_html, original_length, truncated
+
+
 def _normalize_ai_translation(value: str, wants_html: bool) -> str:
     value = (value or "").strip()
     value = re.sub(r"^```(?:html)?\s*", "", value, flags=re.IGNORECASE)
@@ -339,7 +365,7 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wan
             ],
             "temperature": 0.2,
         },
-        timeout=90,
+        timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
     )
     if resp.status_code >= 400:
         raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
@@ -368,7 +394,7 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_ht
             }],
             "generationConfig": {"temperature": 0.2},
         },
-        timeout=90,
+        timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
     )
     if resp.status_code >= 400:
         raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
@@ -1304,17 +1330,19 @@ def save_ai_default_model():
 @app.route("/api/ai/translate", methods=["POST"])
 @login_required
 def translate_mail_to_chinese():
+    started_at = time.time()
     data = request.json or {}
     html_content = (data.get("html", "") or "").strip()
-    wants_html = bool(html_content)
-    content = html_content or _extract_plain_text(data.get("text", ""))
+    content, wants_html, original_length, truncated = _prepare_translation_payload(html_content, data.get("text", ""))
     subject = _extract_plain_text(data.get("subject", ""))
     if subject:
         content = f"主题：{subject}\n\n{content}"
+        original_length += len(subject)
+        if len(content) > AI_TRANSLATION_MAX_CHARS:
+            content = content[:AI_TRANSLATION_MAX_CHARS]
+            truncated = True
     if not content:
         return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
-    if len(content) > 30000:
-        content = content[:30000]
 
     ai = _get_ai_settings()
     default_model = ai.get("default_model", {})
@@ -1331,13 +1359,45 @@ def translate_mail_to_chinese():
             translated = _call_gemini(channel, api_key, model, content, wants_html)
         else:
             translated = _call_openai_chat(channel, api_key, model, content, wants_html)
+    except requests.Timeout:
+        app.logger.warning(
+            "邮件翻译超时: provider=%s model=%s chars=%s wants_html=%s timeout=%s",
+            channel.get("provider"),
+            model,
+            len(content),
+            wants_html,
+            AI_TRANSLATION_TIMEOUT_SECONDS,
+        )
+        return jsonify({
+            "success": False,
+            "message": f"翻译请求超时（{AI_TRANSLATION_TIMEOUT_SECONDS} 秒），请稍后重试或换一个更快的默认模型",
+        }), 504
     except Exception as e:
         app.logger.warning(f"邮件翻译失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 502
     if not translated:
         return jsonify({"success": False, "message": "模型没有返回翻译内容"}), 502
     translated = _normalize_ai_translation(translated, wants_html)
-    return jsonify({"success": True, "translation": translated, "format": "html" if wants_html else "text"})
+    elapsed_ms = int((time.time() - started_at) * 1000)
+    app.logger.info(
+        "邮件翻译完成: provider=%s model=%s format=%s input_chars=%s original_chars=%s truncated=%s elapsed_ms=%s",
+        channel.get("provider"),
+        model,
+        "html" if wants_html else "text",
+        len(content),
+        original_length,
+        truncated,
+        elapsed_ms,
+    )
+    return jsonify({
+        "success": True,
+        "translation": translated,
+        "format": "html" if wants_html else "text",
+        "elapsed_ms": elapsed_ms,
+        "input_chars": len(content),
+        "original_chars": original_length,
+        "truncated": truncated,
+    })
 
 
 @app.route("/api/mailboxes", methods=["GET"])

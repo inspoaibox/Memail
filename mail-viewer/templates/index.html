@@ -1627,6 +1627,7 @@
                 translating: '翻译中...',
                 translationResult: '中文翻译',
                 translationFailed: '翻译失败',
+                translationTimeout: '翻译请求超时，请稍后重试或换一个更快的默认模型',
                 mailboxControls: '邮箱控件',
                 localMailboxHint: '本地邮箱用于接收当前系统托管域名的邮件。',
                 externalMailboxHint: '外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。',
@@ -1823,6 +1824,7 @@
                 translating: 'Translating...',
                 translationResult: 'Chinese translation',
                 translationFailed: 'Translation failed',
+                translationTimeout: 'Translation timed out. Try again later or choose a faster default model.',
                 mailboxControls: 'Mailbox Controls',
                 localMailboxHint: 'Local mailboxes receive mail for domains hosted by this system.',
                 externalMailboxHint: 'External accounts connect Gmail, Outlook, or other IMAP mailboxes.',
@@ -2032,6 +2034,7 @@
         let currentTrashTotal = 0;
         let settingsModal = null;
         let externalAccountModal = null;
+        let translationAbortController = null;
         let aiChannels = [];
         let aiDefaultModel = {};
         let suppressAccountClick = false;
@@ -2199,9 +2202,22 @@
                 </button>`;
         }
 
+        function cancelActiveTranslation() {
+            if (translationAbortController) {
+                translationAbortController.abort();
+                translationAbortController = null;
+            }
+        }
+
         async function translateCurrentMail() {
             const msg = window._currentDetailMsg;
             if (!msg) return;
+            if (translationAbortController) {
+                translationAbortController.abort();
+            }
+            const controller = new AbortController();
+            translationAbortController = controller;
+            const timeoutId = window.setTimeout(() => controller.abort(), 60000);
             const btn = document.getElementById('btn-translate-mail');
             const panel = document.getElementById('mail-translation-panel');
             if (!panel) return;
@@ -2215,6 +2231,7 @@
                 const resp = await fetch('/api/ai/translate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal,
                     body: JSON.stringify({
                         subject: msg.subject || '',
                         text: msg.text || '',
@@ -2235,8 +2252,13 @@
                     : _escapeHtml(data.translation || '').replace(/\n/g, '<br>');
                 _renderMailBodyIframe(frame, translated || `<i style="color:#6c757d;">${t('emptyContent')}</i>`);
             } catch (e) {
-                panel.innerHTML = `<div class="text-danger">${t('translationFailed')}: ${_escapeHtml(e.message)}</div>`;
+                const message = e.name === 'AbortError' ? t('translationTimeout') : e.message;
+                panel.innerHTML = `<div class="text-danger">${t('translationFailed')}: ${_escapeHtml(message)}</div>`;
             } finally {
+                window.clearTimeout(timeoutId);
+                if (translationAbortController === controller) {
+                    translationAbortController = null;
+                }
                 if (btn) {
                     btn.disabled = false;
                     btn.innerHTML = `<i class="bi bi-translate me-1"></i>${t('translateZh')}`;
@@ -4387,6 +4409,7 @@
         }
 
         async function viewExternalMailDetail(encodedUid, element) {
+            cancelActiveTranslation();
             if (!currentExternalAccountId) return;
             const uid = decodeURIComponent(String(encodedUid));
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
@@ -4494,6 +4517,7 @@
         }
 
         async function viewMailDetail(messageId, element, isTrash = false) {
+            cancelActiveTranslation();
             if (currentAccountType !== 'local' || !currentEmail) return;
             
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
