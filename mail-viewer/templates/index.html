@@ -24,9 +24,9 @@
             --success-color: #5b9a8b;
             --warning-color: #c4a35a;
             --danger-color: #c76b6b;
-            --shadow: 0 2px 8px rgba(91,154,139,0.12);
-            --content-max-width: 1680px;
-            --radius: 10px;
+            --shadow: none;
+            --content-max-width: none;
+            --radius: 6px;
             --radius-sm: 6px;
         }
         
@@ -79,7 +79,7 @@
             background: rgba(245,249,247,0.95);
             border-bottom: 1px solid var(--border-color);
             font-weight: 600;
-            padding: 12px 16px;
+            padding: 10px 14px;
         }
         
         .btn-primary {
@@ -175,10 +175,10 @@
         
         /* 四栏邮件布局 */
         .mail-shell {
-            width: min(100%, var(--content-max-width));
-            margin: 0 auto;
-            padding-top: 12px !important;
-            padding-bottom: 12px !important;
+            width: 100%;
+            max-width: none;
+            margin: 0;
+            padding: 10px 8px !important;
         }
         @media (min-width: 992px) {
             html, body {
@@ -204,8 +204,8 @@
                 overflow: hidden;
                 align-items: stretch;
                 display: grid;
-                grid-template-columns: minmax(210px, 250px) minmax(230px, 320px) minmax(280px, 360px) minmax(0, 1fr);
-                gap: 10px;
+                grid-template-columns: minmax(190px, 235px) minmax(210px, 285px) minmax(260px, 340px) minmax(0, 1fr);
+                gap: 6px;
             }
             .mail-col {
                 display: flex;
@@ -220,6 +220,7 @@
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
+                border-radius: 6px;
             }
             .mail-col > .card > .card-body {
                 flex: 1 1 auto;
@@ -256,6 +257,9 @@
                 scrollbar-width: thin;
                 scrollbar-color: rgba(74,124,155,0.32) transparent;
                 scrollbar-gutter: stable both-edges;
+            }
+            #mail-detail-content {
+                padding: 0;
             }
             .mail-domain-scroll::-webkit-scrollbar,
             .mail-list-scroll::-webkit-scrollbar,
@@ -521,6 +525,7 @@
             min-height: 0;
             overflow-y: auto;
             overflow-x: hidden;
+            padding-right: 2px;
         }
         .mail-list-toolbar {
             flex: 0 0 auto;
@@ -535,7 +540,7 @@
             text-transform: uppercase;
             color: var(--muted-text);
             letter-spacing: 0;
-            margin: 14px 2px 6px;
+            margin: 8px 2px 6px;
         }
         .mail-client-empty {
             padding: 24px 12px;
@@ -553,8 +558,8 @@
                 --bs-gutter-x: 0;
                 --bs-gutter-y: 0;
                 display: grid;
-                grid-template-columns: minmax(150px, 220px) minmax(180px, 260px) minmax(220px, 320px) minmax(0, 1fr);
-                gap: 10px;
+                grid-template-columns: minmax(150px, 210px) minmax(170px, 240px) minmax(210px, 310px) minmax(0, 1fr);
+                gap: 6px;
                 align-items: stretch;
             }
             .mail-layout > .mail-col {
@@ -1344,7 +1349,7 @@
             iframe.style.overflow = 'hidden';
 
             iframeDoc.open();
-            iframeDoc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><base target="_blank"><style>html,body{margin:0;padding:0;background:transparent;}body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:12px;word-break:break-word;}img{max-width:100%;height:auto;}a{color:#4a7c9b;}</style></head><body>${mailContent}</body></html>`);
+            iframeDoc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><base target="_blank"><style>html,body{margin:0;padding:0;background:transparent;}body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:0;word-break:break-word;}img{max-width:100%;height:auto;}a{color:#4a7c9b;}</style></head><body>${mailContent}</body></html>`);
             iframeDoc.close();
 
             // 强制所有链接在新标签页打开（覆盖邮件中显式设置的 target）
@@ -2529,7 +2534,7 @@
                 <div class="mb-3"><strong>${t('subject')}:</strong> ${_escapeHtml(msg.subject || t('noSubject'))}</div>
                 <div class="mb-3"><strong>${t('time')}:</strong> ${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</div>
                 <hr>
-                <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:8px; overflow:hidden;">
+                <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:6px; overflow:hidden;">
                     <iframe id="sent-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" style="width:100%;border:none;min-height:200px;"></iframe>
                 </div>`;
             // 安全渲染已发送邮件内容
@@ -2931,7 +2936,7 @@
                     <div class="mb-3"><strong>${t('time')}:</strong> ${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</div>
                     ${_renderExternalAttachments(uid, msg.attachments)}
                     <hr>
-                    <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:8px; overflow:hidden;">
+                    <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:6px; overflow:hidden;">
                         <iframe id="external-mail-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" style="width:100%;border:none;min-height:200px;"></iframe>
                     </div>`;
                 const iframe = document.getElementById('external-mail-body-frame');
@@ -3072,7 +3077,7 @@
                     </div>
                     ${_renderAttachments(messageId, msg.attachments)}
                     <hr>
-                    <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:8px; overflow:hidden;">
+                    <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:6px; overflow:hidden;">
                         <iframe id="mail-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" style="width:100%;border:none;min-height:200px;"></iframe>
                     </div>
                 `;
