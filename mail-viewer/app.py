@@ -482,7 +482,7 @@ def _wants_json_response() -> bool:
 
 @app.before_request
 def enforce_session_security():
-    if request.endpoint in {"login_page", "static"}:
+    if request.endpoint in {"login_page", "static", "oauth_callback_compat", "imap_oauth_callback"}:
         return None
     if not _admin_auth_enabled():
         return None
@@ -798,6 +798,22 @@ def imap_root():
 @login_required
 def imap_proxy(subpath: str):
     return _proxy_imap_response(subpath)
+
+
+@app.route("/api/oauth/<provider>/callback", methods=["GET"])
+def oauth_callback_compat(provider: str):
+    """兼容历史/误配置的 OAuth 回调路径，统一转发到 IMAP bridge。"""
+    if provider not in {"gmail", "outlook"}:
+        return jsonify({"success": False, "message": "不支持的 OAuth provider"}), 404
+    return _proxy_imap_response(f"api/oauth/{provider}/callback")
+
+
+@app.route("/imap/api/oauth/<provider>/callback", methods=["GET"])
+def imap_oauth_callback(provider: str):
+    """OAuth provider 回跳入口；IMAP bridge 会校验 state 并完成 token 交换。"""
+    if provider not in {"gmail", "outlook"}:
+        return jsonify({"success": False, "message": "不支持的 OAuth provider"}), 404
+    return _proxy_imap_response(f"api/oauth/{provider}/callback")
 
 
 @app.route("/api/image-proxy")
@@ -1127,10 +1143,8 @@ def save_runtime_settings():
     imap_payload = {
         "public_base_url": data.get("public_base_url", ""),
         "google_client_id": data.get("google_client_id", ""),
-        "google_redirect_uri": data.get("google_redirect_uri", ""),
         "clear_google_client_secret": bool(data.get("clear_google_client_secret")),
         "microsoft_client_id": data.get("microsoft_client_id", ""),
-        "microsoft_redirect_uri": data.get("microsoft_redirect_uri", ""),
         "clear_microsoft_client_secret": bool(data.get("clear_microsoft_client_secret")),
     }
     if data.get("google_client_secret"):

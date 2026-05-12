@@ -76,6 +76,26 @@ function getPublicBaseUrl() {
   return normalizePublicBaseUrl(runtimeSettings.public_base_url || process.env.PUBLIC_BASE_URL || '');
 }
 
+function getOAuthProxyBaseUrl() {
+  const publicBaseUrl = getPublicBaseUrl();
+  if (!publicBaseUrl) return '';
+  try {
+    const url = new URL(publicBaseUrl);
+    const pathname = url.pathname.replace(/\/+$/, '');
+    url.pathname = pathname.endsWith('/imap') ? pathname : `${pathname}/imap`;
+    url.search = '';
+    url.hash = '';
+    return normalizePublicBaseUrl(url.toString());
+  } catch {
+    return publicBaseUrl.endsWith('/imap') ? publicBaseUrl : `${publicBaseUrl}/imap`;
+  }
+}
+
+function buildOAuthRedirectUri(provider) {
+  const baseUrl = getOAuthProxyBaseUrl();
+  return baseUrl ? `${baseUrl}/api/oauth/${provider}/callback` : '';
+}
+
 function getGoogleClientId() {
   return (runtimeSettings.google_client_id || process.env.GOOGLE_CLIENT_ID || '').trim();
 }
@@ -85,10 +105,7 @@ function getGoogleClientSecret() {
 }
 
 function getGoogleRedirectUri() {
-  const explicit = (runtimeSettings.google_redirect_uri || process.env.GOOGLE_REDIRECT_URI || '').trim();
-  if (explicit) return explicit;
-  const publicBaseUrl = getPublicBaseUrl();
-  return publicBaseUrl ? `${publicBaseUrl}/api/oauth/gmail/callback` : '';
+  return buildOAuthRedirectUri('gmail');
 }
 
 function getMicrosoftClientId() {
@@ -100,10 +117,7 @@ function getMicrosoftClientSecret() {
 }
 
 function getMicrosoftRedirectUri() {
-  const explicit = (runtimeSettings.microsoft_redirect_uri || process.env.MICROSOFT_REDIRECT_URI || '').trim();
-  if (explicit) return explicit;
-  const publicBaseUrl = getPublicBaseUrl();
-  return publicBaseUrl ? `${publicBaseUrl}/api/oauth/outlook/callback` : '';
+  return buildOAuthRedirectUri('outlook');
 }
 
 function getGoogleOAuthSettings() {
@@ -114,9 +128,11 @@ function getGoogleOAuthSettings() {
   return {
     enabled: Boolean(clientId && clientSecret && redirectUri),
     public_base_url: publicBaseUrl,
+    oauth_base_url: getOAuthProxyBaseUrl(),
     google_client_id: clientId,
     google_client_secret_configured: Boolean(clientSecret),
     google_redirect_uri: redirectUri,
+    redirect_uri_locked: true,
     scope: GOOGLE_AUTH_SCOPE,
   };
 }
@@ -129,9 +145,11 @@ function getMicrosoftOAuthSettings() {
   return {
     enabled: Boolean(clientId && clientSecret && redirectUri),
     public_base_url: publicBaseUrl,
+    oauth_base_url: getOAuthProxyBaseUrl(),
     microsoft_client_id: clientId,
     microsoft_client_secret_configured: Boolean(clientSecret),
     microsoft_redirect_uri: redirectUri,
+    redirect_uri_locked: true,
     scope: MICROSOFT_SCOPE,
   };
 }
@@ -144,10 +162,8 @@ function loadSettings() {
     runtimeSettings = {
       public_base_url: normalizePublicBaseUrl(data.public_base_url || ''),
       google_client_id: (data.google_client_id || '').trim(),
-      google_redirect_uri: (data.google_redirect_uri || '').trim(),
       google_client_secret: decryptSecret(data.google_client_secret_encrypted),
       microsoft_client_id: (data.microsoft_client_id || '').trim(),
-      microsoft_redirect_uri: (data.microsoft_redirect_uri || '').trim(),
       microsoft_client_secret: decryptSecret(data.microsoft_client_secret_encrypted),
     };
   } catch (err) {
@@ -171,9 +187,7 @@ function saveSettings() {
   const data = {
     public_base_url: runtimeSettings.public_base_url || '',
     google_client_id: runtimeSettings.google_client_id || '',
-    google_redirect_uri: runtimeSettings.google_redirect_uri || '',
     microsoft_client_id: runtimeSettings.microsoft_client_id || '',
-    microsoft_redirect_uri: runtimeSettings.microsoft_redirect_uri || '',
   };
   const encryptedSecret = runtimeSettings.clear_google_client_secret ? null : encryptSecret(runtimeSettings.google_client_secret || '');
   if (encryptedSecret) {
@@ -807,9 +821,7 @@ app.post('/api/settings', (req, res) => {
   const data = req.body || {};
   runtimeSettings.public_base_url = normalizePublicBaseUrl(data.public_base_url || '');
   runtimeSettings.google_client_id = (data.google_client_id || '').trim();
-  runtimeSettings.google_redirect_uri = (data.google_redirect_uri || '').trim();
   runtimeSettings.microsoft_client_id = (data.microsoft_client_id || '').trim();
-  runtimeSettings.microsoft_redirect_uri = (data.microsoft_redirect_uri || '').trim();
 
   if (data.clear_google_client_secret) {
     runtimeSettings.google_client_secret = '';
