@@ -194,18 +194,32 @@ function normalizeDisplayName(value, fallback = '') {
   return (trimmed || fallback).slice(0, 80);
 }
 
+function effectiveSmtp(account) {
+  if (account?.smtp?.host) return account.smtp;
+  const preset = account?.name || detectPreset(account?.auth?.user);
+  const smtp = PRESETS[preset]?.smtp;
+  if (!smtp?.host) return null;
+  return {
+    host: smtp.host,
+    port: smtp.port || 465,
+    secure: smtp.secure !== false,
+    requireTLS: !!smtp.requireTLS,
+  };
+}
+
 function accountSummary(id, account, extra = {}) {
   const email = account?.auth?.user || '';
+  const smtp = effectiveSmtp(account);
   return {
     id,
     name: account?.name || detectPreset(email) || 'custom',
     email,
     displayName: normalizeDisplayName(account?.displayName, email),
-    smtp: account?.smtp ? {
-      host: account.smtp.host,
-      port: account.smtp.port,
-      secure: account.smtp.secure,
-      requireTLS: !!account.smtp.requireTLS,
+    smtp: smtp ? {
+      host: smtp.host,
+      port: smtp.port,
+      secure: smtp.secure,
+      requireTLS: !!smtp.requireTLS,
     } : null,
     ...extra,
   };
@@ -257,7 +271,8 @@ async function verifySmtp(account) {
 }
 
 async function createSmtpTransport(account) {
-  if (!account.smtp?.host) {
+  const smtp = effectiveSmtp(account);
+  if (!smtp?.host) {
     throw new Error('该账号未配置 SMTP，无法发信');
   }
   let auth = account.auth?.pass ? account.auth : undefined;
@@ -270,10 +285,10 @@ async function createSmtpTransport(account) {
     };
   }
   return nodemailer.createTransport({
-    host: account.smtp.host,
-    port: account.smtp.port || 465,
-    secure: account.smtp.secure !== false,
-    requireTLS: !!account.smtp.requireTLS,
+    host: smtp.host,
+    port: smtp.port || 465,
+    secure: smtp.secure !== false,
+    requireTLS: !!smtp.requireTLS,
     auth,
     connectionTimeout: 20000,
     greetingTimeout: 20000,
