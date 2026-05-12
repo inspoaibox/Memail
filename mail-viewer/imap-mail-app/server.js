@@ -421,6 +421,22 @@ function saveAccounts() {
   fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(data, null, 2), 'utf-8');
 }
 
+function reorderAccounts(order) {
+  const normalized = Array.isArray(order)
+    ? order.map(id => parseInt(id, 10)).filter(id => Number.isInteger(id))
+    : [];
+  const next = new Map();
+  for (const id of normalized) {
+    if (clients.has(id)) next.set(id, clients.get(id));
+  }
+  clients.forEach((client, id) => {
+    if (!next.has(id)) next.set(id, client);
+  });
+  clients.clear();
+  next.forEach((client, id) => clients.set(id, client));
+  saveAccounts();
+}
+
 // 启动时恢复已保存的账户
 async function restoreAccounts() {
   if (!fs.existsSync(ACCOUNTS_FILE)) return;
@@ -653,6 +669,17 @@ app.get('/api/accounts', (req, res) => {
     list.push(accountSummary(id, c.account));
   });
   res.json(list);
+});
+
+// 账户排序
+app.post('/api/accounts/reorder', (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
+  reorderAccounts(req.body?.order || []);
+  const list = [];
+  clients.forEach((c, id) => {
+    list.push(accountSummary(id, c.account));
+  });
+  res.json({ ok: true, accounts: list });
 });
 
 // 更新账户信息

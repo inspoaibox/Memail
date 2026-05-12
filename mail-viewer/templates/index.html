@@ -330,7 +330,7 @@
                 overflow: hidden;
                 align-items: stretch;
                 display: grid;
-                grid-template-columns: minmax(190px, 235px) minmax(210px, 285px) minmax(260px, 340px) minmax(0, 1fr);
+                grid-template-columns: minmax(220px, 285px) minmax(210px, 280px) minmax(260px, 340px) minmax(0, 1fr);
                 gap: 8px;
             }
             .mail-col {
@@ -558,6 +558,18 @@
             min-height: 38px;
             transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
         }
+        .mail-account-item {
+            cursor: grab;
+        }
+        .mail-account-item:active {
+            cursor: grabbing;
+        }
+        .mail-account-item.dragging {
+            opacity: 0.48;
+        }
+        .mail-account-item.drag-over {
+            box-shadow: inset 3px 0 0 var(--accent-color), 0 0 0 1px rgba(183,130,47,0.28);
+        }
         .mail-folder-item {
             border: 1px solid var(--border-color);
             background: #ffffff;
@@ -619,6 +631,18 @@
             border-radius: 999px;
             padding: 1px 6px;
             background: #ffffff;
+        }
+        .mail-account-provider-icon {
+            flex: 0 0 auto;
+            width: 20px;
+            height: 20px;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--primary-color);
+            background: var(--primary-soft);
+            font-size: 0.85rem;
         }
         .mail-account-actions {
             display: grid;
@@ -808,7 +832,7 @@
                 --bs-gutter-x: 0;
                 --bs-gutter-y: 0;
                 display: grid;
-                grid-template-columns: minmax(150px, 210px) minmax(170px, 240px) minmax(210px, 310px) minmax(0, 1fr);
+                grid-template-columns: minmax(180px, 260px) minmax(170px, 240px) minmax(210px, 310px) minmax(0, 1fr);
                 gap: 8px;
                 align-items: stretch;
             }
@@ -1668,6 +1692,7 @@
         let currentSentMessages = [];
         let currentTrashMessages = [];
         let activeDomains = [];
+        let accountOrder = [];
         let currentOffset = 0;
         let currentTotal = 0;
         let currentSentTotal = 0;
@@ -1676,6 +1701,7 @@
         let externalAccountModal = null;
         let aiChannels = [];
         let aiDefaultModel = {};
+        let suppressAccountClick = false;
         const PAGE_SIZE = 30;
         const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
@@ -1906,6 +1932,15 @@
             return (account?.displayName || account?.display_name || account?.label || fallbackEmail || account?.email || '').trim();
         }
 
+        function _accountProviderIcon(type, provider = '') {
+            if (type === 'local') return 'bi-hdd-network';
+            const name = String(provider || '').toLowerCase();
+            if (name.includes('gmail')) return 'bi-google';
+            if (name.includes('outlook') || name.includes('hotmail') || name.includes('microsoft')) return 'bi-microsoft';
+            if (name.includes('qq') || name.includes('163') || name.includes('126') || name.includes('netease')) return 'bi-envelope-check';
+            return 'bi-cloud-arrow-down';
+        }
+
         function _externalFolderCacheKey(accountId) {
             return EXTERNAL_FOLDER_CACHE_PREFIX + encodeURIComponent(String(accountId || ''));
         }
@@ -1939,6 +1974,93 @@
                     folders: _normalizeExternalFolders(folders),
                 }));
             } catch (e) {}
+        }
+
+        function _accountOrderKey(type, id) {
+            return `${type}:${id}`;
+        }
+
+        function _ensureAccountOrder() {
+            const existing = new Set([
+                ...mailboxes.map(item => _accountOrderKey('local', item.address)),
+                ...externalAccounts.map(item => _accountOrderKey('external', item.id)),
+            ]);
+            accountOrder = accountOrder.filter(key => existing.has(key));
+            for (const item of mailboxes) {
+                const key = _accountOrderKey('local', item.address);
+                if (!accountOrder.includes(key)) accountOrder.push(key);
+            }
+            for (const item of externalAccounts) {
+                const key = _accountOrderKey('external', item.id);
+                if (!accountOrder.includes(key)) accountOrder.push(key);
+            }
+        }
+
+        function _applyAccountOrderFromDom() {
+            const items = Array.from(document.querySelectorAll('#mail-account-list .mail-account-item'));
+            accountOrder = items.map(item => _accountOrderKey(item.dataset.accountType, item.dataset.accountId));
+            const localOrder = accountOrder.filter(key => key.startsWith('local:')).map(key => key.slice(6));
+            const externalOrder = accountOrder.filter(key => key.startsWith('external:')).map(key => key.slice(9));
+            mailboxes.sort((a, b) => localOrder.indexOf(a.address) - localOrder.indexOf(b.address));
+            externalAccounts.sort((a, b) => externalOrder.indexOf(String(a.id)) - externalOrder.indexOf(String(b.id)));
+            return { externalOrder };
+        }
+
+        async function persistAccountOrder() {
+            const { externalOrder } = _applyAccountOrderFromDom();
+            try {
+                const resp = await fetch('/api/mailboxes/reorder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ order: accountOrder }),
+                });
+                const data = await resp.json();
+                if (data.success && Array.isArray(data.account_order)) accountOrder = data.account_order;
+                if (externalOrder.length) {
+                    await _imapApi('/accounts/reorder', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ order: externalOrder }),
+                    });
+                }
+            } catch (e) {
+                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
+            }
+        }
+
+        function bindAccountDragSorting() {
+            const list = document.getElementById('mail-account-list');
+            if (!list) return;
+            let dragging = null;
+            list.querySelectorAll('.mail-account-item').forEach(item => {
+                item.addEventListener('dragstart', event => {
+                    dragging = item;
+                    suppressAccountClick = true;
+                    item.classList.add('dragging');
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', item.dataset.accountId || '');
+                });
+                item.addEventListener('dragend', () => {
+                    item.classList.remove('dragging');
+                    list.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+                    dragging = null;
+                    persistAccountOrder();
+                    setTimeout(() => { suppressAccountClick = false; }, 0);
+                });
+                item.addEventListener('dragover', event => {
+                    event.preventDefault();
+                    if (!dragging || dragging === item) return;
+                    item.classList.add('drag-over');
+                    const rect = item.getBoundingClientRect();
+                    const after = event.clientY > rect.top + rect.height / 2;
+                    list.insertBefore(dragging, after ? item.nextSibling : item);
+                });
+                item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+                item.addEventListener('drop', event => {
+                    event.preventDefault();
+                    item.classList.remove('drag-over');
+                });
+            });
         }
 
         function _externalFolderIcon(folder) {
@@ -1991,6 +2113,7 @@
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.message || t('loadFailed'));
                 mailboxes = data.mailboxes || [];
+                accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
             } catch (e) {
                 localError = e.message;
                 mailboxes = [];
@@ -2036,6 +2159,7 @@
         function renderMailboxes(localError = '', externalError = '') {
             const list = document.getElementById('mail-account-list');
             const parts = [];
+            _ensureAccountOrder();
 
             if (localError) {
                 parts.push(`<div class="text-danger small px-2">${t('loadFailed')}: ${_escapeHtml(localError)}</div>`);
@@ -2044,55 +2168,51 @@
                 parts.push(`<div class="text-warning small px-2">${t('externalLoadFailed')}: ${_escapeHtml(externalError)}</div>`);
             }
 
-            if (mailboxes.length > 0) {
-                parts.push(`<div class="mail-sidebar-section-title">${t('localMailbox')}</div>`);
-                parts.push(...mailboxes.map(item => {
-                    const address = item.address || '';
+            const localById = new Map(mailboxes.map(item => [item.address, item]));
+            const externalById = new Map(externalAccounts.map(item => [String(item.id), item]));
+            const rows = accountOrder.map(key => {
+                if (key.startsWith('local:')) {
+                    const address = key.slice(6);
+                    const item = localById.get(address);
+                    if (!item) return '';
                     const displayName = _accountDisplayName(item, address);
                     const showSubtitle = displayName && displayName !== address;
                     return `
-                        <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" onclick="selectMailbox('${encodeURIComponent(address)}')">
-                            <i class="bi bi-envelope"></i>
+                        <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" draggable="true" data-account-type="local" data-account-id="${_escapeAttr(address)}" onclick="if(!suppressAccountClick) selectMailbox('${encodeURIComponent(address)}')">
+                            <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('local')}"></i></span>
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
                             </span>
-                            <span class="mail-account-kind">${t('localMailbox')}</span>
-                            <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
-                                <i class="bi bi-x-lg"></i>
-                            </span>
                         </button>`;
-                }));
-            }
-
-            if (externalAccounts.length > 0) {
-                parts.push(`<div class="mail-sidebar-section-title">${t('externalMailbox')}</div>`);
-                parts.push(...externalAccounts.map(account => {
+                }
+                if (key.startsWith('external:')) {
+                    const account = externalById.get(key.slice(9));
+                    if (!account) return '';
                     const id = encodeURIComponent(String(account.id));
                     const email = account.email || '';
                     const provider = account.name || t('externalMailbox');
                     const displayName = _accountDisplayName(account, email);
                     const showSubtitle = displayName && displayName !== email;
                     return `
-                        <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" onclick="selectExternalAccount('${id}')">
-                            <i class="bi bi-cloud-arrow-down"></i>
+                        <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" draggable="true" data-account-type="external" data-account-id="${_escapeAttr(String(account.id))}" onclick="if(!suppressAccountClick) selectExternalAccount('${id}')">
+                            <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('external', provider)}"></i></span>
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
                             </span>
-                            <span class="mail-account-kind">${_escapeHtml(provider)}</span>
-                            <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeExternalAccount('${id}')" title="${t('delete')}">
-                                <i class="bi bi-x-lg"></i>
-                            </span>
                         </button>`;
-                }));
-            }
+                }
+                return '';
+            }).filter(Boolean);
+            parts.push(...rows);
 
             if (!mailboxes.length && !externalAccounts.length && !localError && !externalError) {
                 parts.push(`<div class="mail-client-empty"><i class="bi bi-envelope-plus d-block mb-2"></i><div>${t('queryHint')}</div></div>`);
             }
 
             list.innerHTML = parts.join('');
+            bindAccountDragSorting();
             renderAccountSettingsLists();
         }
 
@@ -2212,6 +2332,7 @@
                 input.value = '';
                 if (displayInput) displayInput.value = '';
                 mailboxes = data.mailboxes || [];
+                accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
                 renderMailboxes();
                 await selectMailbox(address);
             } catch (e) {
@@ -2228,6 +2349,7 @@
             const data = await resp.json();
             if (data.success) {
                 mailboxes = data.mailboxes || [];
+                accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
                 if (currentMailbox === address) {
                     _setCurrentMailbox('');
                     _resetLocalMessageState();
@@ -2327,6 +2449,8 @@
             try {
                 await _imapApi(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
                 externalAccounts = externalAccounts.filter(item => String(item.id) !== String(id));
+                accountOrder = accountOrder.filter(key => key !== _accountOrderKey('external', id));
+                await persistAccountOrder();
                 if (String(currentExternalAccountId) === String(id)) {
                     currentExternalAccountId = null;
                     currentExternalAccount = null;
@@ -2548,6 +2672,13 @@
                 _renderExternalCheckResult(account.checks);
                 _showExternalAccountAlert('success', t('externalAdded'));
                 await loadMailboxes();
+                if (account?.id) {
+                    const key = _accountOrderKey('external', account.id);
+                    if (!accountOrder.includes(key)) {
+                        accountOrder.push(key);
+                        await persistAccountOrder();
+                    }
+                }
                 _getExternalAccountModal().hide();
                 await selectExternalAccount(account.id);
             } catch (e) {

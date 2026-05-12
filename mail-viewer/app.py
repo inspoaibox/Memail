@@ -335,6 +335,27 @@ def _normalize_display_name(value: str, fallback: str = "") -> str:
     return value or fallback
 
 
+def _normalize_account_order(order: list) -> list[str]:
+    if not isinstance(order, list):
+        return []
+    normalized = []
+    seen = set()
+    for item in order:
+        key = str(item or "").strip()
+        if key.startswith("local:"):
+            address = _normalize_mailbox_address(key.removeprefix("local:"))
+            key = f"local:{address}" if address else ""
+        elif key.startswith("external:"):
+            account_id = key.removeprefix("external:").strip()
+            key = f"external:{account_id}" if re.match(r"^[\w.-]{1,80}$", account_id) else ""
+        else:
+            key = ""
+        if key and key not in seen:
+            normalized.append(key)
+            seen.add(key)
+    return normalized
+
+
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
 _require_production_value("ACCESS_PASSWORD", ACCESS_PASSWORD)
 _require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
@@ -1129,7 +1150,11 @@ def list_mailboxes():
             "display_name": _normalize_display_name(item.get("display_name", ""), address),
         })
     mailboxes = normalized
-    return jsonify({"success": True, "mailboxes": mailboxes})
+    return jsonify({
+        "success": True,
+        "mailboxes": mailboxes,
+        "account_order": _normalize_account_order(settings.get("account_order", [])),
+    })
 
 
 @app.route("/api/mailboxes", methods=["POST"])
@@ -1158,8 +1183,18 @@ def add_mailbox():
             "updated_at": now,
         })
     settings["mailboxes"] = mailboxes
+    order = _normalize_account_order(settings.get("account_order", []))
+    key = f"local:{address}"
+    if key not in order:
+        order.append(key)
+    settings["account_order"] = order
     _write_viewer_settings(settings)
-    return jsonify({"success": True, "mailbox": {"address": address, "display_name": display_name}, "mailboxes": mailboxes})
+    return jsonify({
+        "success": True,
+        "mailbox": {"address": address, "display_name": display_name},
+        "mailboxes": mailboxes,
+        "account_order": order,
+    })
 
 
 @app.route("/api/mailboxes/<path:address>", methods=["DELETE"])
@@ -1171,8 +1206,41 @@ def delete_mailbox(address):
     if not isinstance(mailboxes, list):
         mailboxes = []
     settings["mailboxes"] = [item for item in mailboxes if item.get("address") != normalized]
+    settings["account_order"] = [
+        item for item in _normalize_account_order(settings.get("account_order", []))
+        if item != f"local:{normalized}"
+    ]
     _write_viewer_settings(settings)
-    return jsonify({"success": True, "mailboxes": settings["mailboxes"]})
+    return jsonify({
+        "success": True,
+        "mailboxes": settings["mailboxes"],
+        "account_order": settings["account_order"],
+    })
+
+
+@app.route("/api/mailboxes/reorder", methods=["POST"])
+@login_required
+def reorder_mailboxes():
+    data = request.json or {}
+    order = _normalize_account_order(data.get("order", []))
+    if not order:
+        return jsonify({"success": False, "message": "排序参数不正确"}), 400
+    settings = _read_viewer_settings()
+    mailboxes = settings.get("mailboxes", [])
+    if not isinstance(mailboxes, list):
+        mailboxes = []
+    by_address = {
+        _normalize_mailbox_address(item.get("address", "")): item
+        for item in mailboxes
+        if isinstance(item, dict) and _normalize_mailbox_address(item.get("address", ""))
+    }
+    local_order = [item.removeprefix("local:") for item in order if item.startswith("local:")]
+    reordered = [by_address[address] for address in local_order if address in by_address]
+    reordered.extend(item for address, item in by_address.items() if address not in local_order)
+    settings["mailboxes"] = reordered
+    settings["account_order"] = order
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "mailboxes": reordered, "account_order": order})
 
 
 @app.route("/api/inbox/detail", methods=["POST"])
