@@ -2,9 +2,11 @@ import ipaddress
 import base64
 import json
 import hashlib
+import html as html_lib
 import os
 import re
 import socket
+import uuid
 import requests
 import bleach
 from functools import wraps
@@ -165,6 +167,158 @@ def _update_viewer_runtime_settings(data: dict) -> dict:
         settings["resend_api_key"] = _encrypt_setting(data["resend_api_key"].strip())
     _write_viewer_settings(settings)
     return settings
+
+
+def _normalize_ai_provider(provider: str) -> str:
+    provider = (provider or "").strip().lower()
+    return provider if provider in {"openai", "gemini", "openai_compatible"} else ""
+
+
+def _normalize_ai_base_url(provider: str, base_url: str) -> str:
+    base_url = (base_url or "").strip().rstrip("/")
+    if base_url:
+        return base_url
+    if provider == "openai":
+        return "https://api.openai.com/v1"
+    if provider == "gemini":
+        return "https://generativelanguage.googleapis.com/v1beta"
+    return ""
+
+
+def _safe_ai_channel(channel: dict) -> dict:
+    return {
+        "id": channel.get("id", ""),
+        "name": channel.get("name", ""),
+        "provider": channel.get("provider", ""),
+        "base_url": channel.get("base_url", ""),
+        "models": channel.get("models", []) if isinstance(channel.get("models"), list) else [],
+        "updated_at": channel.get("updated_at", ""),
+        "created_at": channel.get("created_at", ""),
+        "key_configured": bool(_decrypt_setting(channel.get("api_key"))),
+    }
+
+
+def _get_ai_settings() -> dict:
+    settings = _read_viewer_settings()
+    ai = settings.get("ai", {})
+    if not isinstance(ai, dict):
+        ai = {}
+    channels = ai.get("channels", [])
+    if not isinstance(channels, list):
+        channels = []
+    ai["channels"] = [channel for channel in channels if isinstance(channel, dict)]
+    default_model = ai.get("default_model", {})
+    ai["default_model"] = default_model if isinstance(default_model, dict) else {}
+    return ai
+
+
+def _write_ai_settings(ai: dict):
+    settings = _read_viewer_settings()
+    settings["ai"] = ai
+    _write_viewer_settings(settings)
+
+
+def _list_openai_models(base_url: str, api_key: str) -> list[str]:
+    resp = http_session.get(
+        f"{base_url.rstrip('/')}/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(_response_error(resp, f"模型列表获取失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    models = payload.get("data", []) if isinstance(payload, dict) else []
+    ids = []
+    for item in models:
+        model_id = item.get("id") if isinstance(item, dict) else str(item)
+        if model_id:
+            ids.append(model_id)
+    return sorted(set(ids))
+
+
+def _list_gemini_models(base_url: str, api_key: str) -> list[str]:
+    resp = http_session.get(
+        f"{base_url.rstrip('/')}/models",
+        params={"key": api_key},
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(_response_error(resp, f"模型列表获取失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    models = payload.get("models", []) if isinstance(payload, dict) else []
+    ids = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").removeprefix("models/")
+        methods = item.get("supportedGenerationMethods") or []
+        if name and (not methods or "generateContent" in methods):
+            ids.append(name)
+    return sorted(set(ids))
+
+
+def _fetch_ai_models(provider: str, base_url: str, api_key: str) -> list[str]:
+    if provider == "gemini":
+        return _list_gemini_models(base_url, api_key)
+    return _list_openai_models(base_url, api_key)
+
+
+def _extract_plain_text(value: str) -> str:
+    value = value or ""
+    value = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)
+    value = re.sub(r"(?i)<br\s*/?>", "\n", value)
+    value = re.sub(r"(?i)</p\s*>", "\n", value)
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = html_lib.unescape(value)
+    value = re.sub(r"[ \t\r\f\v]+", " ", value)
+    value = re.sub(r"\n\s*\n+", "\n\n", value)
+    return value.strip()
+
+
+def _call_openai_chat(channel: dict, api_key: str, model: str, content: str) -> str:
+    base_url = channel.get("base_url", "").rstrip("/")
+    resp = http_session.post(
+        f"{base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "你是专业邮件翻译助手。请只输出中文译文，保留原邮件结构、链接文本和关键信息，不要添加解释。"},
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0.2,
+        },
+        timeout=90,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    return (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+
+def _call_gemini(channel: dict, api_key: str, model: str, content: str) -> str:
+    base_url = channel.get("base_url", "").rstrip("/")
+    model_name = model if model.startswith("models/") else f"models/{model}"
+    resp = http_session.post(
+        f"{base_url}/{model_name}:generateContent",
+        params={"key": api_key},
+        json={
+            "contents": [{
+                "role": "user",
+                "parts": [{
+                    "text": "请把下面邮件翻译为中文。只输出中文译文，保留结构、链接文本和关键信息，不要添加解释。\n\n" + content
+                }],
+            }],
+            "generationConfig": {"temperature": 0.2},
+        },
+        timeout=90,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    candidates = payload.get("candidates") or []
+    parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+    return "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
 
 
 def _normalize_mailbox_address(address: str) -> str:
@@ -789,6 +943,170 @@ def save_runtime_settings():
             "gmail": imap_settings,
         },
     })
+
+
+@app.route("/api/ai/settings", methods=["GET"])
+@login_required
+def get_ai_settings():
+    ai = _get_ai_settings()
+    return jsonify({
+        "success": True,
+        "channels": [_safe_ai_channel(channel) for channel in ai.get("channels", [])],
+        "default_model": ai.get("default_model", {}),
+    })
+
+
+@app.route("/api/ai/channels", methods=["POST"])
+@login_required
+def add_ai_channel():
+    data = request.json or {}
+    provider = _normalize_ai_provider(data.get("provider", ""))
+    api_key = (data.get("api_key") or "").strip()
+    if not provider:
+        return jsonify({"success": False, "message": "请选择有效的 AI 渠道类型"}), 400
+    if not api_key:
+        return jsonify({"success": False, "message": "请填写 API Key"}), 400
+    base_url = _normalize_ai_base_url(provider, data.get("base_url", ""))
+    if provider == "openai_compatible" and not base_url:
+        return jsonify({"success": False, "message": "第三方中转站需要填写 Base URL"}), 400
+    name = (data.get("name") or "").strip()[:80] or {
+        "openai": "OpenAI",
+        "gemini": "Gemini",
+        "openai_compatible": "OpenAI Compatible",
+    }[provider]
+
+    try:
+        models = _fetch_ai_models(provider, base_url, api_key)
+    except Exception as e:
+        app.logger.warning(f"AI 模型拉取失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 502
+    if not models:
+        return jsonify({"success": False, "message": "未拉取到可用模型，请检查 Key 或 Base URL"}), 502
+
+    ai = _get_ai_settings()
+    now = datetime.now(timezone.utc).isoformat()
+    channel = {
+        "id": uuid.uuid4().hex,
+        "name": name,
+        "provider": provider,
+        "base_url": base_url,
+        "api_key": _encrypt_setting(api_key),
+        "models": models,
+        "created_at": now,
+        "updated_at": now,
+    }
+    ai["channels"].append(channel)
+    if not ai.get("default_model"):
+        ai["default_model"] = {"channel_id": channel["id"], "model": models[0]}
+    _write_ai_settings(ai)
+    return jsonify({
+        "success": True,
+        "channel": _safe_ai_channel(channel),
+        "channels": [_safe_ai_channel(item) for item in ai.get("channels", [])],
+        "default_model": ai.get("default_model", {}),
+    })
+
+
+@app.route("/api/ai/channels/<channel_id>/models", methods=["POST"])
+@login_required
+def refresh_ai_channel_models(channel_id):
+    ai = _get_ai_settings()
+    channel = next((item for item in ai.get("channels", []) if item.get("id") == channel_id), None)
+    if not channel:
+        return jsonify({"success": False, "message": "渠道不存在"}), 404
+    api_key = _decrypt_setting(channel.get("api_key"))
+    if not api_key:
+        return jsonify({"success": False, "message": "渠道 API Key 不可用，请重新新增渠道"}), 400
+    try:
+        models = _fetch_ai_models(channel.get("provider", ""), channel.get("base_url", ""), api_key)
+    except Exception as e:
+        app.logger.warning(f"AI 模型刷新失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 502
+    if not models:
+        return jsonify({"success": False, "message": "未拉取到可用模型"}), 502
+    channel["models"] = models
+    channel["updated_at"] = datetime.now(timezone.utc).isoformat()
+    default_model = ai.get("default_model", {})
+    if default_model.get("channel_id") == channel_id and default_model.get("model") not in models:
+        ai["default_model"] = {"channel_id": channel_id, "model": models[0]}
+    _write_ai_settings(ai)
+    return jsonify({
+        "success": True,
+        "channel": _safe_ai_channel(channel),
+        "channels": [_safe_ai_channel(item) for item in ai.get("channels", [])],
+        "default_model": ai.get("default_model", {}),
+    })
+
+
+@app.route("/api/ai/channels/<channel_id>", methods=["DELETE"])
+@login_required
+def delete_ai_channel(channel_id):
+    ai = _get_ai_settings()
+    channels = ai.get("channels", [])
+    ai["channels"] = [item for item in channels if item.get("id") != channel_id]
+    default_model = ai.get("default_model", {})
+    if default_model.get("channel_id") == channel_id:
+        ai["default_model"] = {}
+    _write_ai_settings(ai)
+    return jsonify({
+        "success": True,
+        "channels": [_safe_ai_channel(item) for item in ai.get("channels", [])],
+        "default_model": ai.get("default_model", {}),
+    })
+
+
+@app.route("/api/ai/default-model", methods=["POST"])
+@login_required
+def save_ai_default_model():
+    data = request.json or {}
+    channel_id = (data.get("channel_id") or "").strip()
+    model = (data.get("model") or "").strip()
+    ai = _get_ai_settings()
+    channel = next((item for item in ai.get("channels", []) if item.get("id") == channel_id), None)
+    if not channel:
+        return jsonify({"success": False, "message": "请选择有效渠道"}), 400
+    models = channel.get("models", []) if isinstance(channel.get("models"), list) else []
+    if model not in models:
+        return jsonify({"success": False, "message": "请选择该渠道下已保存的模型"}), 400
+    ai["default_model"] = {"channel_id": channel_id, "model": model}
+    _write_ai_settings(ai)
+    return jsonify({"success": True, "default_model": ai["default_model"]})
+
+
+@app.route("/api/ai/translate", methods=["POST"])
+@login_required
+def translate_mail_to_chinese():
+    data = request.json or {}
+    content = _extract_plain_text(data.get("html", "") or data.get("text", ""))
+    subject = _extract_plain_text(data.get("subject", ""))
+    if subject:
+        content = f"主题：{subject}\n\n{content}"
+    if not content:
+        return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
+    if len(content) > 30000:
+        content = content[:30000]
+
+    ai = _get_ai_settings()
+    default_model = ai.get("default_model", {})
+    channel = next((item for item in ai.get("channels", []) if item.get("id") == default_model.get("channel_id")), None)
+    model = default_model.get("model", "")
+    if not channel or not model:
+        return jsonify({"success": False, "message": "请先在 AI 设置中配置默认模型"}), 400
+    api_key = _decrypt_setting(channel.get("api_key"))
+    if not api_key:
+        return jsonify({"success": False, "message": "默认渠道 API Key 不可用，请重新新增渠道"}), 400
+
+    try:
+        if channel.get("provider") == "gemini":
+            translated = _call_gemini(channel, api_key, model, content)
+        else:
+            translated = _call_openai_chat(channel, api_key, model, content)
+    except Exception as e:
+        app.logger.warning(f"邮件翻译失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 502
+    if not translated:
+        return jsonify({"success": False, "message": "模型没有返回翻译内容"}), 502
+    return jsonify({"success": True, "translation": translated})
 
 
 @app.route("/api/mailboxes", methods=["GET"])

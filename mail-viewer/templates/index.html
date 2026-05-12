@@ -726,6 +726,60 @@
             color: var(--text-color);
         }
 
+        .settings-tabs {
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 16px;
+        }
+
+        .settings-tabs .nav-link {
+            color: var(--muted-text);
+            border: 0;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+            font-weight: 700;
+            padding: 8px 12px;
+        }
+
+        .settings-tabs .nav-link.active {
+            color: var(--primary-color);
+            background: transparent;
+            border-bottom-color: var(--primary-color);
+        }
+
+        .ai-channel-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 240px;
+            overflow-y: auto;
+        }
+
+        .ai-channel-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            background: #ffffff;
+        }
+
+        .ai-channel-row-main {
+            min-width: 0;
+            flex: 1 1 auto;
+        }
+
+        .mail-translation-panel {
+            border: 1px solid rgba(36,107,115,0.22);
+            border-radius: var(--radius);
+            background: var(--primary-soft);
+            padding: 12px 14px;
+            margin-bottom: 14px;
+            color: var(--text-color);
+            white-space: pre-wrap;
+            line-height: 1.7;
+        }
+
         .alert {
             border-radius: var(--radius-sm);
         }
@@ -802,8 +856,8 @@
                         <div id="mailbox-error" class="text-danger small" style="display:none;"></div>
                         <div class="small text-muted" data-i18n="accountTip">添加多个邮箱后，可像邮件客户端一样切换查看。</div>
                         <div class="mail-account-footer">
-                            <button class="btn btn-sm btn-outline-secondary w-100" onclick="openAccountSettingsModal()">
-                                <i class="bi bi-sliders me-1"></i><span data-i18n="accountSettings">邮箱账号设置</span>
+                            <button class="btn btn-sm btn-outline-secondary w-100" onclick="openSettings('accounts')">
+                                <i class="bi bi-sliders me-1"></i><span data-i18n="settings">设置</span>
                             </button>
                         </div>
                     </div>
@@ -951,58 +1005,155 @@
         </div>
     </div>
 
-    <!-- 系统配置 Modal -->
+    <!-- 设置 Modal -->
     <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
-                    <h5 class="modal-title" id="settingsModalLabel"><i class="bi bi-gear me-2"></i><span data-i18n="settings">系统配置</span></h5>
+                    <h5 class="modal-title" id="settingsModalLabel"><i class="bi bi-gear me-2"></i><span data-i18n="settings">设置</span></h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="settings-alert" class="alert" style="display:none;" role="alert"></div>
-                    <div class="row g-3">
-                        <div class="col-12">
-                            <h6 class="mb-2" data-i18n="sendConfig">发信配置</h6>
-                            <label class="form-label" for="settings-unified-password" data-i18n="unifiedPassword">邮箱统一密码</label>
-                            <input type="password" class="form-control" id="settings-unified-password" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
-                            <div class="form-check mt-2">
-                                <input class="form-check-input" type="checkbox" id="settings-clear-unified">
-                                <label class="form-check-label" for="settings-clear-unified" data-i18n="clearUnified">清除邮箱统一密码</label>
+                    <ul class="nav settings-tabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="settings-system-tab" data-bs-toggle="tab" data-bs-target="#settings-system-pane" type="button" role="tab">
+                                <i class="bi bi-gear me-1"></i><span data-i18n="systemSettings">系统设置</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="settings-accounts-tab" data-bs-toggle="tab" data-bs-target="#settings-accounts-pane" type="button" role="tab">
+                                <i class="bi bi-envelope-at me-1"></i><span data-i18n="accountSettings">邮箱账号设置</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="settings-ai-tab" data-bs-toggle="tab" data-bs-target="#settings-ai-pane" type="button" role="tab">
+                                <i class="bi bi-stars me-1"></i><span data-i18n="aiSettings">AI 设置</span>
+                            </button>
+                        </li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="settings-system-pane" role="tabpanel" aria-labelledby="settings-system-tab">
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <h6 class="mb-2" data-i18n="sendConfig">发信配置</h6>
+                                    <label class="form-label" for="settings-unified-password" data-i18n="unifiedPassword">邮箱统一密码</label>
+                                    <input type="password" class="form-control" id="settings-unified-password" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="settings-clear-unified">
+                                        <label class="form-check-label" for="settings-clear-unified" data-i18n="clearUnified">清除邮箱统一密码</label>
+                                    </div>
+                                    <div class="small text-muted mt-1 mb-3" id="settings-unified-status"></div>
+                                    <label class="form-label" for="settings-resend-api-key">Resend API Key</label>
+                                    <input type="password" class="form-control" id="settings-resend-api-key" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="settings-clear-resend">
+                                        <label class="form-check-label" for="settings-clear-resend" data-i18n="clearResend">清除 Resend API Key</label>
+                                    </div>
+                                    <div class="small text-muted mt-1" id="settings-resend-status"></div>
+                                </div>
+                                <div class="col-12"><hr></div>
+                                <div class="col-12">
+                                    <h6 class="mb-2">Gmail OAuth2</h6>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label" for="settings-public-base-url">Public Base URL</label>
+                                    <input type="url" class="form-control" id="settings-public-base-url" placeholder="https://mail.example.com/imap">
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label" for="settings-google-redirect-uri">Redirect URI</label>
+                                    <input type="url" class="form-control" id="settings-google-redirect-uri" placeholder="https://mail.example.com/imap/api/oauth/gmail/callback">
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label" for="settings-google-client-id">Google Client ID</label>
+                                    <input type="text" class="form-control" id="settings-google-client-id" placeholder="xxxxx.apps.googleusercontent.com">
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label" for="settings-google-client-secret">Google Client Secret</label>
+                                    <input type="password" class="form-control" id="settings-google-client-secret" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="settings-clear-google-secret">
+                                        <label class="form-check-label" for="settings-clear-google-secret" data-i18n="clearGoogleSecret">清除 Google Client Secret</label>
+                                    </div>
+                                    <div class="small text-muted mt-1" id="settings-google-status"></div>
+                                </div>
                             </div>
-                            <div class="small text-muted mt-1 mb-3" id="settings-unified-status"></div>
-                            <label class="form-label" for="settings-resend-api-key">Resend API Key</label>
-                            <input type="password" class="form-control" id="settings-resend-api-key" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
-                            <div class="form-check mt-2">
-                                <input class="form-check-input" type="checkbox" id="settings-clear-resend">
-                                <label class="form-check-label" for="settings-clear-resend" data-i18n="clearResend">清除 Resend API Key</label>
+                        </div>
+                        <div class="tab-pane fade" id="settings-accounts-pane" role="tabpanel" aria-labelledby="settings-accounts-tab">
+                            <div id="account-settings-alert" class="alert" style="display:none;" role="alert"></div>
+                            <div class="row g-4">
+                                <div class="col-12 col-md-6">
+                                    <h6 class="mb-2"><i class="bi bi-envelope me-1"></i><span data-i18n="localMailbox">本地</span></h6>
+                                    <div class="input-group input-group-sm mb-2">
+                                        <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
+                                        <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
+                                            <i class="bi bi-plus-lg"></i>
+                                        </button>
+                                    </div>
+                                    <input type="text" class="form-control form-control-sm mb-2" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
+                                    <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
+                                    <div id="local-account-settings-list" class="account-settings-list"></div>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <h6 class="mb-2"><i class="bi bi-cloud-arrow-down me-1"></i><span data-i18n="externalMailbox">外部</span></h6>
+                                    <div class="mail-account-actions mb-2">
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
+                                            <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
+                                            <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
+                                        </button>
+                                    </div>
+                                    <div class="small text-muted mb-2" data-i18n="externalMailboxHint">外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。</div>
+                                    <div id="external-account-settings-list" class="account-settings-list"></div>
+                                </div>
                             </div>
-                            <div class="small text-muted mt-1" id="settings-resend-status"></div>
                         </div>
-                        <div class="col-12"><hr></div>
-                        <div class="col-12">
-                            <h6 class="mb-2">Gmail OAuth2</h6>
-                        </div>
-                        <div class="col-12 col-md-6">
-                            <label class="form-label" for="settings-public-base-url">Public Base URL</label>
-                            <input type="url" class="form-control" id="settings-public-base-url" placeholder="https://mail.example.com/imap">
-                        </div>
-                        <div class="col-12 col-md-6">
-                            <label class="form-label" for="settings-google-redirect-uri">Redirect URI</label>
-                            <input type="url" class="form-control" id="settings-google-redirect-uri" placeholder="https://mail.example.com/imap/api/oauth/gmail/callback">
-                        </div>
-                        <div class="col-12">
-                            <label class="form-label" for="settings-google-client-id">Google Client ID</label>
-                            <input type="text" class="form-control" id="settings-google-client-id" placeholder="xxxxx.apps.googleusercontent.com">
-                        </div>
-                        <div class="col-12">
-                            <label class="form-label" for="settings-google-client-secret">Google Client Secret</label>
-                            <input type="password" class="form-control" id="settings-google-client-secret" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值">
-                            <div class="form-check mt-2">
-                                <input class="form-check-input" type="checkbox" id="settings-clear-google-secret">
-                                <label class="form-check-label" for="settings-clear-google-secret" data-i18n="clearGoogleSecret">清除 Google Client Secret</label>
+                        <div class="tab-pane fade" id="settings-ai-pane" role="tabpanel" aria-labelledby="settings-ai-tab">
+                            <div id="ai-settings-alert" class="alert" style="display:none;" role="alert"></div>
+                            <div class="row g-4">
+                                <div class="col-12 col-md-6">
+                                    <h6 class="mb-2"><i class="bi bi-diagram-3 me-1"></i><span data-i18n="channelMgmt">渠道管理</span></h6>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="ai-channel-name" data-i18n="channelName">渠道名称</label>
+                                        <input type="text" class="form-control form-control-sm" id="ai-channel-name" placeholder="OpenAI / Gemini / 中转站">
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="ai-provider" data-i18n="channelProvider">渠道类型</label>
+                                        <select class="form-select form-select-sm" id="ai-provider" onchange="handleAiProviderChange()">
+                                            <option value="openai">OpenAI</option>
+                                            <option value="gemini">Gemini</option>
+                                            <option value="openai_compatible">OpenAI Compatible</option>
+                                        </select>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="ai-base-url">Base URL</label>
+                                        <input type="url" class="form-control form-control-sm" id="ai-base-url" placeholder="https://api.openai.com/v1">
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="ai-api-key">API Key</label>
+                                        <input type="password" class="form-control form-control-sm" id="ai-api-key" autocomplete="new-password">
+                                    </div>
+                                    <button class="btn btn-primary btn-sm w-100" id="btn-add-ai-channel" onclick="addAiChannel()">
+                                        <i class="bi bi-cloud-download me-1"></i><span data-i18n="fetchModelsSave">拉取模型并保存渠道</span>
+                                    </button>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <h6 class="mb-2"><i class="bi bi-cpu me-1"></i><span data-i18n="defaultModel">默认模型</span></h6>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="ai-default-channel" data-i18n="selectChannel">选择渠道</label>
+                                        <select class="form-select form-select-sm" id="ai-default-channel" onchange="renderAiModelOptions()"></select>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="ai-default-model" data-i18n="selectModel">选择模型</label>
+                                        <select class="form-select form-select-sm" id="ai-default-model"></select>
+                                    </div>
+                                    <button class="btn btn-outline-primary btn-sm w-100 mb-3" onclick="saveAiDefaultModel()">
+                                        <i class="bi bi-save me-1"></i><span data-i18n="saveDefaultModel">保存默认模型</span>
+                                    </button>
+                                    <div class="ai-channel-list" id="ai-channel-list"></div>
+                                </div>
                             </div>
-                            <div class="small text-muted mt-1" id="settings-google-status"></div>
                         </div>
                     </div>
                 </div>
@@ -1010,54 +1161,6 @@
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
                     <button type="button" class="btn btn-primary" id="btn-save-settings" onclick="saveSettings()">
                         <i class="bi bi-save me-1"></i><span data-i18n="saveSettings">保存配置</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 邮箱账号设置 Modal -->
-    <div class="modal fade" id="accountSettingsModal" tabindex="-1" aria-labelledby="accountSettingsModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
-                    <h5 class="modal-title" id="accountSettingsModalLabel"><i class="bi bi-sliders me-2"></i><span data-i18n="accountSettings">邮箱账号设置</span></h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div id="account-settings-alert" class="alert" style="display:none;" role="alert"></div>
-                    <div class="row g-4">
-                        <div class="col-12 col-md-6">
-                            <h6 class="mb-2"><i class="bi bi-envelope me-1"></i><span data-i18n="localMailbox">本地</span></h6>
-                            <div class="input-group input-group-sm mb-2">
-                                <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
-                                <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
-                                    <i class="bi bi-plus-lg"></i>
-                                </button>
-                            </div>
-                            <input type="text" class="form-control form-control-sm mb-2" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
-                            <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
-                            <div id="local-account-settings-list" class="account-settings-list"></div>
-                        </div>
-                        <div class="col-12 col-md-6">
-                            <h6 class="mb-2"><i class="bi bi-cloud-arrow-down me-1"></i><span data-i18n="externalMailbox">外部</span></h6>
-                            <div class="mail-account-actions mb-2">
-                                <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
-                                    <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
-                                </button>
-                                <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
-                                    <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
-                                </button>
-                            </div>
-                            <div class="small text-muted mb-2" data-i18n="externalMailboxHint">外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。</div>
-                            <div id="external-account-settings-list" class="account-settings-list"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
-                    <button type="button" class="btn btn-primary" onclick="loadMailboxes()">
-                        <i class="bi bi-arrow-clockwise me-1"></i><span data-i18n="refresh">刷新</span>
                     </button>
                 </div>
             </div>
@@ -1190,6 +1293,29 @@
                 editDisplayName: '修改显示名字',
                 confirmRemoveMailbox: '从列表移除邮箱 "{email}" 吗？邮件数据不会被删除。',
                 accountSettings: '邮箱账号设置',
+                systemSettings: '系统设置',
+                aiSettings: 'AI 设置',
+                channelMgmt: '渠道管理',
+                channelName: '渠道名称',
+                channelProvider: '渠道类型',
+                fetchModelsSave: '拉取模型并保存渠道',
+                defaultModel: '默认模型',
+                selectChannel: '选择渠道',
+                selectModel: '选择模型',
+                saveDefaultModel: '保存默认模型',
+                aiSettingsLoadFailed: 'AI 设置加载失败',
+                aiChannelAdded: 'AI 渠道已保存',
+                aiChannelAddFailed: 'AI 渠道保存失败',
+                aiDefaultSaved: '默认模型已保存',
+                aiDefaultSaveFailed: '默认模型保存失败',
+                aiNoChannels: '暂无 AI 渠道',
+                aiModelsCount: '{n} 个模型',
+                refreshModels: '刷新模型',
+                confirmDeleteChannel: '确定要删除 AI 渠道 "{name}" 吗？',
+                translateZh: '翻译为中文',
+                translating: '翻译中...',
+                translationResult: '中文翻译',
+                translationFailed: '翻译失败',
                 mailboxControls: '邮箱控件',
                 localMailboxHint: '本地邮箱用于接收当前系统托管域名的邮件。',
                 externalMailboxHint: '外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。',
@@ -1333,6 +1459,29 @@
                 editDisplayName: 'Edit display name',
                 confirmRemoveMailbox: 'Remove mailbox "{email}" from the list? Mail data is not deleted.',
                 accountSettings: 'Mailbox Settings',
+                systemSettings: 'System Settings',
+                aiSettings: 'AI Settings',
+                channelMgmt: 'Channels',
+                channelName: 'Channel Name',
+                channelProvider: 'Provider',
+                fetchModelsSave: 'Fetch models and save',
+                defaultModel: 'Default Model',
+                selectChannel: 'Select channel',
+                selectModel: 'Select model',
+                saveDefaultModel: 'Save Default Model',
+                aiSettingsLoadFailed: 'Failed to load AI settings',
+                aiChannelAdded: 'AI channel saved',
+                aiChannelAddFailed: 'Failed to save AI channel',
+                aiDefaultSaved: 'Default model saved',
+                aiDefaultSaveFailed: 'Failed to save default model',
+                aiNoChannels: 'No AI channels',
+                aiModelsCount: '{n} models',
+                refreshModels: 'Refresh models',
+                confirmDeleteChannel: 'Delete AI channel "{name}"?',
+                translateZh: 'Translate to Chinese',
+                translating: 'Translating...',
+                translationResult: 'Chinese translation',
+                translationFailed: 'Translation failed',
                 mailboxControls: 'Mailbox Controls',
                 localMailboxHint: 'Local mailboxes receive mail for domains hosted by this system.',
                 externalMailboxHint: 'External accounts connect Gmail, Outlook, or other IMAP mailboxes.',
@@ -1524,8 +1673,9 @@
         let currentSentTotal = 0;
         let currentTrashTotal = 0;
         let settingsModal = null;
-        let accountSettingsModal = null;
         let externalAccountModal = null;
+        let aiChannels = [];
+        let aiDefaultModel = {};
         const PAGE_SIZE = 30;
         const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
@@ -1665,6 +1815,48 @@
                         }).join('')}
                     </div>
                 </div>`;
+        }
+
+        function _detailTranslateButton() {
+            return `
+                <button class="btn btn-sm btn-outline-primary me-1" id="btn-translate-mail" onclick="translateCurrentMail()">
+                    <i class="bi bi-translate me-1"></i>${t('translateZh')}
+                </button>`;
+        }
+
+        async function translateCurrentMail() {
+            const msg = window._currentDetailMsg;
+            if (!msg) return;
+            const btn = document.getElementById('btn-translate-mail');
+            const panel = document.getElementById('mail-translation-panel');
+            if (!panel) return;
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('translating')}`;
+            }
+            panel.style.display = 'block';
+            panel.textContent = t('translating');
+            try {
+                const resp = await fetch('/api/ai/translate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        subject: msg.subject || '',
+                        text: msg.text || '',
+                        html: msg.html || '',
+                    }),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('translationFailed'));
+                panel.innerHTML = `<div class="fw-semibold mb-2"><i class="bi bi-translate me-1"></i>${t('translationResult')}</div>${_escapeHtml(data.translation || '')}`;
+            } catch (e) {
+                panel.innerHTML = `<div class="text-danger">${t('translationFailed')}: ${_escapeHtml(e.message)}</div>`;
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = `<i class="bi bi-translate me-1"></i>${t('translateZh')}`;
+                }
+            }
         }
 
         async function _imapApi(path, options = {}) {
@@ -2191,19 +2383,6 @@
             return externalAccountModal;
         }
 
-        function _getAccountSettingsModal() {
-            if (!accountSettingsModal) {
-                accountSettingsModal = new bootstrap.Modal(document.getElementById('accountSettingsModal'));
-            }
-            return accountSettingsModal;
-        }
-
-        function openAccountSettingsModal() {
-            _clearMailboxError();
-            renderAccountSettingsLists();
-            _getAccountSettingsModal().show();
-        }
-
         function _showExternalAccountAlert(type, message) {
             const alert = document.getElementById('external-account-alert');
             alert.className = `alert alert-${type}`;
@@ -2513,6 +2692,188 @@
             alert.style.display = 'block';
         }
 
+        function _showAiSettingsAlert(type, message) {
+            const alert = document.getElementById('ai-settings-alert');
+            if (!alert) return;
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+        }
+
+        function _clearAiSettingsAlert() {
+            const alert = document.getElementById('ai-settings-alert');
+            if (!alert) return;
+            alert.style.display = 'none';
+            alert.textContent = '';
+        }
+
+        function _switchSettingsTab(name = 'system') {
+            const tabId = name === 'ai' ? 'settings-ai-tab' : name === 'accounts' ? 'settings-accounts-tab' : 'settings-system-tab';
+            const tab = document.getElementById(tabId);
+            if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
+            _syncSettingsFooter();
+        }
+
+        function _syncSettingsFooter() {
+            const saveBtn = document.getElementById('btn-save-settings');
+            const systemPane = document.getElementById('settings-system-pane');
+            if (saveBtn && systemPane) {
+                saveBtn.style.display = systemPane.classList.contains('active') ? '' : 'none';
+            }
+        }
+
+        function _aiProviderLabel(provider) {
+            if (provider === 'gemini') return 'Gemini';
+            if (provider === 'openai_compatible') return 'OpenAI Compatible';
+            return 'OpenAI';
+        }
+
+        function handleAiProviderChange() {
+            const provider = document.getElementById('ai-provider').value;
+            const baseUrl = document.getElementById('ai-base-url');
+            if (provider === 'openai') baseUrl.value = 'https://api.openai.com/v1';
+            else if (provider === 'gemini') baseUrl.value = 'https://generativelanguage.googleapis.com/v1beta';
+            else baseUrl.value = '';
+        }
+
+        function renderAiModelOptions() {
+            const channelSelect = document.getElementById('ai-default-channel');
+            const modelSelect = document.getElementById('ai-default-model');
+            if (!channelSelect || !modelSelect) return;
+            const channelId = channelSelect.value || aiDefaultModel.channel_id || '';
+            const channel = aiChannels.find(item => String(item.id) === String(channelId)) || aiChannels[0];
+            modelSelect.innerHTML = channel
+                ? (channel.models || []).map(model => `<option value="${_escapeAttr(model)}">${_escapeHtml(model)}</option>`).join('')
+                : `<option value="">${t('selectModel')}</option>`;
+            if (channel && aiDefaultModel.channel_id === channel.id && aiDefaultModel.model) {
+                modelSelect.value = aiDefaultModel.model;
+            }
+        }
+
+        function renderAiSettings() {
+            const channelSelect = document.getElementById('ai-default-channel');
+            const channelList = document.getElementById('ai-channel-list');
+            if (!channelSelect || !channelList) return;
+            channelSelect.innerHTML = aiChannels.length
+                ? aiChannels.map(channel => `<option value="${_escapeAttr(channel.id)}">${_escapeHtml(channel.name)} · ${_escapeHtml(_aiProviderLabel(channel.provider))}</option>`).join('')
+                : `<option value="">${t('selectChannel')}</option>`;
+            if (aiDefaultModel.channel_id) channelSelect.value = aiDefaultModel.channel_id;
+            renderAiModelOptions();
+            channelList.innerHTML = aiChannels.length ? aiChannels.map(channel => `
+                <div class="ai-channel-row">
+                    <i class="bi bi-cpu text-muted"></i>
+                    <div class="ai-channel-row-main">
+                        <div class="mail-account-title">${_escapeHtml(channel.name)}</div>
+                        <div class="mail-account-subtitle">${_escapeHtml(_aiProviderLabel(channel.provider))} · ${t('aiModelsCount', {n: (channel.models || []).length})}</div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="refreshAiChannelModels('${_escapeAttr(channel.id)}')" title="${t('refreshModels')}">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteAiChannel('${_escapeAttr(channel.id)}')" title="${t('delete')}">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>`).join('') : `<div class="text-muted small px-2 py-2">${t('aiNoChannels')}</div>`;
+        }
+
+        async function loadAiSettings() {
+            _clearAiSettingsAlert();
+            try {
+                const resp = await fetch('/api/ai/settings');
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('aiSettingsLoadFailed'));
+                aiChannels = data.channels || [];
+                aiDefaultModel = data.default_model || {};
+                renderAiSettings();
+            } catch (e) {
+                _showAiSettingsAlert('danger', `${t('aiSettingsLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        async function addAiChannel() {
+            const btn = document.getElementById('btn-add-ai-channel');
+            _clearAiSettingsAlert();
+            btn.disabled = true;
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('fetchModelsSave')}`;
+            try {
+                const payload = {
+                    name: document.getElementById('ai-channel-name').value.trim(),
+                    provider: document.getElementById('ai-provider').value,
+                    base_url: document.getElementById('ai-base-url').value.trim(),
+                    api_key: document.getElementById('ai-api-key').value.trim(),
+                };
+                const resp = await fetch('/api/ai/channels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('aiChannelAddFailed'));
+                aiChannels = data.channels || [];
+                aiDefaultModel = data.default_model || {};
+                document.getElementById('ai-api-key').value = '';
+                renderAiSettings();
+                _showAiSettingsAlert('success', t('aiChannelAdded'));
+            } catch (e) {
+                _showAiSettingsAlert('danger', `${t('aiChannelAddFailed')}: ${e.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="bi bi-cloud-download me-1"></i>${t('fetchModelsSave')}`;
+            }
+        }
+
+        async function refreshAiChannelModels(channelId) {
+            _clearAiSettingsAlert();
+            try {
+                const resp = await fetch(`/api/ai/channels/${encodeURIComponent(channelId)}/models`, { method: 'POST' });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('aiSettingsLoadFailed'));
+                aiChannels = data.channels || [];
+                aiDefaultModel = data.default_model || {};
+                renderAiSettings();
+                _showAiSettingsAlert('success', t('settingsSaved'));
+            } catch (e) {
+                _showAiSettingsAlert('danger', `${t('settingsSaveFailed')}: ${e.message}`);
+            }
+        }
+
+        async function deleteAiChannel(channelId) {
+            const channel = aiChannels.find(item => String(item.id) === String(channelId));
+            if (!confirm(t('confirmDeleteChannel', {name: channel?.name || channelId}))) return;
+            _clearAiSettingsAlert();
+            try {
+                const resp = await fetch(`/api/ai/channels/${encodeURIComponent(channelId)}`, { method: 'DELETE' });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('deleteFailed'));
+                aiChannels = data.channels || [];
+                aiDefaultModel = data.default_model || {};
+                renderAiSettings();
+            } catch (e) {
+                _showAiSettingsAlert('danger', `${t('deleteFailed')}: ${e.message}`);
+            }
+        }
+
+        async function saveAiDefaultModel() {
+            _clearAiSettingsAlert();
+            try {
+                const payload = {
+                    channel_id: document.getElementById('ai-default-channel').value,
+                    model: document.getElementById('ai-default-model').value,
+                };
+                const resp = await fetch('/api/ai/default-model', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('aiDefaultSaveFailed'));
+                aiDefaultModel = data.default_model || {};
+                renderAiSettings();
+                _showAiSettingsAlert('success', t('aiDefaultSaved'));
+            } catch (e) {
+                _showAiSettingsAlert('danger', `${t('aiDefaultSaveFailed')}: ${e.message}`);
+            }
+        }
+
         function _clearSettingsSecrets() {
             document.getElementById('settings-unified-password').value = '';
             document.getElementById('settings-resend-api-key').value = '';
@@ -2562,9 +2923,12 @@
             }
         }
 
-        async function openSettings() {
+        async function openSettings(tab = 'system') {
             _getSettingsModal().show();
-            await loadSettings();
+            _switchSettingsTab(tab);
+            await Promise.all([loadSettings(), loadAiSettings()]);
+            renderAccountSettingsLists();
+            handleAiProviderChange();
         }
 
         async function saveSettings() {
@@ -2607,6 +2971,9 @@
         // 页面加载时初始化语言 + 获取域名和账号列表
         document.addEventListener('DOMContentLoaded', async () => {
             applyLang();
+            document.querySelectorAll('#settingsModal [data-bs-toggle="tab"]').forEach(tab => {
+                tab.addEventListener('shown.bs.tab', _syncSettingsFooter);
+            });
             await loadDomains();
             await loadMailboxes();
             _updateFolderChrome();
@@ -3213,20 +3580,23 @@
                     subject: msg.subject || '',
                     from: { address: msg.from || '' },
                     text: msg.text || '',
+                    html: msg.html || '',
                     createdAt: msg.date,
                 };
                 const from = _escapeHtml(msg.from || t('unknownSender'));
                 const to = _escapeHtml(msg.to || '');
                 const cc = _escapeHtml(msg.cc || '');
                 detailContent.innerHTML = `
-                    <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div class="d-flex justify-content-between align-items-start mb-3 gap-2">
                         <div><strong>${t('from')}:</strong> ${from}</div>
+                        <div class="text-nowrap">${_detailTranslateButton()}</div>
                     </div>
                     <div class="mb-3"><strong>${t('to')}:</strong> ${to}</div>
                     ${cc ? `<div class="mb-3"><strong>CC:</strong> ${cc}</div>` : ''}
                     <div class="mb-3"><strong>${t('subject')}:</strong> ${_escapeHtml(msg.subject || t('noSubject'))}</div>
                     <div class="mb-3"><strong>${t('time')}:</strong> ${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</div>
                     ${_renderExternalAttachments(uid, msg.attachments)}
+                    <div id="mail-translation-panel" class="mail-translation-panel" style="display:none;"></div>
                     <hr>
                     <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:6px; overflow:hidden;">
                         <iframe id="external-mail-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" style="width:100%;border:none;min-height:200px;"></iframe>
@@ -3342,12 +3712,14 @@
                 const escapedFromName = _escapeHtml(msg.from?.name || '');
                 const escapedFromAddr = _escapeHtml(msg.from?.address || '');
                 const actionButtons = isTrash ? `
+                            ${_detailTranslateButton()}
                             <button class="btn btn-sm btn-outline-primary me-1" onclick="restoreEmail('${messageId}')">
                                 <i class="bi bi-arrow-counterclockwise me-1"></i>${t('restore')}
                             </button>
                             <button class="btn btn-sm btn-outline-danger" onclick="permanentDeleteEmail('${messageId}')">
                                 <i class="bi bi-x-circle me-1"></i>${t('permanentDelete')}
                             </button>` : `
+                            ${_detailTranslateButton()}
                             <button class="btn btn-sm btn-outline-primary me-1" onclick="openReply()">
                                 <i class="bi bi-reply me-1"></i>${t('reply')}
                             </button>
@@ -3368,6 +3740,7 @@
                         <strong>${t('time')}:</strong> ${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}
                     </div>
                     ${_renderAttachments(messageId, msg.attachments)}
+                    <div id="mail-translation-panel" class="mail-translation-panel" style="display:none;"></div>
                     <hr>
                     <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:6px; overflow:hidden;">
                         <iframe id="mail-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" style="width:100%;border:none;min-height:200px;"></iframe>
