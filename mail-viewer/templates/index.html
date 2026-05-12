@@ -81,6 +81,55 @@
             font-weight: 600;
             padding: 10px 14px;
         }
+
+        .mail-folder-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .mail-folder-heading {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            min-width: 0;
+            flex: 1 1 auto;
+        }
+
+        .mail-folder-heading > i {
+            flex: 0 0 auto;
+            margin-top: 2px;
+        }
+
+        .mail-folder-title-wrap {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 2px 6px;
+            min-width: 0;
+            line-height: 1.25;
+        }
+
+        #mail-list-title {
+            flex: 0 0 auto;
+            max-width: 100%;
+        }
+
+        #current-mailbox-label {
+            flex: 1 1 100%;
+            min-width: 0;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            line-height: 1.2;
+        }
+
+        .mail-folder-header-actions {
+            flex: 0 0 auto;
+            align-items: flex-start;
+            gap: 6px;
+        }
         
         .btn-primary {
             background: var(--primary-color);
@@ -641,11 +690,13 @@
             <!-- 第2栏：邮箱控件 / 文件夹 -->
             <div class="col-12 col-lg-3 mail-col" id="mail-folder-column">
                 <div class="card h-100">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <div class="d-flex align-items-center gap-2 min-w-0">
+                    <div class="card-header mail-folder-header">
+                        <div class="mail-folder-heading">
                             <i class="bi bi-list-ul text-muted"></i>
-                            <span class="fw-semibold text-truncate" id="mail-list-title" data-i18n="inbox">收件箱</span>
-                            <span class="text-muted small text-truncate" id="current-mailbox-label"></span>
+                            <div class="mail-folder-title-wrap">
+                                <span class="fw-semibold" id="mail-list-title" data-i18n="inbox">收件箱</span>
+                                <span class="text-muted small" id="current-mailbox-label"></span>
+                            </div>
                         </div>
                         <div class="btn-group btn-group-sm d-none" role="group">
                             <button type="button" class="btn btn-primary" id="tab-inbox" onclick="switchTab('inbox')">
@@ -658,7 +709,7 @@
                                 <i class="bi bi-trash me-1"></i><span data-i18n="trash">回收站</span>
                             </button>
                         </div>
-                        <div class="d-flex align-items-center gap-2">
+                        <div class="d-flex mail-folder-header-actions">
                             <div class="form-check form-switch mb-0" data-i18n-title="autoRefreshTitle" title="每 15 秒自动刷新">
                                 <input class="form-check-input" type="checkbox" id="auto-refresh-toggle" onchange="toggleAutoRefresh(this.checked)">
                                 <label class="form-check-label small" for="auto-refresh-toggle" data-i18n="auto">自动</label>
@@ -989,6 +1040,7 @@
                 mailboxAdded: '邮箱已添加',
                 displayName: '显示名字',
                 displayNamePlaceholder: '显示名字 / 备注',
+                editDisplayName: '修改显示名字',
                 confirmRemoveMailbox: '从列表移除邮箱 "{email}" 吗？邮件数据不会被删除。',
                 accountSettings: '邮箱账号设置',
                 mailboxControls: '邮箱控件',
@@ -1131,6 +1183,7 @@
                 mailboxAdded: 'Mailbox added',
                 displayName: 'Display Name',
                 displayNamePlaceholder: 'Display name / note',
+                editDisplayName: 'Edit display name',
                 confirmRemoveMailbox: 'Remove mailbox "{email}" from the list? Mail data is not deleted.',
                 accountSettings: 'Mailbox Settings',
                 mailboxControls: 'Mailbox Controls',
@@ -1327,6 +1380,9 @@
         let accountSettingsModal = null;
         let externalAccountModal = null;
         const PAGE_SIZE = 30;
+        const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+        const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
+        let externalAccountSwitchSeq = 0;
 
         // HTML 转义工具函数（防 XSS）
         function _escapeHtml(str) {
@@ -1509,6 +1565,41 @@
 
         function _accountDisplayName(account, fallbackEmail = '') {
             return (account?.displayName || account?.display_name || account?.label || fallbackEmail || account?.email || '').trim();
+        }
+
+        function _externalFolderCacheKey(accountId) {
+            return EXTERNAL_FOLDER_CACHE_PREFIX + encodeURIComponent(String(accountId || ''));
+        }
+
+        function _normalizeExternalFolders(folders) {
+            return (Array.isArray(folders) ? folders : []).filter(folder => folder && !folder.noselect);
+        }
+
+        function _pickExternalFolder(folders) {
+            const inbox = folders.find(folder => String(folder.path || '').toLowerCase() === 'inbox');
+            return (inbox || folders[0] || { path: 'INBOX' }).path || 'INBOX';
+        }
+
+        function _readExternalFolderCache(accountId) {
+            try {
+                const raw = localStorage.getItem(_externalFolderCacheKey(accountId));
+                if (!raw) return null;
+                const cache = JSON.parse(raw);
+                if (!cache || !Array.isArray(cache.folders) || !cache.savedAt) return null;
+                if (Date.now() - Number(cache.savedAt) > EXTERNAL_FOLDER_CACHE_TTL_MS) return null;
+                return _normalizeExternalFolders(cache.folders);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function _writeExternalFolderCache(accountId, folders) {
+            try {
+                localStorage.setItem(_externalFolderCacheKey(accountId), JSON.stringify({
+                    savedAt: Date.now(),
+                    folders: _normalizeExternalFolders(folders),
+                }));
+            } catch (e) {}
         }
 
         function _externalFolderIcon(folder) {
@@ -1702,6 +1793,9 @@
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
                             </span>
                             <span class="mail-account-kind">${_escapeHtml(provider)}</span>
+                            <button class="btn btn-sm p-0 text-secondary" onclick="editExternalAccountDisplayName('${id}')" title="${t('editDisplayName')}">
+                                <i class="bi bi-pencil-square"></i>
+                            </button>
                             <button class="btn btn-sm p-0 text-danger" onclick="removeExternalAccount('${id}')" title="${t('delete')}">
                                 <i class="bi bi-x-lg"></i>
                             </button>
@@ -1722,7 +1816,11 @@
                     return;
                 }
                 if (!currentExternalFolders.length) {
-                    list.innerHTML = `${composeButton}<div class="text-muted small px-2">${t('noFolders')}</div>`;
+                    const fallbackFolder = currentExternalFolder || 'INBOX';
+                    list.innerHTML = composeButton + `
+                        <button class="mail-folder-item active" data-folder="${_escapeAttr(fallbackFolder)}" onclick="selectFolder(${_jsString(encodeURIComponent(fallbackFolder))})">
+                            <i class="bi bi-inbox"></i><span class="text-truncate">${_escapeHtml(fallbackFolder)}</span>
+                        </button>`;
                     return;
                 }
                 list.innerHTML = composeButton + currentExternalFolders.map(folder => {
@@ -1825,11 +1923,12 @@
         async function selectFolder(folder) {
             const decodedFolder = decodeURIComponent(String(folder || ''));
             if (currentAccountType === 'external') {
+                const switchSeq = ++externalAccountSwitchSeq;
                 currentExternalFolder = decodedFolder || 'INBOX';
                 _resetExternalMessageState();
                 renderFolderList();
                 _updateFolderChrome();
-                await queryExternalMails(false, false);
+                await queryExternalMails(false, false, switchSeq);
                 return;
             }
             currentTab = decodedFolder || 'inbox';
@@ -1841,6 +1940,7 @@
             const id = decodeURIComponent(String(encodedId));
             const account = _externalAccountById(id);
             if (!account) return;
+            const switchSeq = ++externalAccountSwitchSeq;
             currentAccountType = 'external';
             if (autoRefreshTimer) {
                 clearInterval(autoRefreshTimer);
@@ -1853,19 +1953,27 @@
             currentMailbox = '';
             _resetLocalMessageState();
             _resetExternalMessageState();
+            const cachedFolders = _readExternalFolderCache(id);
+            currentExternalFolders = cachedFolders || [];
+            currentExternalFolder = currentExternalFolders.length ? _pickExternalFolder(currentExternalFolders) : 'INBOX';
             renderMailboxes();
+            renderFolderList();
+            _updateFolderChrome();
             document.getElementById('btn-refresh-mail').disabled = false;
-            document.getElementById('mail-list').innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
             resetMailDetail();
+            queryExternalMails(false, false, switchSeq);
+            if (cachedFolders) return;
+
             try {
                 const folders = await _imapApi(`/accounts/${encodeURIComponent(id)}/folders`);
-                currentExternalFolders = (Array.isArray(folders) ? folders : []).filter(folder => !folder.noselect);
-                const inbox = currentExternalFolders.find(folder => String(folder.path || '').toLowerCase() === 'inbox');
-                currentExternalFolder = (inbox || currentExternalFolders[0] || { path: 'INBOX' }).path || 'INBOX';
+                if (switchSeq !== externalAccountSwitchSeq || String(currentExternalAccountId) !== String(id)) return;
+                currentExternalFolders = _normalizeExternalFolders(folders);
+                currentExternalFolder = _pickExternalFolder(currentExternalFolders);
+                _writeExternalFolderCache(id, currentExternalFolders);
                 renderFolderList();
                 _updateFolderChrome();
-                await queryExternalMails(false, false);
             } catch (e) {
+                if (switchSeq !== externalAccountSwitchSeq || String(currentExternalAccountId) !== String(id)) return;
                 currentExternalFolders = [];
                 renderFolderList();
                 document.getElementById('mail-list').innerHTML = `<div class="error-state"><p>${t('foldersLoadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
@@ -1898,6 +2006,34 @@
                 }
             } catch (e) {
                 _showMailboxError(`${t('deleteFailed')}: ${e.message}`);
+            }
+        }
+
+        async function editExternalAccountDisplayName(encodedId) {
+            const id = decodeURIComponent(String(encodedId));
+            const account = _externalAccountById(id);
+            if (!account) return;
+            const email = account.email || '';
+            const currentName = _accountDisplayName(account, email);
+            const nextName = prompt(t('displayName'), currentName);
+            if (nextName === null) return;
+            try {
+                const updated = await _imapApi(`/accounts/${encodeURIComponent(id)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ displayName: nextName.trim() }),
+                });
+                externalAccounts = externalAccounts.map(item => (
+                    String(item.id) === String(id) ? { ...item, ...updated } : item
+                ));
+                if (String(currentExternalAccountId) === String(id)) {
+                    currentExternalAccount = { ...currentExternalAccount, ...updated };
+                }
+                renderMailboxes();
+                _updateFolderChrome();
+                _showMailboxError(t('settingsSaved'), 'success');
+            } catch (e) {
+                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
             }
         }
 
@@ -2777,8 +2913,10 @@
             _updateUnreadBadge();
         }
 
-        async function queryExternalMails(silent = false, append = false) {
+        async function queryExternalMails(silent = false, append = false, expectedSwitchSeq = externalAccountSwitchSeq) {
             if (!currentExternalAccountId) return;
+            const accountId = currentExternalAccountId;
+            const folderPath = currentExternalFolder || 'INBOX';
             if (!silent && !append) resetMailDetail();
             const mailList = document.getElementById('mail-list');
             const before = append && currentExternalMessages.length
@@ -2805,11 +2943,18 @@
 
             try {
                 const params = new URLSearchParams({
-                    folder: currentExternalFolder || 'INBOX',
+                    folder: folderPath,
                     count: String(PAGE_SIZE),
                 });
                 if (before) params.set('before', String(before));
-                const data = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/mails?${params.toString()}`);
+                const data = await _imapApi(`/accounts/${encodeURIComponent(accountId)}/mails?${params.toString()}`);
+                if (
+                    expectedSwitchSeq !== externalAccountSwitchSeq ||
+                    String(currentExternalAccountId) !== String(accountId) ||
+                    String(currentExternalFolder || 'INBOX') !== String(folderPath)
+                ) {
+                    return;
+                }
                 currentExternalTotal = data.total || 0;
                 currentExternalHasMore = !!data.hasMore;
                 const mails = data.mails || [];

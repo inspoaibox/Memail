@@ -655,6 +655,18 @@ app.get('/api/accounts', (req, res) => {
   res.json(list);
 });
 
+// 更新账户信息
+app.patch('/api/accounts/:id', (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
+  const id = parseInt(req.params.id, 10);
+  const client = clients.get(id);
+  if (!client) return res.status(404).json({ error: '账户不存在' });
+  const email = client.account.auth?.user || '';
+  client.account.displayName = normalizeDisplayName(req.body?.displayName, email);
+  saveAccounts();
+  res.json(accountSummary(id, client.account));
+});
+
 // 断开账户
 app.delete('/api/accounts/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
