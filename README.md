@@ -90,18 +90,43 @@ Most other values in `.env.example` are optional. `APP_SECRET` is used as the de
 
 ### 2. Start With Local Builds
 
+> If `docker compose` prints `unknown command: docker compose`, your server does not have the Docker Compose v2 plugin. Use the `docker-compose` commands below instead.
+
 ```bash
-docker compose up -d --build
+docker-compose up -d --build
+docker-compose ps
 ```
 
 Use this mode when you are building directly from the source code on your server. Do not set `MAIL_SERVICE_IMAGE`, `MAIL_VIEWER_IMAGE`, `IMAP_MAIL_IMAGE`, or `IMAP_SERVER_IMAGE` in `.env`.
 
-To update later:
+When updating from source, rebuild the images. Otherwise the running containers can still use old templates baked into the previous image:
 
 ```bash
 git pull
-docker compose up -d --build
-docker compose ps
+docker-compose build mail-service mail-viewer imap-mail imap-server
+docker-compose up -d --no-deps mail-service imap-mail imap-server mail-viewer
+docker-compose ps
+```
+
+If you already ran `git pull` but the web page did not change, rebuild and recreate the containers:
+
+```bash
+docker-compose build --no-cache mail-viewer imap-mail imap-server mail-service
+docker-compose stop mail-viewer imap-mail imap-server mail-service
+docker-compose rm -f mail-viewer imap-mail imap-server mail-service
+docker-compose up -d --no-deps mail-service imap-mail imap-server mail-viewer
+docker-compose ps
+```
+
+Do not run a full `docker-compose up -d --force-recreate` for routine source updates. With old `docker-compose 1.29.x` and newer Docker engines, recreating existing containers can fail with `KeyError: 'ContainerConfig'`; MongoDB also does not need to be recreated for frontend or service code updates.
+
+If you already hit `KeyError: 'ContainerConfig'`, remove the temporary old containers left by Compose and start the services again. Do not use `-v`; volumes hold MongoDB data, external IMAP accounts, and runtime settings:
+
+```bash
+docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_mail-' | xargs -r docker rm -f
+docker-compose up -d mongodb
+docker-compose up -d --no-deps mail-service imap-mail imap-server mail-viewer
+docker-compose ps
 ```
 
 ### 3. Start With GitHub-Built Images
@@ -135,10 +160,12 @@ echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
 Start the services:
 
 ```bash
-docker compose pull
-docker compose up -d
-docker compose ps
+docker-compose pull
+docker-compose up -d
+docker-compose ps
 ```
+
+`docker-compose pull` only pulls GitHub-built images when the four `*_IMAGE` variables above are set in `.env`. If they are not set, Compose uses the local `manymail-*:local` images built from source; in that mode, use the local-build update commands from section 2.
 
 To update after new code is pushed:
 
@@ -147,14 +174,14 @@ To update after new code is pushed:
 git pull
 
 # Pull the newly built GHCR images and recreate changed containers.
-docker compose pull
-docker compose up -d
-docker compose ps
+docker-compose pull
+docker-compose up -d
+docker-compose ps
 ```
 
-Your `.env` file and Docker volumes are kept. Do not run `docker compose down -v` unless you intentionally want to delete persisted MongoDB data, external IMAP accounts, and runtime settings.
+Your `.env` file and Docker volumes are kept. Do not run `docker-compose down -v` unless you intentionally want to delete persisted MongoDB data, external IMAP accounts, and runtime settings.
 
-To roll back, change the image tag in `.env` to an older tag, such as a release tag or `sha-...` tag shown in GitHub Actions, then run `docker compose pull && docker compose up -d`.
+To roll back, change the image tag in `.env` to an older tag, such as a release tag or `sha-...` tag shown in GitHub Actions, then run `docker-compose pull && docker-compose up -d`.
 
 ### Runtime Settings In The Web UI
 

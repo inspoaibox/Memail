@@ -90,18 +90,43 @@ DOMAINS=yourdomain.com
 
 ### 2. 使用服务器本地源码构建启动
 
+> 如果你的服务器执行 `docker compose` 提示 `unknown command: docker compose`，说明没有安装 Docker Compose v2 插件，请使用本文下面的 `docker-compose` 命令。两种命令作用相同，只是版本不同。
+
 ```bash
-docker compose up -d --build
+docker-compose up -d --build
+docker-compose ps
 ```
 
 这种方式适合直接在服务器上用当前源码构建镜像。此时 `.env` 中不要设置 `MAIL_SERVICE_IMAGE`、`MAIL_VIEWER_IMAGE`、`IMAP_MAIL_IMAGE`、`IMAP_SERVER_IMAGE`。
 
-以后更新代码：
+以后更新代码时，必须重新构建镜像；否则页面仍然会使用旧容器镜像里的旧模板：
 
 ```bash
 git pull
-docker compose up -d --build
-docker compose ps
+docker-compose build mail-service mail-viewer imap-mail imap-server
+docker-compose up -d --no-deps mail-service imap-mail imap-server mail-viewer
+docker-compose ps
+```
+
+如果你已经执行过 `git pull`，但页面没有变化，通常就是少了重新构建。可以直接执行：
+
+```bash
+docker-compose build --no-cache mail-viewer imap-mail imap-server mail-service
+docker-compose stop mail-viewer imap-mail imap-server mail-service
+docker-compose rm -f mail-viewer imap-mail imap-server mail-service
+docker-compose up -d --no-deps mail-service imap-mail imap-server mail-viewer
+docker-compose ps
+```
+
+不要对整套服务直接使用 `docker-compose up -d --force-recreate`。旧版 `docker-compose 1.29.x` 搭配新版 Docker 时，重建旧容器可能出现 `KeyError: 'ContainerConfig'`，而 MongoDB 本身也不需要因为前端代码更新而重建。
+
+如果已经遇到 `KeyError: 'ContainerConfig'`，先清理 Compose 重建过程中留下的临时旧容器，再启动服务；不要加 `-v`，这样不会删除 MongoDB、外部邮箱账号和后台配置的 volume：
+
+```bash
+docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_mail-' | xargs -r docker rm -f
+docker-compose up -d mongodb
+docker-compose up -d --no-deps mail-service imap-mail imap-server mail-viewer
+docker-compose ps
 ```
 
 ### 3. 使用 GitHub 构建的 Docker 镜像启动
@@ -115,7 +140,7 @@ ghcr.io/<owner>/manymail-imap-mail
 ghcr.io/<owner>/manymail-imap-server
 ```
 
-注意：GitHub Actions 只负责构建并推送镜像，不会自动登录你的服务器，也不会自动运行 `docker compose up`。如果需要自动部署，还要另外写 SSH 部署工作流。
+注意：GitHub Actions 只负责构建并推送镜像，不会自动登录你的服务器，也不会自动运行 `docker-compose up`。如果需要自动部署，还要另外写 SSH 部署工作流。
 
 推送代码到 GitHub 后，先到仓库的 **Actions** 页面，确认 **Docker** 工作流已经成功。然后在服务器的 `.env` 中设置镜像地址。把 `<owner>` 替换成你的 GitHub 用户名或组织名，标签通常使用 `main` 或 `master`：
 
@@ -138,13 +163,9 @@ echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
 docker-compose pull
 docker-compose up -d
 docker-compose ps
-
-或者
-
-docker compose pull
-docker compose up -d
-docker compose ps
 ```
+
+只有 `.env` 中设置了上面的 4 个 `*_IMAGE` 变量时，`docker-compose pull` 才会拉取 GitHub 构建好的 GHCR 镜像。如果没有设置这些变量，Compose 会使用本地源码构建的 `manymail-*:local` 镜像，此时 `docker-compose pull` 不会让刚 `git pull` 下来的源码生效，必须回到第 2 节执行 `docker-compose up -d --build --force-recreate`。
 
 以后 GitHub 有新代码并构建成功后，在服务器执行：
 
@@ -153,18 +174,18 @@ docker compose ps
 git pull
 
 # 拉取 GitHub 新构建的镜像，并重建有变化的容器
-docker compose pull
-docker compose up -d
-docker compose ps
+docker-compose pull
+docker-compose up -d
+docker-compose ps
 ```
 
-`.env` 和 Docker volume 会保留。不要运行 `docker compose down -v`，除非你明确想删除 MongoDB 数据、外部邮箱账号和后台运行配置。
+`.env` 和 Docker volume 会保留。不要运行 `docker-compose down -v`，除非你明确想删除 MongoDB 数据、外部邮箱账号和后台运行配置。
 
 需要回滚时，把 `.env` 中的镜像 tag 改成旧版本，比如 release tag 或 GitHub Actions 里显示的 `sha-...` tag，然后执行：
 
 ```bash
-docker compose pull
-docker compose up -d
+docker-compose pull
+docker-compose up -d
 ```
 
 ### 后台运行配置
