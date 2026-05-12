@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { simpleParser } = require('mailparser');
+const nodemailer = require('nodemailer');
 const MailClient = require('./client');
 const { fromPreset, PRESETS, DOMAIN_MAP, autoDetect } = require('./config');
 const { prepareHtmlForRender } = require('./sanitize');
@@ -200,8 +201,78 @@ function accountSummary(id, account, extra = {}) {
     name: account?.name || detectPreset(email) || 'custom',
     email,
     displayName: normalizeDisplayName(account?.displayName, email),
+    smtp: account?.smtp ? {
+      host: account.smtp.host,
+      port: account.smtp.port,
+      secure: account.smtp.secure,
+      requireTLS: !!account.smtp.requireTLS,
+    } : null,
     ...extra,
   };
+}
+
+function resultOk(protocol, config) {
+  return {
+    protocol,
+    ok: true,
+    host: config?.host || '',
+    port: config?.port || '',
+    secure: config?.secure !== false,
+  };
+}
+
+function resultFail(protocol, config, err) {
+  return {
+    protocol,
+    ok: false,
+    host: config?.host || '',
+    port: config?.port || '',
+    secure: config?.secure !== false,
+    error: err?.message || String(err || '连接失败'),
+    response: err?.response || '',
+  };
+}
+
+async function verifySmtp(account) {
+  if (!account.smtp?.host) return null;
+  const transport = nodemailer.createTransport({
+    host: account.smtp.host,
+    port: account.smtp.port || 465,
+    secure: account.smtp.secure !== false,
+    requireTLS: !!account.smtp.requireTLS,
+    auth: account.auth?.pass ? account.auth : undefined,
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 12000,
+    logger: false,
+  });
+  try {
+    await transport.verify();
+    return resultOk('smtp', account.smtp);
+  } catch (err) {
+    return resultFail('smtp', account.smtp, err);
+  } finally {
+    transport.close();
+  }
+}
+
+function buildDiagnosticMessage(imapResult, smtpResult, account, err) {
+  const parts = [formatConnectionError(err, account)];
+  if (imapResult) {
+    parts.push(`IMAP 检查: ${imapResult.ok ? '正常' : '失败'} (${imapResult.host}:${imapResult.port})`);
+  }
+  if (smtpResult) {
+    parts.push(`SMTP 检查: ${smtpResult.ok ? '正常' : '失败'} (${smtpResult.host}:${smtpResult.port})`);
+    if (!imapResult?.ok && smtpResult.ok) {
+      parts.push('SMTP 正常只能说明发信链路可用；收取邮件必须 IMAP 正常');
+    }
+    if (smtpResult.error && !smtpResult.ok) {
+      parts.push(`SMTP 错误: ${smtpResult.error}`);
+    }
+  } else {
+    parts.push('SMTP 检查: 当前预设没有 SMTP 配置');
+  }
+  return parts.join('。');
 }
 
 function formatConnectionError(err, account) {
@@ -519,11 +590,19 @@ app.post('/api/accounts', async (req, res) => {
     }
   } else {
     if (!host) return res.status(400).json({ error: '自定义配置需要填写服务器地址' });
+    const smtpHost = String(req.body.smtpHost || '').trim();
+    const smtpPort = parseInt(req.body.smtpPort, 10) || 465;
     account = {
       name: email.split('@')[1] || 'custom',
       host,
       port: parseInt(port, 10) || 993,
       secure: true,
+      smtp: smtpHost ? {
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        requireTLS: smtpPort === 587,
+      } : null,
       auth: { user: email, pass: password },
     };
   }
@@ -541,12 +620,29 @@ app.post('/api/accounts', async (req, res) => {
   const client = createMailClient(account);
   try {
     await client.connect();
+    const imapCheck = resultOk('imap', account);
+    let smtpCheck = null;
+    try {
+      smtpCheck = await verifySmtp(account);
+    } catch (smtpErr) {
+      smtpCheck = resultFail('smtp', account.smtp || {}, smtpErr);
+    }
     const id = ++clientId;
     clients.set(id, client);
     saveAccounts();
-    res.json(accountSummary(id, account));
+    res.json(accountSummary(id, account, { checks: { imap: imapCheck, smtp: smtpCheck } }));
   } catch (err) {
-    res.status(500).json({ error: formatConnectionError(err, account) });
+    const imapCheck = resultFail('imap', account, err);
+    let smtpCheck = null;
+    try {
+      smtpCheck = await verifySmtp(account);
+    } catch (smtpErr) {
+      smtpCheck = resultFail('smtp', account.smtp || {}, smtpErr);
+    }
+    res.status(500).json({
+      error: buildDiagnosticMessage(imapCheck, smtpCheck, account, err),
+      checks: { imap: imapCheck, smtp: smtpCheck },
+    });
   }
 });
 
@@ -975,9 +1071,18 @@ app.post('/api/accounts/batch', async (req, res) => {
       const account = autoDetect(email, password);
       const client = createMailClient(account);
       await client.connect();
+      let smtpCheck = null;
+      try {
+        smtpCheck = await verifySmtp(account);
+      } catch (smtpErr) {
+        smtpCheck = resultFail('smtp', account.smtp || {}, smtpErr);
+      }
       const id = ++clientId;
       clients.set(id, client);
-      results.push(accountSummary(id, account, { ok: true }));
+      results.push(accountSummary(id, account, {
+        ok: true,
+        checks: { imap: resultOk('imap', account), smtp: smtpCheck },
+      }));
     } catch (err) {
       const fallbackAccount = (() => {
         try {
@@ -986,7 +1091,19 @@ app.post('/api/accounts/batch', async (req, res) => {
           return { name: detectPreset(email) || 'auto', host: '', port: '', auth: { user: email } };
         }
       })();
-      results.push({ email, ok: false, error: formatConnectionError(err, fallbackAccount) });
+      const imapCheck = resultFail('imap', fallbackAccount, err);
+      let smtpCheck = null;
+      try {
+        smtpCheck = await verifySmtp(fallbackAccount);
+      } catch (smtpErr) {
+        smtpCheck = resultFail('smtp', fallbackAccount.smtp || {}, smtpErr);
+      }
+      results.push({
+        email,
+        ok: false,
+        error: buildDiagnosticMessage(imapCheck, smtpCheck, fallbackAccount, err),
+        checks: { imap: imapCheck, smtp: smtpCheck },
+      });
     }
   }
 

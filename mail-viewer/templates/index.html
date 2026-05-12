@@ -173,7 +173,7 @@
             margin-bottom: 12px;
         }
         
-        /* 三栏邮件布局 */
+        /* 四栏邮件布局 */
         .mail-shell {
             width: min(100%, var(--content-max-width));
             margin: 0 auto;
@@ -204,7 +204,7 @@
                 overflow: hidden;
                 align-items: stretch;
                 display: grid;
-                grid-template-columns: minmax(220px, 260px) minmax(280px, 360px) minmax(0, 1fr);
+                grid-template-columns: minmax(210px, 250px) minmax(230px, 320px) minmax(280px, 360px) minmax(0, 1fr);
                 gap: 10px;
             }
             .mail-col {
@@ -517,6 +517,12 @@
             background: rgba(91,154,139,0.08);
         }
         .mailbox-control-panel {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+        .mail-list-toolbar {
             flex: 0 0 auto;
         }
         .mail-folder-count {
@@ -547,7 +553,7 @@
                 --bs-gutter-x: 0;
                 --bs-gutter-y: 0;
                 display: grid;
-                grid-template-columns: minmax(170px, 240px) minmax(230px, 340px) minmax(0, 1fr);
+                grid-template-columns: minmax(150px, 220px) minmax(180px, 260px) minmax(220px, 320px) minmax(0, 1fr);
                 gap: 10px;
                 align-items: stretch;
             }
@@ -627,8 +633,8 @@
                 </div>
             </div>
             
-            <!-- 第2栏：邮箱控件 / 邮件列表 -->
-            <div class="col-12 col-lg-4 mail-col" id="mail-list-column">
+            <!-- 第2栏：邮箱控件 / 文件夹 -->
+            <div class="col-12 col-lg-3 mail-col" id="mail-folder-column">
                 <div class="card h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <div class="d-flex align-items-center gap-2 min-w-0">
@@ -678,6 +684,18 @@
                                 </button>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 第3栏：邮件标题列表 -->
+            <div class="col-12 col-lg-3 mail-col" id="mail-list-column">
+                <div class="card h-100">
+                    <div class="card-header d-flex align-items-center gap-2 min-w-0">
+                        <i class="bi bi-envelope-open text-muted"></i>
+                        <span class="fw-semibold text-truncate" data-i18n="mailList">邮件列表</span>
+                    </div>
+                    <div class="card-body mail-list-body">
                         <div class="mail-list-toolbar">
                             <div class="input-group input-group-sm" id="search-bar" style="display:none;">
                                 <input type="text" class="form-control" id="search-input" data-i18n-ph="searchPlaceholder" placeholder="搜索发件人/主题/内容..." onkeydown="if(event.key==='Enter') searchMail()">
@@ -711,7 +729,7 @@
                 </div>
             </div>
             
-            <!-- 第3栏：邮件详情 -->
+            <!-- 第4栏：邮件详情 -->
             <div class="col-12 col-lg-5 mail-col" id="mail-detail-column">
                 <div class="card h-100" id="mail-detail-card">
                     <div class="card-header">
@@ -871,6 +889,14 @@
                             <label class="form-label" for="external-port" data-i18n="imapPort">端口</label>
                             <input type="number" class="form-control" id="external-port" value="993" min="1" max="65535">
                         </div>
+                        <div class="col-8">
+                            <label class="form-label" for="external-smtp-host" data-i18n="smtpHost">SMTP 服务器</label>
+                            <input type="text" class="form-control" id="external-smtp-host" placeholder="smtp.example.com">
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label" for="external-smtp-port" data-i18n="smtpPort">SMTP 端口</label>
+                            <input type="number" class="form-control" id="external-smtp-port" value="465" min="1" max="65535">
+                        </div>
                     </div>
                     <div class="mb-3 mt-3">
                         <label class="form-label" for="external-display-name" data-i18n="displayName">显示名字</label>
@@ -886,6 +912,7 @@
                         <input type="password" class="form-control" id="external-password" autocomplete="new-password">
                     </div>
                     <div class="small text-muted" data-i18n="externalPasswordHint">Outlook、QQ、163 等通常需要应用专用密码；Gmail 推荐使用 OAuth2。</div>
+                    <div class="small mt-2" id="external-check-result" style="display:none;"></div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
@@ -971,12 +998,19 @@
                 autoDetectProvider: '自动识别',
                 imapHost: 'IMAP 服务器',
                 imapPort: '端口',
+                smtpHost: 'SMTP 服务器',
+                smtpPort: 'SMTP 端口',
                 accountEmail: '邮箱地址',
                 accountPassword: '密码 / 应用专用密码',
                 externalPasswordHint: '建议选择自动识别。QQ/163/Outlook 等通常需要应用专用密码或授权码；Gmail 推荐使用 OAuth2。',
                 addAccount: '添加账号',
                 adding: '添加中...',
                 externalAdded: '外部邮箱已添加',
+                mailList: '邮件列表',
+                imapCheckOk: 'IMAP 检查正常，可以收取邮件',
+                smtpCheckOk: 'SMTP 检查正常',
+                smtpCheckFailed: 'SMTP 检查失败',
+                smtpCheckSkipped: '未检查 SMTP',
                 externalLoadFailed: '外部邮箱加载失败',
                 foldersLoadFailed: '文件夹加载失败',
                 noFolders: '没有可用文件夹',
@@ -1106,12 +1140,19 @@
                 autoDetectProvider: 'Auto detect',
                 imapHost: 'IMAP Server',
                 imapPort: 'Port',
+                smtpHost: 'SMTP Server',
+                smtpPort: 'SMTP Port',
                 accountEmail: 'Email Address',
                 accountPassword: 'Password / App Password',
                 externalPasswordHint: 'Auto detect is recommended. Outlook, QQ, 163 and others usually require an app password or authorization code; Gmail is better with OAuth2.',
                 addAccount: 'Add Account',
                 adding: 'Adding...',
                 externalAdded: 'External mailbox added',
+                mailList: 'Mail List',
+                imapCheckOk: 'IMAP check passed; receiving mail is available',
+                smtpCheckOk: 'SMTP check passed',
+                smtpCheckFailed: 'SMTP check failed',
+                smtpCheckSkipped: 'SMTP not checked',
                 externalLoadFailed: 'Failed to load external mailboxes',
                 foldersLoadFailed: 'Failed to load folders',
                 noFolders: 'No folders available',
@@ -1426,7 +1467,9 @@
                 const message = typeof payload === 'string'
                     ? payload
                     : (payload.error || payload.message || `${t('loadFailed')} (${resp.status})`);
-                throw new Error(message);
+                const err = new Error(message);
+                if (payload && typeof payload === 'object') err.checks = payload.checks;
+                throw err;
             }
             return payload;
         }
@@ -1880,6 +1923,27 @@
             alert.style.display = 'block';
         }
 
+        function _renderExternalCheckResult(checks) {
+            const el = document.getElementById('external-check-result');
+            if (!el) return;
+            if (!checks) {
+                el.style.display = 'none';
+                el.innerHTML = '';
+                return;
+            }
+            const rows = [];
+            if (checks.imap) {
+                rows.push(`<div class="${checks.imap.ok ? 'text-success' : 'text-danger'}">IMAP: ${checks.imap.ok ? t('imapCheckOk') : _escapeHtml(checks.imap.error || t('loadFailed'))} (${_escapeHtml(checks.imap.host || '')}:${_escapeHtml(String(checks.imap.port || ''))})</div>`);
+            }
+            if (checks.smtp) {
+                rows.push(`<div class="${checks.smtp.ok ? 'text-success' : 'text-warning'}">SMTP: ${checks.smtp.ok ? t('smtpCheckOk') : `${t('smtpCheckFailed')}: ${_escapeHtml(checks.smtp.error || '')}`} (${_escapeHtml(checks.smtp.host || '')}:${_escapeHtml(String(checks.smtp.port || ''))})</div>`);
+            } else {
+                rows.push(`<div class="text-muted">SMTP: ${t('smtpCheckSkipped')}</div>`);
+            }
+            el.innerHTML = rows.join('');
+            el.style.display = 'block';
+        }
+
         function handleExternalPresetChange() {
             const preset = document.getElementById('external-preset').value;
             document.getElementById('external-custom-fields').classList.toggle('d-none', preset !== 'custom');
@@ -1893,15 +1957,50 @@
                 'outlook.com': 'outlook',
                 'hotmail.com': 'outlook',
                 'live.com': 'outlook',
+                'msn.com': 'outlook',
                 'qq.com': 'qq',
                 'foxmail.com': 'qq',
                 '163.com': '163',
-                '126.com': '163',
+                '126.com': '126',
+                'yeah.net': 'yeah',
+                'aliyun.com': 'aliyun',
+                '139.com': '139',
+                'sohu.com': 'sohu',
+                'sina.com': 'sina',
+                'sina.cn': 'sina',
+                'tom.com': 'tom',
                 'yahoo.com': 'yahoo',
                 'yahoo.co.jp': 'yahoo',
+                'ymail.com': 'yahoo',
+                'rocketmail.com': 'yahoo',
+                'icloud.com': 'icloud',
+                'me.com': 'icloud',
+                'mac.com': 'icloud',
+                'aol.com': 'aol',
                 'gmx.com': 'gmx',
                 'gmx.net': 'gmx',
                 'gmx.de': 'gmx',
+                'caramail.com': 'gmx',
+                'mail.com': 'mailcom',
+                'email.com': 'mailcom',
+                'usa.com': 'mailcom',
+                'zoho.com': 'zoho',
+                'zohomail.com': 'zoho',
+                'proton.me': 'proton',
+                'protonmail.com': 'proton',
+                'pm.me': 'proton',
+                'yandex.com': 'yandex',
+                'yandex.ru': 'yandex',
+                'fastmail.com': 'fastmail',
+                'fastmail.fm': 'fastmail',
+                'runbox.com': 'runbox',
+                'mail.ru': 'mailru',
+                'bk.ru': 'mailru',
+                'inbox.ru': 'mailru',
+                'list.ru': 'mailru',
+                'naver.com': 'naver',
+                'daum.net': 'daum',
+                'hanmail.net': 'daum',
             };
             return map[domain] || 'auto';
         }
@@ -1920,9 +2019,10 @@
             const presetSelect = document.getElementById('external-preset');
             const alert = document.getElementById('external-account-alert');
             alert.style.display = 'none';
+            _renderExternalCheckResult(null);
             await loadExternalPresets();
-            const options = Array.from(new Set(['auto', 'qq', 'outlook', 'gmail', ...externalPresets, 'custom']));
-            const labels = { auto: t('autoDetectProvider') };
+            const options = Array.from(new Set(['auto', ...externalPresets, 'custom']));
+            const labels = { auto: t('autoDetectProvider'), mailcom: 'mail.com' };
             const current = presetSelect.value || 'auto';
             presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(labels[value] || value)}</option>`).join('');
             presetSelect.value = options.includes(current) ? current : 'auto';
@@ -1931,6 +2031,8 @@
             document.getElementById('external-password').value = '';
             document.getElementById('external-host').value = '';
             document.getElementById('external-port').value = '993';
+            document.getElementById('external-smtp-host').value = '';
+            document.getElementById('external-smtp-port').value = '465';
             document.getElementById('external-provider-hint').textContent = t('autoDetectProvider');
             handleExternalPresetChange();
             _getExternalAccountModal().show();
@@ -1943,6 +2045,8 @@
             const password = document.getElementById('external-password').value;
             const host = document.getElementById('external-host').value.trim();
             const port = document.getElementById('external-port').value.trim();
+            const smtpHost = document.getElementById('external-smtp-host').value.trim();
+            const smtpPort = document.getElementById('external-smtp-port').value.trim();
             if (!_isValidEmail(email)) {
                 _showExternalAccountAlert('danger', t('mailboxInvalid'));
                 return;
@@ -1955,6 +2059,7 @@
                 _showExternalAccountAlert('danger', t('imapHost'));
                 return;
             }
+            _renderExternalCheckResult(null);
 
             const btn = document.getElementById('btn-add-external-account');
             btn.disabled = true;
@@ -1965,17 +2070,21 @@
                 if (preset === 'custom') {
                     payload.host = host;
                     payload.port = port || 993;
+                    payload.smtpHost = smtpHost;
+                    payload.smtpPort = smtpPort || 465;
                 }
                 const account = await _imapApi('/accounts', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
+                _renderExternalCheckResult(account.checks);
                 _showExternalAccountAlert('success', t('externalAdded'));
                 await loadMailboxes();
                 _getExternalAccountModal().hide();
                 await selectExternalAccount(account.id);
             } catch (e) {
+                _renderExternalCheckResult(e.checks);
                 _showExternalAccountAlert('danger', e.message);
             } finally {
                 btn.disabled = false;
