@@ -4,7 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { simpleParser } = require('mailparser');
 const MailClient = require('./client');
-const { fromPreset, PRESETS, autoDetect } = require('./config');
+const { fromPreset, PRESETS, DOMAIN_MAP, autoDetect } = require('./config');
 const { prepareHtmlForRender } = require('./sanitize');
 
 const app = express();
@@ -181,6 +181,39 @@ function deserializeAccount(item) {
 
 function createMailClient(account) {
   return new MailClient(account, { refreshOAuthToken });
+}
+
+function detectPreset(email) {
+  const domain = String(email || '').split('@')[1]?.toLowerCase();
+  return DOMAIN_MAP[domain] || '';
+}
+
+function formatConnectionError(err, account) {
+  const raw = err?.message || String(err || '未知错误');
+  const preset = String(account?.name || detectPreset(account?.auth?.user) || '').toLowerCase();
+  const email = account?.auth?.user || '';
+  const host = account?.host || '';
+  const port = account?.port || '';
+  const hints = [];
+
+  if (preset === 'qq' || email.endsWith('@qq.com') || email.endsWith('@foxmail.com')) {
+    hints.push('QQ 邮箱请确认已在 QQ 邮箱设置中开启 IMAP/SMTP 服务，并使用“授权码”而不是 QQ 登录密码');
+    hints.push('如果刚开启 IMAP，请等待几分钟后重试；服务器应为 imap.qq.com:993');
+  }
+  if (preset === 'gmail') {
+    hints.push('Gmail 推荐使用 OAuth2 登录；如果用密码方式，需要应用专用密码且账号已允许 IMAP');
+  }
+  if (preset === 'outlook') {
+    hints.push('Outlook/Hotmail 可能需要应用专用密码，企业账号还可能被管理员禁用 IMAP');
+  }
+
+  if (/Command failed/i.test(raw)) {
+    hints.push('IMAP 服务器拒绝了登录命令，通常是账号、授权码、IMAP 开关或邮箱类型选择不正确');
+  }
+
+  const detail = [`连接失败: ${raw}`, `邮箱类型: ${preset || 'auto'}`, `服务器: ${host}:${port}`];
+  if (hints.length) detail.push(`提示: ${hints.join('；')}`);
+  return detail.join('。');
 }
 
 function upsertClient(account) {
@@ -449,7 +482,13 @@ app.post('/api/accounts', async (req, res) => {
   }
 
   let account;
-  if (preset && preset !== 'custom') {
+  if (!preset || preset === 'auto') {
+    try {
+      account = autoDetect(email, password);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  } else if (preset !== 'custom') {
     try {
       account = fromPreset(preset, email, password);
     } catch (e) {
@@ -481,7 +520,7 @@ app.post('/api/accounts', async (req, res) => {
     saveAccounts();
     res.json({ id, name: account.name, email: account.auth.user });
   } catch (err) {
-    res.status(500).json({ error: `连接失败: ${err.message}` });
+    res.status(500).json({ error: formatConnectionError(err, account) });
   }
 });
 

@@ -202,7 +202,7 @@
                 overflow: hidden;
                 align-items: stretch;
                 display: grid;
-                grid-template-columns: minmax(220px, 280px) minmax(320px, 440px) minmax(0, 1fr);
+                grid-template-columns: minmax(220px, 260px) minmax(360px, 500px) minmax(0, 1fr);
                 gap: 12px;
             }
             .mail-col {
@@ -386,11 +386,20 @@
         .mail-client-shell {
             gap: 0.75rem;
         }
-        .mail-account-list,
-        .mail-folder-list {
+        .mail-account-list {
             display: flex;
             flex-direction: column;
             gap: 4px;
+            min-height: 0;
+            overflow-y: auto;
+        }
+        .mail-folder-list {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+            flex: 0 0 auto;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
         }
         .mail-account-item,
         .mail-folder-item {
@@ -405,6 +414,10 @@
             gap: 8px;
             text-align: left;
             min-height: 36px;
+        }
+        .mail-folder-item {
+            border: 1px solid var(--border-color);
+            background: rgba(245,249,247,0.72);
         }
         .mail-account-item:hover,
         .mail-folder-item:hover {
@@ -437,6 +450,36 @@
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 6px;
+        }
+        .mail-account-footer {
+            margin-top: auto;
+            padding-top: 10px;
+            border-top: 1px solid var(--border-color);
+        }
+        .account-settings-list {
+            max-height: 220px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 6px;
+            background: rgba(245,249,247,0.45);
+        }
+        .account-settings-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 34px;
+            padding: 5px 8px;
+            border-radius: var(--radius-sm);
+        }
+        .account-settings-row + .account-settings-row {
+            margin-top: 4px;
+        }
+        .account-settings-row:hover {
+            background: rgba(91,154,139,0.08);
+        }
+        .mailbox-control-panel {
+            flex: 0 0 auto;
         }
         .mail-folder-count {
             margin-left: auto;
@@ -485,7 +528,7 @@
 
     <div class="container-fluid py-4 px-4 mail-shell">
         <div class="row g-4 mail-layout">
-            <!-- 第1栏：账号 / 文件夹 -->
+            <!-- 第1栏：邮箱账号 -->
             <div class="col-12 col-lg-3 mail-col mail-left" id="mail-left-column">
                 <div class="card mail-query-card">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -498,34 +541,13 @@
                         <div id="mail-account-list" class="mail-account-list">
                             <div class="text-center text-muted py-2 small" data-i18n="loading">加载中...</div>
                         </div>
-                        <div class="mail-account-actions">
-                            <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
-                                <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
-                            </button>
-                            <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
-                                <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
-                            </button>
-                        </div>
-                        <div class="input-group input-group-sm">
-                            <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
-                            <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
-                                <i class="bi bi-plus-lg"></i>
-                            </button>
-                        </div>
                         <div id="mailbox-error" class="text-danger small" style="display:none;"></div>
-                        <div class="mail-sidebar-section-title" data-i18n="folders">文件夹</div>
-                        <div id="mail-folder-list" class="mail-folder-list">
-                            <button class="mail-folder-item active" data-folder="inbox" onclick="selectFolder('inbox')">
-                                <i class="bi bi-inbox"></i><span data-i18n="inbox">收件箱</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
-                            </button>
-                            <button class="mail-folder-item" data-folder="sent" onclick="selectFolder('sent')">
-                                <i class="bi bi-send"></i><span data-i18n="sent">已发送</span>
-                            </button>
-                            <button class="mail-folder-item" data-folder="trash" onclick="selectFolder('trash')">
-                                <i class="bi bi-trash"></i><span data-i18n="trash">回收站</span>
+                        <div class="small text-muted" data-i18n="accountTip">添加多个邮箱后，可像邮件客户端一样切换查看。</div>
+                        <div class="mail-account-footer">
+                            <button class="btn btn-sm btn-outline-secondary w-100" onclick="openAccountSettingsModal()">
+                                <i class="bi bi-sliders me-1"></i><span data-i18n="accountSettings">邮箱账号设置</span>
                             </button>
                         </div>
-                        <div class="small text-muted mt-auto" data-i18n="accountTip">添加多个邮箱后，可像邮件客户端一样切换查看。</div>
                     </div>
                 </div>
                 
@@ -554,7 +576,7 @@
                 </div>
             </div>
             
-            <!-- 第2栏：收件箱列表 -->
+            <!-- 第2栏：邮箱控件 / 邮件列表 -->
             <div class="col-12 col-lg-4 mail-col" id="mail-list-column">
                 <div class="card h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -585,6 +607,23 @@
                         </div>
                     </div>
                     <div class="card-body mail-list-body">
+                        <div class="mailbox-control-panel">
+                            <div class="mail-sidebar-section-title mt-0" data-i18n="mailboxControls">邮箱控件</div>
+                            <div id="mail-folder-list" class="mail-folder-list">
+                                <button class="mail-folder-item active" data-folder="inbox" onclick="selectFolder('inbox')">
+                                    <i class="bi bi-inbox"></i><span data-i18n="inbox">收件箱</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
+                                </button>
+                                <button class="mail-folder-item" data-folder="sent" onclick="selectFolder('sent')">
+                                    <i class="bi bi-send"></i><span data-i18n="sent">已发送</span>
+                                </button>
+                                <button class="mail-folder-item" data-folder="drafts" onclick="selectFolder('drafts')">
+                                    <i class="bi bi-file-earmark-text"></i><span data-i18n="drafts">草稿箱</span>
+                                </button>
+                                <button class="mail-folder-item" data-folder="trash" onclick="selectFolder('trash')">
+                                    <i class="bi bi-trash"></i><span data-i18n="trash">回收站</span>
+                                </button>
+                            </div>
+                        </div>
                         <div class="mail-list-toolbar">
                             <div class="input-group input-group-sm" id="search-bar" style="display:none;">
                                 <input type="text" class="form-control" id="search-input" data-i18n-ph="searchPlaceholder" placeholder="搜索发件人/主题/内容..." onkeydown="if(event.key==='Enter') searchMail()">
@@ -702,6 +741,53 @@
         </div>
     </div>
 
+    <!-- 邮箱账号设置 Modal -->
+    <div class="modal fade" id="accountSettingsModal" tabindex="-1" aria-labelledby="accountSettingsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
+                    <h5 class="modal-title" id="accountSettingsModalLabel"><i class="bi bi-sliders me-2"></i><span data-i18n="accountSettings">邮箱账号设置</span></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="account-settings-alert" class="alert" style="display:none;" role="alert"></div>
+                    <div class="row g-4">
+                        <div class="col-12 col-md-6">
+                            <h6 class="mb-2"><i class="bi bi-envelope me-1"></i><span data-i18n="localMailbox">本地</span></h6>
+                            <div class="input-group input-group-sm mb-2">
+                                <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
+                                <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
+                                    <i class="bi bi-plus-lg"></i>
+                                </button>
+                            </div>
+                            <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
+                            <div id="local-account-settings-list" class="account-settings-list"></div>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <h6 class="mb-2"><i class="bi bi-cloud-arrow-down me-1"></i><span data-i18n="externalMailbox">外部</span></h6>
+                            <div class="mail-account-actions mb-2">
+                                <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
+                                    <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
+                                    <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
+                                </button>
+                            </div>
+                            <div class="small text-muted mb-2" data-i18n="externalMailboxHint">外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。</div>
+                            <div id="external-account-settings-list" class="account-settings-list"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="loadMailboxes()">
+                        <i class="bi bi-arrow-clockwise me-1"></i><span data-i18n="refresh">刷新</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 外部邮箱账号 Modal -->
     <div class="modal fade" id="externalAccountModal" tabindex="-1" aria-labelledby="externalAccountModalLabel" aria-hidden="true">
         <div class="modal-dialog">
@@ -715,6 +801,7 @@
                     <div class="mb-3">
                         <label class="form-label" for="external-preset" data-i18n="providerPreset">邮箱类型</label>
                         <select class="form-select" id="external-preset" onchange="handleExternalPresetChange()">
+                            <option value="auto">auto</option>
                             <option value="outlook">outlook</option>
                             <option value="gmail">gmail</option>
                             <option value="custom">custom</option>
@@ -732,7 +819,8 @@
                     </div>
                     <div class="mb-3 mt-3">
                         <label class="form-label" for="external-email" data-i18n="accountEmail">邮箱地址</label>
-                        <input type="email" class="form-control" id="external-email" placeholder="name@outlook.com">
+                        <input type="email" class="form-control" id="external-email" placeholder="name@qq.com" oninput="handleExternalEmailInput()">
+                        <div class="small text-muted mt-1" id="external-provider-hint"></div>
                     </div>
                     <div class="mb-2">
                         <label class="form-label" for="external-password" data-i18n="accountPassword">密码 / 应用专用密码</label>
@@ -809,17 +897,22 @@
                 mailboxInvalid: '请输入完整邮箱地址',
                 mailboxAdded: '邮箱已添加',
                 confirmRemoveMailbox: '从列表移除邮箱 "{email}" 吗？邮件数据不会被删除。',
+                accountSettings: '邮箱账号设置',
+                mailboxControls: '邮箱控件',
+                localMailboxHint: '本地邮箱用于接收当前系统托管域名的邮件。',
+                externalMailboxHint: '外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。',
                 localMailbox: '本地',
                 externalMailbox: '外部',
                 gmailLogin: 'Gmail 登录',
                 addExternal: '添加外部',
                 connectExternal: '连接外部邮箱',
                 providerPreset: '邮箱类型',
+                autoDetectProvider: '自动识别',
                 imapHost: 'IMAP 服务器',
                 imapPort: '端口',
                 accountEmail: '邮箱地址',
                 accountPassword: '密码 / 应用专用密码',
-                externalPasswordHint: 'Outlook、QQ、163 等通常需要应用专用密码；Gmail 推荐使用 OAuth2。',
+                externalPasswordHint: '建议选择自动识别。QQ/163/Outlook 等通常需要应用专用密码或授权码；Gmail 推荐使用 OAuth2。',
                 addAccount: '添加账号',
                 adding: '添加中...',
                 externalAdded: '外部邮箱已添加',
@@ -843,12 +936,14 @@
                 domainTip: '输入前缀即可查询邮件，邮箱不存在会自动创建。',
                 inbox: '收件箱',
                 sent: '已发送',
+                drafts: '草稿箱',
                 trash: '回收站',
                 attachments: '附件',
                 download: '下载',
                 restore: '恢复',
                 permanentDelete: '彻底删除',
                 noTrashMail: '回收站为空',
+                noDrafts: '暂无草稿',
                 attachmentUnavailable: '附件下载接口不可用',
                 confirmRestore: '确定要恢复这封邮件吗？',
                 confirmPermanentDelete: '确定要彻底删除这封邮件吗？此操作不可恢复。',
@@ -935,17 +1030,22 @@
                 mailboxInvalid: 'Enter a full email address',
                 mailboxAdded: 'Mailbox added',
                 confirmRemoveMailbox: 'Remove mailbox "{email}" from the list? Mail data is not deleted.',
+                accountSettings: 'Mailbox Settings',
+                mailboxControls: 'Mailbox Controls',
+                localMailboxHint: 'Local mailboxes receive mail for domains hosted by this system.',
+                externalMailboxHint: 'External accounts connect Gmail, Outlook, or other IMAP mailboxes.',
                 localMailbox: 'Local',
                 externalMailbox: 'External',
                 gmailLogin: 'Gmail Login',
                 addExternal: 'Add External',
                 connectExternal: 'Connect External Mailbox',
                 providerPreset: 'Mailbox Type',
+                autoDetectProvider: 'Auto detect',
                 imapHost: 'IMAP Server',
                 imapPort: 'Port',
                 accountEmail: 'Email Address',
                 accountPassword: 'Password / App Password',
-                externalPasswordHint: 'Outlook, QQ, 163 and others usually require an app password; Gmail is better with OAuth2.',
+                externalPasswordHint: 'Auto detect is recommended. Outlook, QQ, 163 and others usually require an app password or authorization code; Gmail is better with OAuth2.',
                 addAccount: 'Add Account',
                 adding: 'Adding...',
                 externalAdded: 'External mailbox added',
@@ -969,12 +1069,14 @@
                 domainTip: 'Enter prefix to query. Mailbox auto-created if not exists.',
                 inbox: 'Inbox',
                 sent: 'Sent',
+                drafts: 'Drafts',
                 trash: 'Trash',
                 attachments: 'Attachments',
                 download: 'Download',
                 restore: 'Restore',
                 permanentDelete: 'Delete forever',
                 noTrashMail: 'Trash is empty',
+                noDrafts: 'No drafts',
                 attachmentUnavailable: 'Attachment download API unavailable',
                 confirmRestore: 'Restore this email?',
                 confirmPermanentDelete: 'Permanently delete this email? This cannot be undone.',
@@ -1113,6 +1215,7 @@
         let currentSentTotal = 0;
         let currentTrashTotal = 0;
         let settingsModal = null;
+        let accountSettingsModal = null;
         let externalAccountModal = null;
         const PAGE_SIZE = 30;
 
@@ -1219,6 +1322,7 @@
             if (currentAccountType === 'external') return currentExternalFolder || 'INBOX';
             if (currentTab === 'sent') return t('sent');
             if (currentTab === 'trash') return t('trash');
+            if (currentTab === 'drafts') return t('drafts');
             return t('inbox');
         }
 
@@ -1269,12 +1373,23 @@
             error.className = `text-${type} small`;
             error.textContent = message;
             error.style.display = 'block';
+            const settingsAlert = document.getElementById('account-settings-alert');
+            if (settingsAlert) {
+                settingsAlert.className = `alert alert-${type === 'danger' ? 'danger' : type === 'success' ? 'success' : 'secondary'}`;
+                settingsAlert.textContent = message;
+                settingsAlert.style.display = 'block';
+            }
         }
 
         function _clearMailboxError() {
             const error = document.getElementById('mailbox-error');
             error.style.display = 'none';
             error.textContent = '';
+            const settingsAlert = document.getElementById('account-settings-alert');
+            if (settingsAlert) {
+                settingsAlert.style.display = 'none';
+                settingsAlert.textContent = '';
+            }
         }
 
         function _externalAccountById(id) {
@@ -1423,6 +1538,41 @@
             }
 
             list.innerHTML = parts.join('');
+            renderAccountSettingsLists();
+        }
+
+        function renderAccountSettingsLists() {
+            const localList = document.getElementById('local-account-settings-list');
+            const externalList = document.getElementById('external-account-settings-list');
+            if (localList) {
+                localList.innerHTML = mailboxes.length ? mailboxes.map(item => {
+                    const address = item.address || '';
+                    return `
+                        <div class="account-settings-row">
+                            <i class="bi bi-envelope text-muted"></i>
+                            <span class="text-truncate flex-grow-1">${_escapeHtml(address)}</span>
+                            <button class="btn btn-sm p-0 text-danger" onclick="removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </div>`;
+                }).join('') : `<div class="text-muted small px-2 py-2">${t('queryHint')}</div>`;
+            }
+            if (externalList) {
+                externalList.innerHTML = externalAccounts.length ? externalAccounts.map(account => {
+                    const id = encodeURIComponent(String(account.id));
+                    const email = account.email || '';
+                    const provider = account.name || t('externalMailbox');
+                    return `
+                        <div class="account-settings-row">
+                            <i class="bi bi-cloud-arrow-down text-muted"></i>
+                            <span class="text-truncate flex-grow-1">${_escapeHtml(email)}</span>
+                            <span class="mail-account-kind">${_escapeHtml(provider)}</span>
+                            <button class="btn btn-sm p-0 text-danger" onclick="removeExternalAccount('${id}')" title="${t('delete')}">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </div>`;
+                }).join('') : `<div class="text-muted small px-2 py-2">${t('queryHint')}</div>`;
+            }
         }
 
         function renderFolderList() {
@@ -1453,6 +1603,9 @@
                 </button>
                 <button class="mail-folder-item ${currentTab === 'sent' ? 'active' : ''}" data-folder="sent" onclick="selectFolder('sent')">
                     <i class="bi bi-send"></i><span>${t('sent')}</span>
+                </button>
+                <button class="mail-folder-item ${currentTab === 'drafts' ? 'active' : ''}" data-folder="drafts" onclick="selectFolder('drafts')">
+                    <i class="bi bi-file-earmark-text"></i><span>${t('drafts')}</span>
                 </button>
                 <button class="mail-folder-item ${currentTab === 'trash' ? 'active' : ''}" data-folder="trash" onclick="selectFolder('trash')">
                     <i class="bi bi-trash"></i><span>${t('trash')}</span>
@@ -1504,6 +1657,7 @@
                 }
                 renderMailboxes();
                 renderFolderList();
+                renderAccountSettingsLists();
             }
         }
 
@@ -1612,6 +1766,19 @@
             return externalAccountModal;
         }
 
+        function _getAccountSettingsModal() {
+            if (!accountSettingsModal) {
+                accountSettingsModal = new bootstrap.Modal(document.getElementById('accountSettingsModal'));
+            }
+            return accountSettingsModal;
+        }
+
+        function openAccountSettingsModal() {
+            _clearMailboxError();
+            renderAccountSettingsLists();
+            _getAccountSettingsModal().show();
+        }
+
         function _showExternalAccountAlert(type, message) {
             const alert = document.getElementById('external-account-alert');
             alert.className = `alert alert-${type}`;
@@ -1624,19 +1791,52 @@
             document.getElementById('external-custom-fields').classList.toggle('d-none', preset !== 'custom');
         }
 
+        function detectExternalPreset(email) {
+            const domain = String(email || '').split('@')[1]?.toLowerCase() || '';
+            const map = {
+                'gmail.com': 'gmail',
+                'googlemail.com': 'gmail',
+                'outlook.com': 'outlook',
+                'hotmail.com': 'outlook',
+                'live.com': 'outlook',
+                'qq.com': 'qq',
+                'foxmail.com': 'qq',
+                '163.com': '163',
+                '126.com': '163',
+                'yahoo.com': 'yahoo',
+                'yahoo.co.jp': 'yahoo',
+                'gmx.com': 'gmx',
+                'gmx.net': 'gmx',
+                'gmx.de': 'gmx',
+            };
+            return map[domain] || 'auto';
+        }
+
+        function handleExternalEmailInput() {
+            const presetSelect = document.getElementById('external-preset');
+            if (presetSelect.value !== 'auto') return;
+            const detected = detectExternalPreset(document.getElementById('external-email').value);
+            const hint = document.getElementById('external-provider-hint');
+            hint.textContent = detected === 'auto'
+                ? t('autoDetectProvider')
+                : `${t('autoDetectProvider')}: ${detected}`;
+        }
+
         async function openExternalAccountModal() {
             const presetSelect = document.getElementById('external-preset');
             const alert = document.getElementById('external-account-alert');
             alert.style.display = 'none';
             await loadExternalPresets();
-            const options = Array.from(new Set(['outlook', 'gmail', ...externalPresets, 'custom']));
-            const current = presetSelect.value || 'outlook';
-            presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(value)}</option>`).join('');
-            presetSelect.value = options.includes(current) ? current : 'outlook';
+            const options = Array.from(new Set(['auto', 'qq', 'outlook', 'gmail', ...externalPresets, 'custom']));
+            const labels = { auto: t('autoDetectProvider') };
+            const current = presetSelect.value || 'auto';
+            presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(labels[value] || value)}</option>`).join('');
+            presetSelect.value = options.includes(current) ? current : 'auto';
             document.getElementById('external-email').value = '';
             document.getElementById('external-password').value = '';
             document.getElementById('external-host').value = '';
             document.getElementById('external-port').value = '993';
+            document.getElementById('external-provider-hint').textContent = t('autoDetectProvider');
             handleExternalPresetChange();
             _getExternalAccountModal().show();
         }
@@ -1665,6 +1865,7 @@
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('adding')}`;
             try {
                 const payload = { preset, email, password };
+                if (preset !== 'auto') payload.preset = preset;
                 if (preset === 'custom') {
                     payload.host = host;
                     payload.port = port || 993;
@@ -2009,6 +2210,11 @@
                         document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryFirst')}</div>`;
                     }
                     resetMailDetail();
+                } else if (tab === 'drafts') {
+                    if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                    if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
+                    document.getElementById('mail-list').innerHTML = `<div class="empty-state"><i class="bi bi-file-earmark-text d-block"></i><p>${t('noDrafts')}</p></div>`;
+                    resetMailDetail();
                 } else {
                     if (tabSent) tabSent.className = 'btn btn-outline-secondary';
                     if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
@@ -2033,6 +2239,7 @@
             if (currentTab === 'inbox') queryInbox();
             else if (currentTab === 'sent') querySent();
             else if (currentTab === 'trash') queryTrash();
+            else if (currentTab === 'drafts') switchTab('drafts');
         }
 
         async function querySent(append = false) {
