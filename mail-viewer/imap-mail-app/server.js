@@ -188,8 +188,26 @@ function detectPreset(email) {
   return DOMAIN_MAP[domain] || '';
 }
 
+function normalizeDisplayName(value, fallback = '') {
+  const trimmed = String(value || '').trim();
+  return (trimmed || fallback).slice(0, 80);
+}
+
+function accountSummary(id, account, extra = {}) {
+  const email = account?.auth?.user || '';
+  return {
+    id,
+    name: account?.name || detectPreset(email) || 'custom',
+    email,
+    displayName: normalizeDisplayName(account?.displayName, email),
+    ...extra,
+  };
+}
+
 function formatConnectionError(err, account) {
   const raw = err?.message || String(err || '未知错误');
+  const response = String(err?.response || '');
+  const responseText = [raw, response].filter(Boolean).join(' ');
   const preset = String(account?.name || detectPreset(account?.auth?.user) || '').toLowerCase();
   const email = account?.auth?.user || '';
   const host = account?.host || '';
@@ -204,14 +222,18 @@ function formatConnectionError(err, account) {
     hints.push('Gmail 推荐使用 OAuth2 登录；如果用密码方式，需要应用专用密码且账号已允许 IMAP');
   }
   if (preset === 'outlook') {
-    hints.push('Outlook/Hotmail 可能需要应用专用密码，企业账号还可能被管理员禁用 IMAP');
+    hints.push('Outlook/Hotmail 请确认账号已开启 IMAP，并优先使用应用专用密码；企业账号还可能被管理员禁用 IMAP');
+    hints.push('如果账号已启用微软安全默认值或组织禁用基础认证，密码/应用密码方式会失败，需要后续接入 Microsoft OAuth2');
   }
 
-  if (/Command failed/i.test(raw)) {
+  if (/AUTHENTICATE failed|Authentication unsuccessful|LOGIN failed|Invalid credentials/i.test(responseText)) {
+    hints.push('服务器明确拒绝认证，请重新生成授权码或应用专用密码后再试');
+  } else if (/Command failed/i.test(raw)) {
     hints.push('IMAP 服务器拒绝了登录命令，通常是账号、授权码、IMAP 开关或邮箱类型选择不正确');
   }
 
   const detail = [`连接失败: ${raw}`, `邮箱类型: ${preset || 'auto'}`, `服务器: ${host}:${port}`];
+  if (response && !raw.includes(response)) detail.push(`服务器返回: ${response}`);
   if (hints.length) detail.push(`提示: ${hints.join('；')}`);
   return detail.join('。');
 }
@@ -464,6 +486,7 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
       throw new Error('Google 未返回已验证邮箱地址');
     }
     const account = buildGmailAccount(email, token);
+    account.displayName = normalizeDisplayName(profile.name || profile.email, email);
     const client = createMailClient(account);
     await client.connect();
     const id = setClient(account, client);
@@ -476,7 +499,7 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
 // 添加账户
 app.post('/api/accounts', async (req, res) => {
   if (!requirePersistenceSecret(res)) return;
-  const { preset, host, port, email, password } = req.body;
+  const { preset, host, port, email, password, displayName } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: '请填写邮箱和密码' });
   }
@@ -504,11 +527,14 @@ app.post('/api/accounts', async (req, res) => {
       auth: { user: email, pass: password },
     };
   }
+  account.displayName = normalizeDisplayName(displayName, email);
 
   // 检查是否已连接同一邮箱
   for (const [existingId, existing] of clients) {
     if (existing.account.auth.user === email) {
-      return res.json({ id: existingId, name: existing.account.name, email, exists: true });
+      existing.account.displayName = account.displayName;
+      saveAccounts();
+      return res.json(accountSummary(existingId, existing.account, { exists: true }));
     }
   }
 
@@ -518,7 +544,7 @@ app.post('/api/accounts', async (req, res) => {
     const id = ++clientId;
     clients.set(id, client);
     saveAccounts();
-    res.json({ id, name: account.name, email: account.auth.user });
+    res.json(accountSummary(id, account));
   } catch (err) {
     res.status(500).json({ error: formatConnectionError(err, account) });
   }
@@ -528,7 +554,7 @@ app.post('/api/accounts', async (req, res) => {
 app.get('/api/accounts', (req, res) => {
   const list = [];
   clients.forEach((c, id) => {
-    list.push({ id, name: c.account.name, email: c.account.auth.user });
+    list.push(accountSummary(id, c.account));
   });
   res.json(list);
 });
@@ -938,7 +964,7 @@ app.post('/api/accounts/batch', async (req, res) => {
     let alreadyExists = false;
     for (const [existingId, existing] of clients) {
       if (existing.account.auth.user === email) {
-        results.push({ id: existingId, email, ok: true, exists: true });
+        results.push(accountSummary(existingId, existing.account, { ok: true, exists: true }));
         alreadyExists = true;
         break;
       }
@@ -951,9 +977,16 @@ app.post('/api/accounts/batch', async (req, res) => {
       await client.connect();
       const id = ++clientId;
       clients.set(id, client);
-      results.push({ id, email, ok: true });
+      results.push(accountSummary(id, account, { ok: true }));
     } catch (err) {
-      results.push({ email, ok: false, error: err.message });
+      const fallbackAccount = (() => {
+        try {
+          return autoDetect(email, password);
+        } catch {
+          return { name: detectPreset(email) || 'auto', host: '', port: '', auth: { user: email } };
+        }
+      })();
+      results.push({ email, ok: false, error: formatConnectionError(err, fallbackAccount) });
     }
   }
 

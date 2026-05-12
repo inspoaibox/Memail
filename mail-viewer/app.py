@@ -174,6 +174,13 @@ def _normalize_mailbox_address(address: str) -> str:
     return address
 
 
+def _normalize_display_name(value: str, fallback: str = "") -> str:
+    value = (value or "").strip()
+    if len(value) > 80:
+        value = value[:80]
+    return value or fallback
+
+
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
 _require_production_value("ACCESS_PASSWORD", ACCESS_PASSWORD)
 _require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
@@ -791,6 +798,19 @@ def list_mailboxes():
     mailboxes = settings.get("mailboxes", [])
     if not isinstance(mailboxes, list):
         mailboxes = []
+    normalized = []
+    for item in mailboxes:
+        if not isinstance(item, dict):
+            continue
+        address = _normalize_mailbox_address(item.get("address", ""))
+        if not address:
+            continue
+        normalized.append({
+            **item,
+            "address": address,
+            "display_name": _normalize_display_name(item.get("display_name", ""), address),
+        })
+    mailboxes = normalized
     return jsonify({"success": True, "mailboxes": mailboxes})
 
 
@@ -799,6 +819,7 @@ def list_mailboxes():
 def add_mailbox():
     data = request.json or {}
     address = _normalize_mailbox_address(data.get("address", ""))
+    display_name = _normalize_display_name(data.get("display_name", ""), address)
     if not address:
         return jsonify({"success": False, "message": "邮箱地址格式不正确"}), 400
 
@@ -809,12 +830,18 @@ def add_mailbox():
     now = datetime.now(timezone.utc).isoformat()
     existing = next((item for item in mailboxes if item.get("address") == address), None)
     if existing:
+        existing["display_name"] = display_name
         existing["updated_at"] = now
     else:
-        mailboxes.append({"address": address, "created_at": now, "updated_at": now})
+        mailboxes.append({
+            "address": address,
+            "display_name": display_name,
+            "created_at": now,
+            "updated_at": now,
+        })
     settings["mailboxes"] = mailboxes
     _write_viewer_settings(settings)
-    return jsonify({"success": True, "mailbox": {"address": address}, "mailboxes": mailboxes})
+    return jsonify({"success": True, "mailbox": {"address": address, "display_name": display_name}, "mailboxes": mailboxes})
 
 
 @app.route("/api/mailboxes/<path:address>", methods=["DELETE"])

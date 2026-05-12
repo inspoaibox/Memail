@@ -443,6 +443,32 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .mail-account-main {
+            min-width: 0;
+            flex: 1 1 auto;
+        }
+        .mail-account-title,
+        .mail-account-subtitle {
+            display: block;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .mail-account-title {
+            font-weight: 600;
+        }
+        .mail-account-subtitle {
+            color: var(--muted-text);
+            font-size: 0.72rem;
+            margin-top: 1px;
+        }
+        .mail-folder-item > span:not(.badge) {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .mail-account-kind {
             flex: 0 0 auto;
             font-size: 0.68rem;
@@ -514,6 +540,22 @@
             .mail-left .mail-query-card,
             .mail-left .mail-domain-card {
                 flex: 1 1 auto;
+            }
+        }
+        @media (min-width: 520px) {
+            .mail-layout {
+                --bs-gutter-x: 0;
+                --bs-gutter-y: 0;
+                display: grid;
+                grid-template-columns: minmax(170px, 240px) minmax(230px, 340px) minmax(0, 1fr);
+                gap: 10px;
+                align-items: stretch;
+            }
+            .mail-layout > .mail-col {
+                width: auto;
+                max-width: none;
+                padding-left: 0;
+                padding-right: 0;
             }
         }
     </style>
@@ -772,6 +814,7 @@
                                     <i class="bi bi-plus-lg"></i>
                                 </button>
                             </div>
+                            <input type="text" class="form-control form-control-sm mb-2" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
                             <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
                             <div id="local-account-settings-list" class="account-settings-list"></div>
                         </div>
@@ -830,6 +873,10 @@
                         </div>
                     </div>
                     <div class="mb-3 mt-3">
+                        <label class="form-label" for="external-display-name" data-i18n="displayName">显示名字</label>
+                        <input type="text" class="form-control" id="external-display-name" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label" for="external-email" data-i18n="accountEmail">邮箱地址</label>
                         <input type="email" class="form-control" id="external-email" placeholder="name@qq.com" oninput="handleExternalEmailInput()">
                         <div class="small text-muted mt-1" id="external-provider-hint"></div>
@@ -908,6 +955,8 @@
                 accountTip: '添加多个邮箱后，可像邮件客户端一样切换查看。',
                 mailboxInvalid: '请输入完整邮箱地址',
                 mailboxAdded: '邮箱已添加',
+                displayName: '显示名字',
+                displayNamePlaceholder: '显示名字 / 备注',
                 confirmRemoveMailbox: '从列表移除邮箱 "{email}" 吗？邮件数据不会被删除。',
                 accountSettings: '邮箱账号设置',
                 mailboxControls: '邮箱控件',
@@ -1041,6 +1090,8 @@
                 accountTip: 'Add multiple mailboxes and switch between them like a desktop mail client.',
                 mailboxInvalid: 'Enter a full email address',
                 mailboxAdded: 'Mailbox added',
+                displayName: 'Display Name',
+                displayNamePlaceholder: 'Display name / note',
                 confirmRemoveMailbox: 'Remove mailbox "{email}" from the list? Mail data is not deleted.',
                 accountSettings: 'Mailbox Settings',
                 mailboxControls: 'Mailbox Controls',
@@ -1327,7 +1378,7 @@
             currentExternalAccountId = null;
             currentExternalAccount = null;
             const label = document.getElementById('current-mailbox-label');
-            if (label) label.textContent = currentMailbox ? currentMailbox : '';
+            if (label) label.textContent = _accountDisplayName(mailboxes.find(item => item.address === currentMailbox), currentMailbox);
         }
 
         function _currentFolderTitle() {
@@ -1347,8 +1398,8 @@
             if (title) title.textContent = _currentFolderTitle();
             const label = document.getElementById('current-mailbox-label');
             if (label) label.textContent = currentAccountType === 'external'
-                ? (currentExternalAccount?.email || '')
-                : (currentMailbox || '');
+                ? _accountDisplayName(currentExternalAccount, currentExternalAccount?.email || '')
+                : _accountDisplayName(mailboxes.find(item => item.address === currentMailbox), currentMailbox);
         }
 
         function _renderAttachments(messageId, attachments) {
@@ -1406,6 +1457,10 @@
 
         function _externalAccountById(id) {
             return externalAccounts.find(acc => String(acc.id) === String(id)) || null;
+        }
+
+        function _accountDisplayName(account, fallbackEmail = '') {
+            return (account?.displayName || account?.display_name || account?.label || fallbackEmail || account?.email || '').trim();
         }
 
         function _externalFolderIcon(folder) {
@@ -1515,10 +1570,15 @@
                 parts.push(`<div class="mail-sidebar-section-title">${t('localMailbox')}</div>`);
                 parts.push(...mailboxes.map(item => {
                     const address = item.address || '';
+                    const displayName = _accountDisplayName(item, address);
+                    const showSubtitle = displayName && displayName !== address;
                     return `
                         <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" onclick="selectMailbox('${encodeURIComponent(address)}')">
                             <i class="bi bi-envelope"></i>
-                            <span class="mail-account-address">${_escapeHtml(address)}</span>
+                            <span class="mail-account-main">
+                                <span class="mail-account-title">${_escapeHtml(displayName)}</span>
+                                ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
+                            </span>
                             <span class="mail-account-kind">${t('localMailbox')}</span>
                             <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
                                 <i class="bi bi-x-lg"></i>
@@ -1533,10 +1593,15 @@
                     const id = encodeURIComponent(String(account.id));
                     const email = account.email || '';
                     const provider = account.name || t('externalMailbox');
+                    const displayName = _accountDisplayName(account, email);
+                    const showSubtitle = displayName && displayName !== email;
                     return `
                         <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" onclick="selectExternalAccount('${id}')">
                             <i class="bi bi-cloud-arrow-down"></i>
-                            <span class="mail-account-address">${_escapeHtml(email)}</span>
+                            <span class="mail-account-main">
+                                <span class="mail-account-title">${_escapeHtml(displayName)}</span>
+                                ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
+                            </span>
                             <span class="mail-account-kind">${_escapeHtml(provider)}</span>
                             <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeExternalAccount('${id}')" title="${t('delete')}">
                                 <i class="bi bi-x-lg"></i>
@@ -1559,10 +1624,15 @@
             if (localList) {
                 localList.innerHTML = mailboxes.length ? mailboxes.map(item => {
                     const address = item.address || '';
+                    const displayName = _accountDisplayName(item, address);
+                    const showSubtitle = displayName && displayName !== address;
                     return `
                         <div class="account-settings-row">
                             <i class="bi bi-envelope text-muted"></i>
-                            <span class="text-truncate flex-grow-1">${_escapeHtml(address)}</span>
+                            <span class="flex-grow-1 min-w-0">
+                                <span class="mail-account-title">${_escapeHtml(displayName)}</span>
+                                ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
+                            </span>
                             <button class="btn btn-sm p-0 text-danger" onclick="removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
                                 <i class="bi bi-x-lg"></i>
                             </button>
@@ -1574,10 +1644,15 @@
                     const id = encodeURIComponent(String(account.id));
                     const email = account.email || '';
                     const provider = account.name || t('externalMailbox');
+                    const displayName = _accountDisplayName(account, email);
+                    const showSubtitle = displayName && displayName !== email;
                     return `
                         <div class="account-settings-row">
                             <i class="bi bi-cloud-arrow-down text-muted"></i>
-                            <span class="text-truncate flex-grow-1">${_escapeHtml(email)}</span>
+                            <span class="flex-grow-1 min-w-0">
+                                <span class="mail-account-title">${_escapeHtml(displayName)}</span>
+                                ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
+                            </span>
                             <span class="mail-account-kind">${_escapeHtml(provider)}</span>
                             <button class="btn btn-sm p-0 text-danger" onclick="removeExternalAccount('${id}')" title="${t('delete')}">
                                 <i class="bi bi-x-lg"></i>
@@ -1631,7 +1706,9 @@
 
         async function addMailbox() {
             const input = document.getElementById('mailbox-address-input');
+            const displayInput = document.getElementById('mailbox-display-name-input');
             const address = input.value.trim().toLowerCase();
+            const displayName = (displayInput?.value || '').trim();
             _clearMailboxError();
             if (!_isValidEmail(address)) {
                 _showMailboxError(t('mailboxInvalid'));
@@ -1643,11 +1720,12 @@
                 const resp = await fetch('/api/mailboxes', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ address }),
+                    body: JSON.stringify({ address, display_name: displayName }),
                 });
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.message || t('loadFailed'));
                 input.value = '';
+                if (displayInput) displayInput.value = '';
                 mailboxes = data.mailboxes || [];
                 renderMailboxes();
                 await selectMailbox(address);
@@ -1849,6 +1927,7 @@
             presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(labels[value] || value)}</option>`).join('');
             presetSelect.value = options.includes(current) ? current : 'auto';
             document.getElementById('external-email').value = '';
+            document.getElementById('external-display-name').value = '';
             document.getElementById('external-password').value = '';
             document.getElementById('external-host').value = '';
             document.getElementById('external-port').value = '993';
@@ -1860,6 +1939,7 @@
         async function addExternalAccount() {
             const preset = document.getElementById('external-preset').value;
             const email = document.getElementById('external-email').value.trim().toLowerCase();
+            const displayName = document.getElementById('external-display-name').value.trim();
             const password = document.getElementById('external-password').value;
             const host = document.getElementById('external-host').value.trim();
             const port = document.getElementById('external-port').value.trim();
@@ -1880,7 +1960,7 @@
             btn.disabled = true;
             btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('adding')}`;
             try {
-                const payload = { preset, email, password };
+                const payload = { preset, email, password, displayName };
                 if (preset !== 'auto') payload.preset = preset;
                 if (preset === 'custom') {
                     payload.host = host;
