@@ -29,7 +29,7 @@ class ImapConnection {
   }
 
   start() {
-    this.send('* OK ManyMail IMAP4rev1 server ready');
+    this.send('* OK Memail IMAP4rev1 server ready');
     this.socket.on('data', (data) => this.onData(data));
     this.socket.on('error', () => this.cleanup());
     this.socket.on('close', () => this.cleanup());
@@ -125,7 +125,7 @@ class ImapConnection {
   }
 
   cmdLogout(tag) {
-    this.send('* BYE ManyMail IMAP server logging out');
+    this.send('* BYE Memail IMAP server logging out');
     this.send(`${tag} OK LOGOUT completed`);
     this.state = 'LOGOUT';
     try { this.socket.end(); } catch {}

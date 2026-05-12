@@ -1,14 +1,14 @@
-# ManyMail：一个轻量的自建邮箱小工具
+# Memail：一个轻量的自建邮箱小工具
 
 之前一直用临时邮箱收验证码，但总觉得不太放心：服务可能随时挂，邮件也不一定能留住。
 
-我平时又经常要给不同域名、不同前缀收邮件，所以干脆做了一个简单的自建方案：**ManyMail**。
+我平时又经常要给不同域名、不同前缀收邮件，所以干脆做了一个简单的自建方案：**Memail**。
 
 项目地址：
 
-**https://github.com/margbug01/ManyMail**
+**https://github.com/inspoaibox/Memail**
 
-![screenshot](https://raw.githubusercontent.com/margbug01/ManyMail/master/docs/screenshot.jpg)
+![screenshot](https://raw.githubusercontent.com/inspoaibox/Memail/master/docs/screenshot.jpg)
 
 ## 它是干什么的？
 
@@ -30,8 +30,8 @@
 前提是一台能开放 25 端口的服务器。
 
 ```bash
-git clone https://github.com/margbug01/ManyMail.git
-cd ManyMail
+git clone https://github.com/inspoaibox/Memail.git
+cd Memail
 cp .env.example .env
 # 修改 .env 里的域名、密码、密钥
 docker compose up -d
@@ -73,6 +73,6 @@ DNS 大概配这几条：
 
 如果你也需要一个简单的自建收信工具，可以试试看：
 
-**https://github.com/margbug01/ManyMail**
+**https://github.com/inspoaibox/Memail**
 
 觉得有用的话，顺手点个 Star 就更好了。

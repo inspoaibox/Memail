@@ -44,9 +44,9 @@
     <text x="72" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="white">M</text>
   </g>
 
-  <!-- ManyMail text -->
+  <!-- Memail text -->
   <text x="325" y="112" font-family="'Georgia', 'Times New Roman', serif" font-size="56" font-weight="bold" fill="#2a5f8a" letter-spacing="2">
-    ManyMail
+    Memail
   </text>
 
   <!-- Tagline -->

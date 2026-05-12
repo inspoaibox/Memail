@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ManyMail</title>
+    <title>Memail</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
@@ -383,30 +383,6 @@
             border-radius: 0 0 var(--radius-sm) var(--radius-sm);
             border-color: var(--border-color);
         }
-        #imap-panel {
-            display: none;
-        }
-        #imap-panel .card {
-            overflow: hidden;
-        }
-        #imap-panel .card-body {
-            padding: 0;
-        }
-        @media (min-width: 992px) {
-            #imap-panel {
-                grid-column: 2 / 4;
-                min-height: 0;
-            }
-            #imap-panel .card {
-                height: 100%;
-            }
-        }
-        #imap-frame {
-            width: 100%;
-            min-height: calc(100vh - 180px);
-            border: 0;
-            background: #fff;
-        }
         .mail-client-shell {
             gap: 0.75rem;
         }
@@ -447,6 +423,26 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .mail-account-kind {
+            flex: 0 0 auto;
+            font-size: 0.68rem;
+            font-weight: 600;
+            color: var(--muted-text);
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+            padding: 1px 6px;
+            background: rgba(255,255,255,0.75);
+        }
+        .mail-account-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        .mail-folder-count {
+            margin-left: auto;
+            color: var(--muted-text);
+            font-size: 0.75rem;
+        }
         .mail-sidebar-section-title {
             font-size: 0.75rem;
             text-transform: uppercase;
@@ -471,7 +467,7 @@
     <nav class="navbar navbar-light sticky-top">
         <div class="container-fluid">
             <a class="navbar-brand" href="#">
-                <i class="bi bi-envelope me-2"></i>ManyMail
+                <i class="bi bi-envelope me-2"></i>Memail
             </a>
             <div class="d-flex align-items-center gap-2">
                 <button class="btn btn-sm btn-outline-secondary" onclick="toggleLang()" id="btn-lang" title="Switch Language">
@@ -502,6 +498,14 @@
                         <div id="mail-account-list" class="mail-account-list">
                             <div class="text-center text-muted py-2 small" data-i18n="loading">加载中...</div>
                         </div>
+                        <div class="mail-account-actions">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="startGmailOAuth()">
+                                <i class="bi bi-google me-1"></i><span data-i18n="gmailLogin">Gmail 登录</span>
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="openExternalAccountModal()">
+                                <i class="bi bi-plug me-1"></i><span data-i18n="addExternal">添加外部</span>
+                            </button>
+                        </div>
                         <div class="input-group input-group-sm">
                             <input type="text" class="form-control" id="mailbox-address-input" data-i18n-ph="mailboxPlaceholder" placeholder="name@example.com" onkeydown="if(event.key==='Enter') addMailbox()">
                             <button class="btn btn-primary" onclick="addMailbox()" id="btn-add-mailbox" data-i18n-title="addMailbox" title="添加邮箱">
@@ -519,9 +523,6 @@
                             </button>
                             <button class="mail-folder-item" data-folder="trash" onclick="selectFolder('trash')">
                                 <i class="bi bi-trash"></i><span data-i18n="trash">回收站</span>
-                            </button>
-                            <button class="mail-folder-item" data-folder="imap" onclick="selectFolder('imap')">
-                                <i class="bi bi-diagram-3"></i><span>IMAP</span>
                             </button>
                         </div>
                         <div class="small text-muted mt-auto" data-i18n="accountTip">添加多个邮箱后，可像邮件客户端一样切换查看。</div>
@@ -571,9 +572,6 @@
                             </button>
                             <button type="button" class="btn btn-outline-secondary" id="tab-trash" onclick="switchTab('trash')">
                                 <i class="bi bi-trash me-1"></i><span data-i18n="trash">回收站</span>
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary" id="tab-imap" onclick="switchTab('imap')">
-                                <i class="bi bi-diagram-3 me-1"></i>IMAP
                             </button>
                         </div>
                         <div class="d-flex align-items-center gap-2">
@@ -633,13 +631,6 @@
                                 <p class="mt-3" data-i18n="selectMailHint">请选择一封邮件查看详情</p>
                             </div>
                         </div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-12" id="imap-panel">
-                <div class="card">
-                    <div class="card-body">
-                        <iframe id="imap-frame" title="IMAP Mail Client" loading="lazy" referrerpolicy="no-referrer"></iframe>
                     </div>
                 </div>
             </div>
@@ -711,6 +702,54 @@
         </div>
     </div>
 
+    <!-- 外部邮箱账号 Modal -->
+    <div class="modal fade" id="externalAccountModal" tabindex="-1" aria-labelledby="externalAccountModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
+                    <h5 class="modal-title" id="externalAccountModalLabel"><i class="bi bi-plug me-2"></i><span data-i18n="connectExternal">连接外部邮箱</span></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="external-account-alert" class="alert" style="display:none;" role="alert"></div>
+                    <div class="mb-3">
+                        <label class="form-label" for="external-preset" data-i18n="providerPreset">邮箱类型</label>
+                        <select class="form-select" id="external-preset" onchange="handleExternalPresetChange()">
+                            <option value="outlook">outlook</option>
+                            <option value="gmail">gmail</option>
+                            <option value="custom">custom</option>
+                        </select>
+                    </div>
+                    <div class="row g-3 d-none" id="external-custom-fields">
+                        <div class="col-8">
+                            <label class="form-label" for="external-host" data-i18n="imapHost">IMAP 服务器</label>
+                            <input type="text" class="form-control" id="external-host" placeholder="imap.example.com">
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label" for="external-port" data-i18n="imapPort">端口</label>
+                            <input type="number" class="form-control" id="external-port" value="993" min="1" max="65535">
+                        </div>
+                    </div>
+                    <div class="mb-3 mt-3">
+                        <label class="form-label" for="external-email" data-i18n="accountEmail">邮箱地址</label>
+                        <input type="email" class="form-control" id="external-email" placeholder="name@outlook.com">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="external-password" data-i18n="accountPassword">密码 / 应用专用密码</label>
+                        <input type="password" class="form-control" id="external-password" autocomplete="new-password">
+                    </div>
+                    <div class="small text-muted" data-i18n="externalPasswordHint">Outlook、QQ、163 等通常需要应用专用密码；Gmail 推荐使用 OAuth2。</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
+                    <button type="button" class="btn btn-primary" id="btn-add-external-account" onclick="addExternalAccount()">
+                        <i class="bi bi-plus-lg me-1"></i><span data-i18n="addAccount">添加账号</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 撰写/回复邮件 Modal -->
     <div class="modal fade" id="composeModal" tabindex="-1" aria-labelledby="composeModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
@@ -770,6 +809,28 @@
                 mailboxInvalid: '请输入完整邮箱地址',
                 mailboxAdded: '邮箱已添加',
                 confirmRemoveMailbox: '从列表移除邮箱 "{email}" 吗？邮件数据不会被删除。',
+                localMailbox: '本地',
+                externalMailbox: '外部',
+                gmailLogin: 'Gmail 登录',
+                addExternal: '添加外部',
+                connectExternal: '连接外部邮箱',
+                providerPreset: '邮箱类型',
+                imapHost: 'IMAP 服务器',
+                imapPort: '端口',
+                accountEmail: '邮箱地址',
+                accountPassword: '密码 / 应用专用密码',
+                externalPasswordHint: 'Outlook、QQ、163 等通常需要应用专用密码；Gmail 推荐使用 OAuth2。',
+                addAccount: '添加账号',
+                adding: '添加中...',
+                externalAdded: '外部邮箱已添加',
+                externalLoadFailed: '外部邮箱加载失败',
+                foldersLoadFailed: '文件夹加载失败',
+                noFolders: '没有可用文件夹',
+                noExternalMail: '此文件夹暂无邮件',
+                confirmRemoveExternal: '移除外部邮箱 "{email}" 吗？账号配置会从本机持久化存储中删除。',
+                gmailOAuthNotReady: 'Gmail OAuth2 未配置，请先在设置中填写 Google Client ID / Secret / Redirect URI。',
+                oauthWindowOpened: '已打开 Gmail 登录窗口',
+                oauthSuccess: 'Gmail 登录成功',
                 queryInbox: '查询收件箱',
                 selectDomain: '选择域名',
                 loading: '加载中...',
@@ -874,6 +935,28 @@
                 mailboxInvalid: 'Enter a full email address',
                 mailboxAdded: 'Mailbox added',
                 confirmRemoveMailbox: 'Remove mailbox "{email}" from the list? Mail data is not deleted.',
+                localMailbox: 'Local',
+                externalMailbox: 'External',
+                gmailLogin: 'Gmail Login',
+                addExternal: 'Add External',
+                connectExternal: 'Connect External Mailbox',
+                providerPreset: 'Mailbox Type',
+                imapHost: 'IMAP Server',
+                imapPort: 'Port',
+                accountEmail: 'Email Address',
+                accountPassword: 'Password / App Password',
+                externalPasswordHint: 'Outlook, QQ, 163 and others usually require an app password; Gmail is better with OAuth2.',
+                addAccount: 'Add Account',
+                adding: 'Adding...',
+                externalAdded: 'External mailbox added',
+                externalLoadFailed: 'Failed to load external mailboxes',
+                foldersLoadFailed: 'Failed to load folders',
+                noFolders: 'No folders available',
+                noExternalMail: 'No email in this folder',
+                confirmRemoveExternal: 'Remove external mailbox "{email}"? Its saved account config will be deleted locally.',
+                gmailOAuthNotReady: 'Gmail OAuth2 is not configured. Fill Google Client ID / Secret / Redirect URI in settings first.',
+                oauthWindowOpened: 'Gmail login window opened',
+                oauthSuccess: 'Gmail login succeeded',
                 queryInbox: 'Query Inbox',
                 selectDomain: 'Select Domain',
                 loading: 'Loading...',
@@ -997,23 +1080,29 @@
             currentLang = currentLang === 'zh' ? 'en' : 'zh';
             localStorage.setItem('manymail-lang', currentLang);
             applyLang();
-            const imapFrame = document.getElementById('imap-frame');
-            try {
-                imapFrame?.contentWindow?.postMessage({
-                    type: 'manymail-lang-change',
-                    lang: currentLang,
-                }, window.location.origin);
-            } catch (e) {}
             // re-render dynamic content
-            if (currentMessages.length > 0 && currentTab === 'inbox') renderMessages(currentMessages);
-            if (currentSentMessages.length > 0 && currentTab === 'sent') renderSentMessages(currentSentMessages);
-            if (currentTrashMessages.length > 0 && currentTab === 'trash') renderTrashMessages(currentTrashMessages);
+            renderMailboxes();
+            renderFolderList();
+            if (currentAccountType === 'external' && currentExternalMessages.length > 0) renderExternalMessages(currentExternalMessages);
+            if (currentAccountType === 'local' && currentMessages.length > 0 && currentTab === 'inbox') renderMessages(currentMessages);
+            if (currentAccountType === 'local' && currentSentMessages.length > 0 && currentTab === 'sent') renderSentMessages(currentSentMessages);
+            if (currentAccountType === 'local' && currentTrashMessages.length > 0 && currentTab === 'trash') renderTrashMessages(currentTrashMessages);
             if (!currentEmail) resetMailDetail();
             _updateFolderChrome();
         }
 
         let currentEmail = '';
         let mailboxes = [];
+        let externalAccounts = [];
+        let externalPresets = [];
+        let currentAccountType = 'local';
+        let currentExternalAccountId = null;
+        let currentExternalAccount = null;
+        let currentExternalFolder = 'INBOX';
+        let currentExternalFolders = [];
+        let currentExternalMessages = [];
+        let currentExternalTotal = 0;
+        let currentExternalHasMore = false;
         let currentMailbox = '';
         let currentMessages = [];
         let currentSentMessages = [];
@@ -1023,8 +1112,8 @@
         let currentTotal = 0;
         let currentSentTotal = 0;
         let currentTrashTotal = 0;
-        let imapLoaded = false;
         let settingsModal = null;
+        let externalAccountModal = null;
         const PAGE_SIZE = 30;
 
         // HTML 转义工具函数（防 XSS）
@@ -1032,6 +1121,14 @@
             const div = document.createElement('div');
             div.appendChild(document.createTextNode(str));
             return div.innerHTML;
+        }
+
+        function _escapeAttr(str) {
+            return _escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function _jsString(str) {
+            return _escapeAttr(JSON.stringify(String(str)));
         }
 
         function _renderMailBodyIframe(iframe, mailContent) {
@@ -1112,25 +1209,30 @@
         function _setCurrentMailbox(address) {
             currentMailbox = address || '';
             currentEmail = currentMailbox;
+            currentExternalAccountId = null;
+            currentExternalAccount = null;
             const label = document.getElementById('current-mailbox-label');
             if (label) label.textContent = currentMailbox ? currentMailbox : '';
         }
 
         function _currentFolderTitle() {
+            if (currentAccountType === 'external') return currentExternalFolder || 'INBOX';
             if (currentTab === 'sent') return t('sent');
             if (currentTab === 'trash') return t('trash');
-            if (currentTab === 'imap') return 'IMAP';
             return t('inbox');
         }
 
         function _updateFolderChrome() {
             document.querySelectorAll('.mail-folder-item').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.folder === currentTab);
+                const activeKey = currentAccountType === 'external' ? currentExternalFolder : currentTab;
+                btn.classList.toggle('active', btn.dataset.folder === activeKey);
             });
             const title = document.getElementById('mail-list-title');
             if (title) title.textContent = _currentFolderTitle();
             const label = document.getElementById('current-mailbox-label');
-            if (label) label.textContent = currentMailbox || '';
+            if (label) label.textContent = currentAccountType === 'external'
+                ? (currentExternalAccount?.email || '')
+                : (currentMailbox || '');
         }
 
         function _renderAttachments(messageId, attachments) {
@@ -1149,49 +1251,221 @@
                 </div>`;
         }
 
+        async function _imapApi(path, options = {}) {
+            const resp = await fetch(`/imap/api${path}`, options);
+            const contentType = resp.headers.get('content-type') || '';
+            const payload = contentType.includes('application/json') ? await resp.json() : await resp.text();
+            if (!resp.ok) {
+                const message = typeof payload === 'string'
+                    ? payload
+                    : (payload.error || payload.message || `${t('loadFailed')} (${resp.status})`);
+                throw new Error(message);
+            }
+            return payload;
+        }
+
+        function _showMailboxError(message, type = 'danger') {
+            const error = document.getElementById('mailbox-error');
+            error.className = `text-${type} small`;
+            error.textContent = message;
+            error.style.display = 'block';
+        }
+
+        function _clearMailboxError() {
+            const error = document.getElementById('mailbox-error');
+            error.style.display = 'none';
+            error.textContent = '';
+        }
+
+        function _externalAccountById(id) {
+            return externalAccounts.find(acc => String(acc.id) === String(id)) || null;
+        }
+
+        function _externalFolderIcon(folder) {
+            const name = String(folder?.path || folder?.name || '').toLowerCase();
+            if (name === 'inbox' || name.includes('收件')) return 'bi-inbox';
+            if (name.includes('sent') || name.includes('已发送')) return 'bi-send';
+            if (name.includes('trash') || name.includes('deleted') || name.includes('回收')) return 'bi-trash';
+            if (name.includes('draft') || name.includes('草稿')) return 'bi-file-earmark-text';
+            if (name.includes('junk') || name.includes('spam') || name.includes('垃圾')) return 'bi-exclamation-octagon';
+            if (name.includes('archive') || name.includes('归档')) return 'bi-archive';
+            if (name.includes('star') || name.includes('flag')) return 'bi-star';
+            return 'bi-folder';
+        }
+
+        function _resetLocalMessageState() {
+            currentMessages = [];
+            currentSentMessages = [];
+            currentTrashMessages = [];
+            currentTotal = 0;
+            currentSentTotal = 0;
+            currentTrashTotal = 0;
+        }
+
+        function _resetExternalMessageState() {
+            currentExternalMessages = [];
+            currentExternalTotal = 0;
+            currentExternalHasMore = false;
+        }
+
+        async function loadExternalPresets() {
+            if (externalPresets.length > 0) return externalPresets;
+            try {
+                const presets = await _imapApi('/presets');
+                externalPresets = Array.isArray(presets) ? presets : [];
+            } catch (e) {
+                externalPresets = [];
+            }
+            return externalPresets;
+        }
+
         async function loadMailboxes() {
             const list = document.getElementById('mail-account-list');
+            list.innerHTML = `<div class="text-center text-muted py-2 small">${t('loading')}</div>`;
+            _clearMailboxError();
+
+            let localError = '';
+            let externalError = '';
             try {
                 const resp = await fetch('/api/mailboxes');
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.message || t('loadFailed'));
                 mailboxes = data.mailboxes || [];
-                renderMailboxes();
-                if (!currentMailbox && mailboxes.length > 0) {
-                    await selectMailbox(mailboxes[0].address);
-                }
             } catch (e) {
-                list.innerHTML = `<div class="text-danger small">${t('loadFailed')}: ${_escapeHtml(e.message)}</div>`;
+                localError = e.message;
+                mailboxes = [];
+            }
+
+            try {
+                const accounts = await _imapApi('/accounts');
+                externalAccounts = Array.isArray(accounts) ? accounts : [];
+            } catch (e) {
+                externalError = e.message;
+                externalAccounts = [];
+            }
+
+            renderMailboxes(localError, externalError);
+
+            if (currentAccountType === 'local' && currentMailbox && !mailboxes.some(item => item.address === currentMailbox)) {
+                _setCurrentMailbox('');
+                _resetLocalMessageState();
+            }
+            if (currentAccountType === 'external' && currentExternalAccountId && !_externalAccountById(currentExternalAccountId)) {
+                currentExternalAccountId = null;
+                currentExternalAccount = null;
+                currentEmail = '';
+                _resetExternalMessageState();
+            }
+
+            if (!currentMailbox && !currentExternalAccountId) {
+                if (mailboxes.length > 0) {
+                    await selectMailbox(mailboxes[0].address);
+                } else if (externalAccounts.length > 0) {
+                    await selectExternalAccount(externalAccounts[0].id);
+                } else {
+                    renderFolderList();
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                    resetMailDetail();
+                }
+            } else {
+                renderFolderList();
+                _updateFolderChrome();
             }
         }
 
-        function renderMailboxes() {
+        function renderMailboxes(localError = '', externalError = '') {
             const list = document.getElementById('mail-account-list');
-            if (!mailboxes.length) {
-                list.innerHTML = `<div class="mail-client-empty"><i class="bi bi-envelope-plus d-block mb-2"></i><div>${t('queryHint')}</div></div>`;
+            const parts = [];
+
+            if (localError) {
+                parts.push(`<div class="text-danger small px-2">${t('loadFailed')}: ${_escapeHtml(localError)}</div>`);
+            }
+            if (externalError) {
+                parts.push(`<div class="text-warning small px-2">${t('externalLoadFailed')}: ${_escapeHtml(externalError)}</div>`);
+            }
+
+            if (mailboxes.length > 0) {
+                parts.push(`<div class="mail-sidebar-section-title">${t('localMailbox')}</div>`);
+                parts.push(...mailboxes.map(item => {
+                    const address = item.address || '';
+                    return `
+                        <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" onclick="selectMailbox('${encodeURIComponent(address)}')">
+                            <i class="bi bi-envelope"></i>
+                            <span class="mail-account-address">${_escapeHtml(address)}</span>
+                            <span class="mail-account-kind">${t('localMailbox')}</span>
+                            <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
+                                <i class="bi bi-x-lg"></i>
+                            </span>
+                        </button>`;
+                }));
+            }
+
+            if (externalAccounts.length > 0) {
+                parts.push(`<div class="mail-sidebar-section-title">${t('externalMailbox')}</div>`);
+                parts.push(...externalAccounts.map(account => {
+                    const id = encodeURIComponent(String(account.id));
+                    const email = account.email || '';
+                    const provider = account.name || t('externalMailbox');
+                    return `
+                        <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" onclick="selectExternalAccount('${id}')">
+                            <i class="bi bi-cloud-arrow-down"></i>
+                            <span class="mail-account-address">${_escapeHtml(email)}</span>
+                            <span class="mail-account-kind">${_escapeHtml(provider)}</span>
+                            <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeExternalAccount('${id}')" title="${t('delete')}">
+                                <i class="bi bi-x-lg"></i>
+                            </span>
+                        </button>`;
+                }));
+            }
+
+            if (!mailboxes.length && !externalAccounts.length && !localError && !externalError) {
+                parts.push(`<div class="mail-client-empty"><i class="bi bi-envelope-plus d-block mb-2"></i><div>${t('queryHint')}</div></div>`);
+            }
+
+            list.innerHTML = parts.join('');
+        }
+
+        function renderFolderList() {
+            const list = document.getElementById('mail-folder-list');
+            if (currentAccountType === 'external') {
+                if (!currentExternalAccountId) {
+                    list.innerHTML = `<div class="text-muted small px-2">${t('queryHint')}</div>`;
+                    return;
+                }
+                if (!currentExternalFolders.length) {
+                    list.innerHTML = `<div class="text-muted small px-2">${t('noFolders')}</div>`;
+                    return;
+                }
+                list.innerHTML = currentExternalFolders.map(folder => {
+                    const path = folder.path || folder.name || 'INBOX';
+                    const label = folder.name || folder.path || 'INBOX';
+                    return `
+                        <button class="mail-folder-item ${path === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(path)}" onclick="selectFolder(${_jsString(encodeURIComponent(path))})">
+                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(label)}</span>
+                        </button>`;
+                }).join('');
                 return;
             }
-            list.innerHTML = mailboxes.map(item => {
-                const address = item.address || '';
-                return `
-                    <button class="mail-account-item ${address === currentMailbox ? 'active' : ''}" onclick="selectMailbox('${encodeURIComponent(address)}')">
-                        <i class="bi bi-envelope"></i>
-                        <span class="mail-account-address">${_escapeHtml(address)}</span>
-                        <span class="btn btn-sm p-0 text-danger" onclick="event.stopPropagation(); removeMailbox('${encodeURIComponent(address)}')" title="${t('delete')}">
-                            <i class="bi bi-x-lg"></i>
-                        </span>
-                    </button>`;
-            }).join('');
+
+            list.innerHTML = `
+                <button class="mail-folder-item ${currentTab === 'inbox' ? 'active' : ''}" data-folder="inbox" onclick="selectFolder('inbox')">
+                    <i class="bi bi-inbox"></i><span>${t('inbox')}</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
+                </button>
+                <button class="mail-folder-item ${currentTab === 'sent' ? 'active' : ''}" data-folder="sent" onclick="selectFolder('sent')">
+                    <i class="bi bi-send"></i><span>${t('sent')}</span>
+                </button>
+                <button class="mail-folder-item ${currentTab === 'trash' ? 'active' : ''}" data-folder="trash" onclick="selectFolder('trash')">
+                    <i class="bi bi-trash"></i><span>${t('trash')}</span>
+                </button>`;
+            _updateUnreadBadge();
         }
 
         async function addMailbox() {
             const input = document.getElementById('mailbox-address-input');
-            const error = document.getElementById('mailbox-error');
             const address = input.value.trim().toLowerCase();
-            error.style.display = 'none';
+            _clearMailboxError();
             if (!_isValidEmail(address)) {
-                error.textContent = t('mailboxInvalid');
-                error.style.display = 'block';
+                _showMailboxError(t('mailboxInvalid'));
                 return;
             }
             const btn = document.getElementById('btn-add-mailbox');
@@ -1209,8 +1483,7 @@
                 renderMailboxes();
                 await selectMailbox(address);
             } catch (e) {
-                error.textContent = e.message;
-                error.style.display = 'block';
+                _showMailboxError(e.message);
             } finally {
                 btn.disabled = false;
             }
@@ -1225,35 +1498,212 @@
                 mailboxes = data.mailboxes || [];
                 if (currentMailbox === address) {
                     _setCurrentMailbox('');
-                    currentMessages = [];
-                    currentSentMessages = [];
-                    currentTrashMessages = [];
+                    _resetLocalMessageState();
                     document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
                     resetMailDetail();
                 }
                 renderMailboxes();
+                renderFolderList();
             }
         }
 
         async function selectMailbox(encodedAddress) {
             const address = decodeURIComponent(encodedAddress);
+            currentAccountType = 'local';
+            if (autoRefreshTimer) {
+                clearInterval(autoRefreshTimer);
+                autoRefreshTimer = null;
+                document.getElementById('auto-refresh-toggle').checked = false;
+            }
             _setCurrentMailbox(address);
-            currentMessages = [];
-            currentSentMessages = [];
-            currentTrashMessages = [];
+            currentExternalAccountId = null;
+            currentExternalAccount = null;
+            currentExternalFolders = [];
+            _resetLocalMessageState();
             renderMailboxes();
+            renderFolderList();
             document.getElementById('btn-refresh-mail').disabled = false;
             await selectFolder(currentTab || 'inbox');
         }
 
         async function selectFolder(folder) {
-            currentTab = folder;
-            _updateFolderChrome();
-            if (folder === 'imap') {
-                switchTab('imap');
+            const decodedFolder = decodeURIComponent(String(folder || ''));
+            if (currentAccountType === 'external') {
+                currentExternalFolder = decodedFolder || 'INBOX';
+                _resetExternalMessageState();
+                renderFolderList();
+                _updateFolderChrome();
+                await queryExternalMails(false, false);
                 return;
             }
-            switchTab(folder);
+            currentTab = decodedFolder || 'inbox';
+            _updateFolderChrome();
+            switchTab(currentTab);
+        }
+
+        async function selectExternalAccount(encodedId) {
+            const id = decodeURIComponent(String(encodedId));
+            const account = _externalAccountById(id);
+            if (!account) return;
+            currentAccountType = 'external';
+            if (autoRefreshTimer) {
+                clearInterval(autoRefreshTimer);
+                autoRefreshTimer = null;
+                document.getElementById('auto-refresh-toggle').checked = false;
+            }
+            currentExternalAccountId = account.id;
+            currentExternalAccount = account;
+            currentEmail = account.email || '';
+            currentMailbox = '';
+            _resetLocalMessageState();
+            _resetExternalMessageState();
+            renderMailboxes();
+            document.getElementById('btn-refresh-mail').disabled = false;
+            document.getElementById('mail-list').innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            resetMailDetail();
+            try {
+                const folders = await _imapApi(`/accounts/${encodeURIComponent(id)}/folders`);
+                currentExternalFolders = (Array.isArray(folders) ? folders : []).filter(folder => !folder.noselect);
+                const inbox = currentExternalFolders.find(folder => String(folder.path || '').toLowerCase() === 'inbox');
+                currentExternalFolder = (inbox || currentExternalFolders[0] || { path: 'INBOX' }).path || 'INBOX';
+                renderFolderList();
+                _updateFolderChrome();
+                await queryExternalMails(false, false);
+            } catch (e) {
+                currentExternalFolders = [];
+                renderFolderList();
+                document.getElementById('mail-list').innerHTML = `<div class="error-state"><p>${t('foldersLoadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+            }
+        }
+
+        async function removeExternalAccount(encodedId) {
+            const id = decodeURIComponent(String(encodedId));
+            const account = _externalAccountById(id);
+            if (!account) return;
+            if (!confirm(t('confirmRemoveExternal', {email: account.email || id}))) return;
+            try {
+                await _imapApi(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                externalAccounts = externalAccounts.filter(item => String(item.id) !== String(id));
+                if (String(currentExternalAccountId) === String(id)) {
+                    currentExternalAccountId = null;
+                    currentExternalAccount = null;
+                    currentEmail = '';
+                    currentExternalFolders = [];
+                    _resetExternalMessageState();
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                    resetMailDetail();
+                }
+                renderMailboxes();
+                renderFolderList();
+                if (!currentExternalAccountId && mailboxes.length > 0) {
+                    await selectMailbox(mailboxes[0].address);
+                } else if (!currentExternalAccountId && externalAccounts.length > 0) {
+                    await selectExternalAccount(externalAccounts[0].id);
+                }
+            } catch (e) {
+                _showMailboxError(`${t('deleteFailed')}: ${e.message}`);
+            }
+        }
+
+        function _getExternalAccountModal() {
+            if (!externalAccountModal) {
+                externalAccountModal = new bootstrap.Modal(document.getElementById('externalAccountModal'));
+            }
+            return externalAccountModal;
+        }
+
+        function _showExternalAccountAlert(type, message) {
+            const alert = document.getElementById('external-account-alert');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+        }
+
+        function handleExternalPresetChange() {
+            const preset = document.getElementById('external-preset').value;
+            document.getElementById('external-custom-fields').classList.toggle('d-none', preset !== 'custom');
+        }
+
+        async function openExternalAccountModal() {
+            const presetSelect = document.getElementById('external-preset');
+            const alert = document.getElementById('external-account-alert');
+            alert.style.display = 'none';
+            await loadExternalPresets();
+            const options = Array.from(new Set(['outlook', 'gmail', ...externalPresets, 'custom']));
+            const current = presetSelect.value || 'outlook';
+            presetSelect.innerHTML = options.map(value => `<option value="${_escapeAttr(value)}">${_escapeHtml(value)}</option>`).join('');
+            presetSelect.value = options.includes(current) ? current : 'outlook';
+            document.getElementById('external-email').value = '';
+            document.getElementById('external-password').value = '';
+            document.getElementById('external-host').value = '';
+            document.getElementById('external-port').value = '993';
+            handleExternalPresetChange();
+            _getExternalAccountModal().show();
+        }
+
+        async function addExternalAccount() {
+            const preset = document.getElementById('external-preset').value;
+            const email = document.getElementById('external-email').value.trim().toLowerCase();
+            const password = document.getElementById('external-password').value;
+            const host = document.getElementById('external-host').value.trim();
+            const port = document.getElementById('external-port').value.trim();
+            if (!_isValidEmail(email)) {
+                _showExternalAccountAlert('danger', t('mailboxInvalid'));
+                return;
+            }
+            if (!password) {
+                _showExternalAccountAlert('danger', t('accountPassword'));
+                return;
+            }
+            if (preset === 'custom' && !host) {
+                _showExternalAccountAlert('danger', t('imapHost'));
+                return;
+            }
+
+            const btn = document.getElementById('btn-add-external-account');
+            btn.disabled = true;
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('adding')}`;
+            try {
+                const payload = { preset, email, password };
+                if (preset === 'custom') {
+                    payload.host = host;
+                    payload.port = port || 993;
+                }
+                const account = await _imapApi('/accounts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                _showExternalAccountAlert('success', t('externalAdded'));
+                await loadMailboxes();
+                _getExternalAccountModal().hide();
+                await selectExternalAccount(account.id);
+            } catch (e) {
+                _showExternalAccountAlert('danger', e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="bi bi-plus-lg me-1"></i>${t('addAccount')}`;
+            }
+        }
+
+        async function startGmailOAuth() {
+            _clearMailboxError();
+            try {
+                const status = await _imapApi('/oauth/gmail/status');
+                if (!status.enabled) {
+                    _showMailboxError(t('gmailOAuthNotReady'));
+                    return;
+                }
+                const data = await _imapApi('/oauth/gmail/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                window.open(data.url, 'memail-gmail-oauth', 'width=520,height=720');
+                _showMailboxError(t('oauthWindowOpened'), 'muted');
+            } catch (e) {
+                _showMailboxError(e.message);
+            }
         }
 
         // ---- 域名管理 ----
@@ -1452,7 +1902,6 @@
                 }
                 _fillSettingsForm(data.settings || {});
                 _showSettingsAlert('success', t('settingsSaved'));
-                reloadImapFrame();
             } catch (e) {
                 _showSettingsAlert('danger', `${t('settingsSaveFailed')}: ${e.message}`);
             } finally {
@@ -1472,25 +1921,13 @@
             if (event.origin !== window.location.origin) return;
             if (event.data?.type === 'mail-viewer-switch-tab' && event.data.tab) {
                 switchTab(event.data.tab);
+            } else if (event.data?.type === 'gmail-oauth-success') {
+                _showMailboxError(`${t('oauthSuccess')}: ${event.data.email || ''}`, 'success');
+                loadMailboxes().then(() => {
+                    if (event.data.id) selectExternalAccount(event.data.id);
+                });
             }
         });
-
-        function ensureImapLoaded() {
-            const frame = document.getElementById('imap-frame');
-            if (!imapLoaded) {
-                frame.src = '/imap/?embedded=1';
-                imapLoaded = true;
-            }
-        }
-
-        function reloadImapFrame() {
-            const frame = document.getElementById('imap-frame');
-            if (!imapLoaded) {
-                ensureImapLoaded();
-                return;
-            }
-            frame.src = '/imap/?embedded=1';
-        }
 
         // ---- 自动刷新 ----
         let autoRefreshTimer = null;
@@ -1498,7 +1935,9 @@
 
         function toggleAutoRefresh(enabled) {
             if (enabled && currentEmail) {
-                autoRefreshTimer = setInterval(() => { queryInbox(true); }, AUTO_REFRESH_INTERVAL);
+                autoRefreshTimer = setInterval(() => {
+                    currentAccountType === 'external' ? queryExternalMails(true, false) : queryInbox(true);
+                }, AUTO_REFRESH_INTERVAL);
             } else {
                 if (autoRefreshTimer) clearInterval(autoRefreshTimer);
                 autoRefreshTimer = null;
@@ -1510,28 +1949,42 @@
         let currentTab = 'inbox';
 
         function switchTab(tab) {
-            currentTab = tab;
+            if (currentAccountType === 'local') currentTab = tab;
             _updateFolderChrome();
             const tabInbox = document.getElementById('tab-inbox');
             const tabSent = document.getElementById('tab-sent');
             const tabTrash = document.getElementById('tab-trash');
-            const tabImap = document.getElementById('tab-imap');
             const searchBar = document.getElementById('search-bar');
             const batchBar = document.getElementById('batch-bar');
             const leftColumn = document.getElementById('mail-left-column');
             const listColumn = document.getElementById('mail-list-column');
             const detailColumn = document.getElementById('mail-detail-column');
-            const imapPanel = document.getElementById('imap-panel');
+
+            leftColumn.style.display = '';
+            listColumn.style.display = '';
+            detailColumn.style.display = '';
+
+            if (currentAccountType === 'external') {
+                if (tabInbox) tabInbox.className = 'btn btn-outline-secondary';
+                if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
+                if (batchBar) batchBar.style.cssText = 'display:none !important;';
+                if (searchBar) searchBar.style.display = currentExternalAccountId ? 'flex' : 'none';
+                if (!currentExternalAccountId) {
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                } else if (currentExternalMessages.length > 0) {
+                    renderExternalMessages(currentExternalMessages);
+                } else {
+                    queryExternalMails(false, false);
+                }
+                resetMailDetail();
+                return;
+            }
 
             if (tab === 'inbox') {
-                tabInbox.className = 'btn btn-primary';
-                tabSent.className = 'btn btn-outline-secondary';
-                tabTrash.className = 'btn btn-outline-secondary';
-                tabImap.className = 'btn btn-outline-secondary';
-                leftColumn.style.display = '';
-                listColumn.style.display = '';
-                detailColumn.style.display = '';
-                imapPanel.style.display = 'none';
+                if (tabInbox) tabInbox.className = 'btn btn-primary';
+                if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
                 if (batchBar) batchBar.style.display = currentMessages.length > 0 ? 'flex' : 'none';
                 if (searchBar) searchBar.style.display = currentEmail ? 'flex' : 'none';
                 if (!currentEmail) {
@@ -1543,18 +1996,13 @@
                 }
                 resetMailDetail();
             } else {
-                tabInbox.className = 'btn btn-outline-secondary';
+                if (tabInbox) tabInbox.className = 'btn btn-outline-secondary';
                 if (searchBar) searchBar.style.display = 'none';
                 if (batchBar) batchBar.style.display = 'none';
                 document.getElementById('mail-list').innerHTML = '';
                 if (tab === 'sent' || tab === 'trash') {
-                    tabSent.className = tab === 'sent' ? 'btn btn-primary' : 'btn btn-outline-secondary';
-                    tabTrash.className = tab === 'trash' ? 'btn btn-primary' : 'btn btn-outline-secondary';
-                    tabImap.className = 'btn btn-outline-secondary';
-                    leftColumn.style.display = '';
-                    listColumn.style.display = '';
-                    detailColumn.style.display = '';
-                    imapPanel.style.display = 'none';
+                    if (tabSent) tabSent.className = tab === 'sent' ? 'btn btn-primary' : 'btn btn-outline-secondary';
+                    if (tabTrash) tabTrash.className = tab === 'trash' ? 'btn btn-primary' : 'btn btn-outline-secondary';
                     if (currentEmail) {
                         tab === 'sent' ? querySent() : queryTrash();
                     } else {
@@ -1562,36 +2010,33 @@
                     }
                     resetMailDetail();
                 } else {
-                    tabSent.className = 'btn btn-outline-secondary';
-                    tabTrash.className = 'btn btn-outline-secondary';
-                    tabImap.className = 'btn btn-primary';
-                    if (autoRefreshTimer) {
-                        clearInterval(autoRefreshTimer);
-                        autoRefreshTimer = null;
-                        document.getElementById('auto-refresh-toggle').checked = false;
-                    }
-                    leftColumn.style.display = '';
-                    listColumn.style.display = 'none';
-                    detailColumn.style.display = 'none';
-                    imapPanel.style.display = 'block';
-                    ensureImapLoaded();
+                    if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                    if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
                 }
             }
         }
 
         function refreshCurrentTab() {
-            if (!currentEmail && currentTab !== 'imap') {
+            if (currentAccountType === 'external') {
+                if (!currentExternalAccountId) {
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                    return;
+                }
+                queryExternalMails(false, false);
+                return;
+            }
+            if (!currentEmail) {
                 document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
                 return;
             }
             if (currentTab === 'inbox') queryInbox();
             else if (currentTab === 'sent') querySent();
             else if (currentTab === 'trash') queryTrash();
-            else reloadImapFrame();
         }
 
         async function querySent(append = false) {
-            if (!currentEmail) return;
+            if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
             const offset = append ? currentSentMessages.length : 0;
             if (!append) mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
@@ -1680,7 +2125,7 @@
         }
 
         async function queryTrash(append = false) {
-            if (!currentEmail) return;
+            if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
             const offset = append ? currentTrashMessages.length : 0;
             if (!append) mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
@@ -1741,7 +2186,7 @@
             const email = currentMailbox || currentEmail;
             const mailList = document.getElementById('mail-list');
             
-            if (!email) {
+            if (currentAccountType !== 'local' || !email) {
                 if (!silent) {
                     mailList.innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
                 }
@@ -1913,8 +2358,178 @@
             _updateUnreadBadge();
         }
 
+        async function queryExternalMails(silent = false, append = false) {
+            if (!currentExternalAccountId) return;
+            if (!silent && !append) resetMailDetail();
+            const mailList = document.getElementById('mail-list');
+            const before = append && currentExternalMessages.length
+                ? Math.min(...currentExternalMessages.map(m => Number(m.seq)).filter(Boolean))
+                : null;
+
+            if (!silent && !append) {
+                mailList.innerHTML = `
+                    <div class="card mb-2">
+                        <div class="card-body py-3">
+                            <div class="skeleton skeleton-title"></div>
+                            <div class="skeleton skeleton-text" style="width:80%"></div>
+                            <div class="skeleton skeleton-text" style="width:60%"></div>
+                        </div>
+                    </div>`;
+            }
+            if (append) {
+                const loadMoreBtn = document.getElementById('btn-load-more-external');
+                if (loadMoreBtn) {
+                    loadMoreBtn.disabled = true;
+                    loadMoreBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('loading')}`;
+                }
+            }
+
+            try {
+                const params = new URLSearchParams({
+                    folder: currentExternalFolder || 'INBOX',
+                    count: String(PAGE_SIZE),
+                });
+                if (before) params.set('before', String(before));
+                const data = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/mails?${params.toString()}`);
+                currentExternalTotal = data.total || 0;
+                currentExternalHasMore = !!data.hasMore;
+                const mails = data.mails || [];
+                currentExternalMessages = append ? currentExternalMessages.concat(mails) : mails;
+                document.getElementById('btn-refresh-mail').disabled = false;
+                const searchBar = document.getElementById('search-bar');
+                if (searchBar) searchBar.style.display = 'flex';
+
+                let activeId = null;
+                if (silent) {
+                    const activeEl = document.querySelector('.mail-item.active');
+                    if (activeEl) activeId = activeEl.dataset.msgId;
+                }
+                renderExternalMessages(currentExternalMessages);
+                if ((silent || append) && activeId) {
+                    const el = document.querySelector(`.mail-item[data-msg-id="${activeId}"]`);
+                    if (el) el.classList.add('active');
+                }
+            } catch (e) {
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><i class="bi bi-exclamation-triangle d-block"></i><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
+            }
+        }
+
+        function renderExternalMessages(messages) {
+            const mailList = document.getElementById('mail-list');
+            const batchBar = document.getElementById('batch-bar');
+            if (batchBar) batchBar.style.cssText = 'display:none !important;';
+            const selectAll = document.getElementById('select-all-checkbox');
+            if (selectAll) selectAll.checked = false;
+            updateBatchButtons();
+
+            if (!messages.length) {
+                mailList.innerHTML = `<div class="empty-state"><i class="bi bi-folder d-block"></i><p>${t('noExternalMail')}</p></div>`;
+                return;
+            }
+
+            mailList.innerHTML = messages.map(msg => {
+                const msgId = String(msg.uid);
+                const sender = msg.from?.name || msg.from?.address || t('unknownSender');
+                const intro = msg.to?.length ? msg.to.map(item => item.address || item.name).filter(Boolean).join(', ') : '';
+                return `
+                    <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
+                        <div class="card-body py-2">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(sender)}</span></span>
+                                <div class="mail-item-meta text-end ms-2">
+                                    ${msg.flagged ? `<i class="bi bi-star-fill text-warning me-1"></i>` : ''}
+                                    <small class="text-muted">${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
+                                </div>
+                            </div>
+                            <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
+                            <small class="mail-intro text-muted text-truncate d-block"><span class="mail-copy">${_escapeHtml(intro)}</span></small>
+                        </div>
+                    </div>`;
+            }).join('');
+
+            if (currentExternalHasMore) {
+                mailList.insertAdjacentHTML('beforeend', `
+                    <div class="text-center py-3">
+                        <button class="btn btn-outline-primary btn-sm" id="btn-load-more-external" onclick="queryExternalMails(false, true)">
+                            <i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentExternalMessages.length}/${currentExternalTotal})
+                        </button>
+                    </div>`);
+            }
+        }
+
+        function _renderExternalAttachments(uid, attachments) {
+            if (!attachments || attachments.length === 0) return '';
+            return `
+                <div class="mb-3">
+                    <strong><i class="bi bi-paperclip me-1"></i>${t('attachments')}:</strong>
+                    <div class="mt-2 d-flex flex-wrap gap-2">
+                        ${attachments.map((att, index) => {
+                            const filename = att.filename || `attachment_${index}`;
+                            const size = _formatSize(att.size);
+                            const attIndex = encodeURIComponent(String(att.index ?? index));
+                            const url = `/imap/api/accounts/${encodeURIComponent(currentExternalAccountId)}/mails/${encodeURIComponent(uid)}/attachments/${attIndex}?folder=${encodeURIComponent(currentExternalFolder || 'INBOX')}`;
+                            return `<a class="btn btn-sm btn-outline-secondary" href="${url}" download title="${t('download')}"><i class="bi bi-download me-1"></i>${_escapeHtml(filename)}${size ? ` <span class="text-muted">(${size})</span>` : ''}</a>`;
+                        }).join('')}
+                    </div>
+                </div>`;
+        }
+
+        async function viewExternalMailDetail(encodedUid, element) {
+            if (!currentExternalAccountId) return;
+            const uid = decodeURIComponent(String(encodedUid));
+            document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
+            if (element) element.classList.add('active');
+
+            const detailContent = document.getElementById('mail-detail-content');
+            detailContent.innerHTML = `
+                <div class="mb-3"><div class="skeleton skeleton-text" style="width:50%"></div></div>
+                <div class="mb-3"><div class="skeleton skeleton-text" style="width:70%"></div></div>
+                <div class="mb-3"><div class="skeleton skeleton-text" style="width:40%"></div></div>
+                <hr>
+                <div style="background:#f8f9fa; padding:15px; border-radius:8px;">
+                    <div class="skeleton skeleton-text mb-2" style="width:90%"></div>
+                    <div class="skeleton skeleton-text mb-2" style="width:85%"></div>
+                </div>`;
+
+            try {
+                const msg = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/mails/${encodeURIComponent(uid)}?folder=${encodeURIComponent(currentExternalFolder || 'INBOX')}`);
+                const idx = currentExternalMessages.findIndex(m => String(m.uid) === String(uid));
+                if (idx !== -1) currentExternalMessages[idx].seen = true;
+                if (element) element.classList.remove('mail-unread');
+                window._currentDetailMsg = {
+                    subject: msg.subject || '',
+                    from: { address: msg.from || '' },
+                    text: msg.text || '',
+                    createdAt: msg.date,
+                };
+                const from = _escapeHtml(msg.from || t('unknownSender'));
+                const to = _escapeHtml(msg.to || '');
+                const cc = _escapeHtml(msg.cc || '');
+                detailContent.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div><strong>${t('from')}:</strong> ${from}</div>
+                    </div>
+                    <div class="mb-3"><strong>${t('to')}:</strong> ${to}</div>
+                    ${cc ? `<div class="mb-3"><strong>CC:</strong> ${cc}</div>` : ''}
+                    <div class="mb-3"><strong>${t('subject')}:</strong> ${_escapeHtml(msg.subject || t('noSubject'))}</div>
+                    <div class="mb-3"><strong>${t('time')}:</strong> ${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</div>
+                    ${_renderExternalAttachments(uid, msg.attachments)}
+                    <hr>
+                    <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:8px; overflow:hidden;">
+                        <iframe id="external-mail-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" style="width:100%;border:none;min-height:200px;"></iframe>
+                    </div>`;
+                const iframe = document.getElementById('external-mail-body-frame');
+                const mailContent = msg.html || _escapeHtml(msg.text || '').replace(/\n/g, '<br>') || `<i style="color:#6c757d;">${t('emptyContent')}</i>`;
+                _renderMailBodyIframe(iframe, mailContent);
+            } catch (e) {
+                detailContent.innerHTML = `<div class="alert alert-danger">${t('loadFailed')}: ${_escapeHtml(e.message)}</div>`;
+            }
+        }
+
         async function searchMail() {
-            if (!currentEmail) return;
+            if (!currentEmail && currentAccountType !== 'external') return;
             const query = document.getElementById('search-input').value.trim();
             if (!query) { clearSearch(); return; }
 
@@ -1922,6 +2537,21 @@
             mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('searching')}</div>`;
 
             try {
+                if (currentAccountType === 'external') {
+                    const params = new URLSearchParams({
+                        folder: currentExternalFolder || 'INBOX',
+                        q: query,
+                        field: 'all',
+                    });
+                    const mails = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/search?${params.toString()}`);
+                    currentExternalMessages = Array.isArray(mails) ? mails : [];
+                    currentExternalHasMore = false;
+                    renderExternalMessages(currentExternalMessages);
+                    if (currentExternalMessages.length === 0) {
+                        mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
+                    }
+                    return;
+                }
                 const resp = await fetch('/api/inbox/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1943,13 +2573,15 @@
 
         function clearSearch() {
             document.getElementById('search-input').value = '';
-            if (currentMessages.length > 0) {
+            if (currentAccountType === 'external') {
+                queryExternalMails(false, false);
+            } else if (currentMessages.length > 0) {
                 renderMessages(currentMessages);
             }
         }
 
         async function viewMailDetail(messageId, element, isTrash = false) {
-            if (!currentEmail) return;
+            if (currentAccountType !== 'local' || !currentEmail) return;
             
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
             if (element) element.classList.add('active');
@@ -2076,7 +2708,9 @@
         function _syncComposeDomains() {
             const sel = document.getElementById('compose-from-domain');
             const prev = sel.value;
-            sel.innerHTML = activeDomains.map(d => `<option value="${d}">${d}</option>`).join('');
+            sel.innerHTML = activeDomains.length
+                ? activeDomains.map(d => `<option value="${d}">${d}</option>`).join('')
+                : `<option value="">${t('noDomains')}</option>`;
             if (activeDomains.includes(prev)) sel.value = prev;
         }
 
@@ -2097,7 +2731,7 @@
             _resetComposeForm();
             _syncComposeDomains();
             // 如果当前已查询邮箱，自动填充发件人
-            if (currentEmail) {
+            if (currentAccountType === 'local' && currentEmail) {
                 const [prefix, domain] = currentEmail.split('@');
                 document.getElementById('compose-from-prefix').value = prefix || '';
                 const domainSel = document.getElementById('compose-from-domain');
@@ -2122,7 +2756,7 @@
             document.getElementById('compose-subject').value = origSubject.startsWith('Re: ') ? origSubject : `Re: ${origSubject}`;
 
             // 填充发件人 = 当前查询的邮箱
-            if (currentEmail) {
+            if (currentAccountType === 'local' && currentEmail) {
                 const [prefix, domain] = currentEmail.split('@');
                 document.getElementById('compose-from-prefix').value = prefix || '';
                 const domainSel = document.getElementById('compose-from-domain');
@@ -2236,9 +2870,12 @@
         function updateBatchButtons() {
             const ids = getSelectedIds();
             const count = ids.length;
-            document.getElementById('btn-batch-delete').disabled = count === 0;
-            document.getElementById('btn-batch-read').disabled = count === 0;
-            document.getElementById('selected-count').textContent = count > 0 ? t('selected', {n: count}) : '';
+            const deleteBtn = document.getElementById('btn-batch-delete');
+            const readBtn = document.getElementById('btn-batch-read');
+            const selectedCount = document.getElementById('selected-count');
+            if (deleteBtn) deleteBtn.disabled = count === 0;
+            if (readBtn) readBtn.disabled = count === 0;
+            if (selectedCount) selectedCount.textContent = count > 0 ? t('selected', {n: count}) : '';
         }
 
         function toggleSelectAll(checked) {
@@ -2247,6 +2884,7 @@
         }
 
         async function batchAction(action) {
+            if (currentAccountType !== 'local') return;
             const ids = getSelectedIds();
             if (ids.length === 0) return;
 
@@ -2292,7 +2930,7 @@
         // ---- 删除邮件 ----
 
         async function deleteEmail(messageId) {
-            if (!currentEmail) return;
+            if (currentAccountType !== 'local' || !currentEmail) return;
             if (!confirm(t('confirmDelete1'))) return;
 
             try {
@@ -2320,12 +2958,12 @@
         }
 
         async function restoreEmail(messageId) {
-            if (!currentEmail || !confirm(t('confirmRestore'))) return;
+            if (currentAccountType !== 'local' || !currentEmail || !confirm(t('confirmRestore'))) return;
             await trashAction('/api/inbox/restore', messageId, t('restore'));
         }
 
         async function permanentDeleteEmail(messageId) {
-            if (!currentEmail || !confirm(t('confirmPermanentDelete'))) return;
+            if (currentAccountType !== 'local' || !currentEmail || !confirm(t('confirmPermanentDelete'))) return;
             await trashAction('/api/inbox/permanent-delete', messageId, t('permanentDelete'));
         }
 

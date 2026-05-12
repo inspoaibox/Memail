@@ -1062,12 +1062,12 @@ if (new URLSearchParams(window.location.search).get('embedded') === '1') {
   <div class="embedded-topbar">
     <div class="embedded-topbar-left">
       <button type="button" class="embedded-home-btn" onclick="goBackToMailboxHome()" aria-label="返回邮箱主页" title="返回邮箱主页">←</button>
-      <div class="embedded-title" data-i18n="embeddedTitle">ManyMail IMAP</div>
+      <div class="embedded-title" data-i18n="embeddedTitle">Memail IMAP</div>
     </div>
   </div>
 <div class="app">
   <div class="sidebar">
-    <div class="sidebar-header" data-i18n="brandTitle">ManyMail</div>
+    <div class="sidebar-header" data-i18n="brandTitle">Memail</div>
     <div class="sidebar-section">
       <div class="sidebar-section-title" data-i18n="accountSection">邮箱账户</div>
       <div id="account-list"></div>
@@ -1107,7 +1107,7 @@ if (new URLSearchParams(window.location.search).get('embedded') === '1') {
     </div>
     <div class="mail-list-container">
       <div class="mail-list-pane" id="mail-list">
-        <div class="detail-empty"><strong>还没有连接邮箱</strong><span>添加一个 IMAP 邮箱后，即可在 ManyMail 中统一浏览邮件。</span></div>
+        <div class="detail-empty"><strong>还没有连接邮箱</strong><span>添加一个 IMAP 邮箱后，即可在 Memail 中统一浏览邮件。</span></div>
       </div>
       <div class="mail-detail" id="mail-detail">
         <div class="detail-empty"><strong>请选择一封邮件</strong><span>在左侧选择邮件后，可在这里查看正文、附件与收发件信息。</span></div>
@@ -1185,8 +1185,8 @@ let folderCache = [];
 let gmailOAuthEnabled = false;
 const LANGS = {
   zh: {
-    embeddedTitle: 'ManyMail IMAP',
-    brandTitle: 'ManyMail',
+    embeddedTitle: 'Memail IMAP',
+    brandTitle: 'Memail',
     accountSection: '邮箱账户',
     folderSection: '文件夹',
     addAccount: '添加邮箱',
@@ -1213,7 +1213,7 @@ const LANGS = {
     batchHint: '支持自动识别: Gmail, GMX, Outlook, QQ, 163, Yahoo 等邮箱的 IMAP 服务器',
     startImport: '开始导入',
     emptyAccountsTitle: '还没有连接邮箱',
-    emptyAccountsDesc: '添加一个 IMAP 邮箱后，即可在 ManyMail 中统一浏览邮件。',
+    emptyAccountsDesc: '添加一个 IMAP 邮箱后，即可在 Memail 中统一浏览邮件。',
     emptyDetailTitle: '请选择一封邮件',
     emptyDetailDesc: '在左侧选择邮件后，可在这里查看正文、附件与收发件信息。',
     noMailsTitle: '这里还没有邮件',
@@ -1263,8 +1263,8 @@ const LANGS = {
     operationFailed: '操作失败',
   },
   en: {
-    embeddedTitle: 'ManyMail IMAP',
-    brandTitle: 'ManyMail',
+    embeddedTitle: 'Memail IMAP',
+    brandTitle: 'Memail',
     accountSection: 'Accounts',
     folderSection: 'Folders',
     addAccount: 'Add account',
@@ -1291,7 +1291,7 @@ const LANGS = {
     batchHint: 'Auto-detects IMAP settings for Gmail, GMX, Outlook, QQ, 163, Yahoo, and more.',
     startImport: 'Start import',
     emptyAccountsTitle: 'No mailbox connected yet',
-    emptyAccountsDesc: 'Add an IMAP mailbox to browse everything inside ManyMail.',
+    emptyAccountsDesc: 'Add an IMAP mailbox to browse everything inside Memail.',
     emptyDetailTitle: 'Select an email',
     emptyDetailDesc: 'Choose an email from the left to view its body, attachments, and delivery details here.',
     noMailsTitle: 'No mail here yet',
@@ -1763,7 +1763,7 @@ async function startGmailOAuth() {
   }
   try {
     var data = await api('POST', '/api/oauth/gmail/start', {});
-    window.open(data.url, 'manymail-gmail-oauth', 'width=520,height=720');
+    window.open(data.url, 'memail-gmail-oauth', 'width=520,height=720');
   } catch (err) {
     errEl.textContent = err.message || t('gmailOAuthFailed');
   }

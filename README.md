@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="ManyMail" width="700">
+<img src="docs/banner.svg" alt="Memail" width="700">
 
 **Lightweight self-hosted mail service — one-click deploy, ready to use**
 
@@ -18,7 +18,7 @@ SMTP Receiver &bull; REST API &bull; Web Viewer &bull; IMAP Bridge
 
 ---
 
-<img src="docs/screenshot.jpg" alt="ManyMail Screenshot" width="900">
+<img src="docs/screenshot.jpg" alt="Memail Screenshot" width="900">
 
 <sub>*All emails shown in the screenshot are for testing purposes only and have no real-world significance.*</sub>
 
@@ -26,7 +26,7 @@ SMTP Receiver &bull; REST API &bull; Web Viewer &bull; IMAP Bridge
 
 ## Overview
 
-ManyMail is a complete self-hosted mail solution with three core services:
+Memail is a complete self-hosted mail solution with three core services:
 
 | Service | Stack | Port | Description |
 |:--------|:------|:-----|:------------|
@@ -71,8 +71,8 @@ ManyMail is a complete self-hosted mail solution with three core services:
 ### 1. Clone & Configure
 
 ```bash
-git clone https://github.com/margbug01/ManyMail.git
-cd ManyMail
+git clone https://github.com/inspoaibox/Memail.git
+cd Memail
 cp .env.example .env
 ```
 
@@ -158,7 +158,7 @@ To roll back, change the image tag in `.env` to an older tag, such as a release 
 
 ### Runtime Settings In The Web UI
 
-ManyMail no longer requires every operational setting to be baked into `.env`. After Docker starts, log in to the web UI and click the gear icon to configure:
+Memail no longer requires every operational setting to be baked into `.env`. After Docker starts, log in to the web UI and click the gear icon to configure:
 
 - Resend API Key for outbound mail.
 - Unified mailbox password used by the built-in inbox viewer.
@@ -179,7 +179,7 @@ The external IMAP aggregator persists account configuration and encrypts sensiti
 https://mail.yourdomain.com/imap/api/oauth/gmail/callback
 ```
 
-3. Open the ManyMail web UI, click the gear icon, and fill in:
+3. Open the Memail web UI, click the gear icon, and fill in:
 
    - Public Base URL: `https://mail.yourdomain.com/imap`
    - Google Client ID
@@ -224,7 +224,7 @@ default._domainkey.yourdomain.com.  IN  TXT  "v=DKIM1; k=rsa; p=<your-public-key
 _dmarc.yourdomain.com.  IN  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@yourdomain.com"
 ```
 
-> **STARTTLS**: ManyMail supports STARTTLS. Mount your TLS certificate and key via `docker-compose.yml` and set `SMTP_TLS_CERT` / `SMTP_TLS_KEY` in `.env`. See `.env.example` for details.
+> **STARTTLS**: Memail supports STARTTLS. Mount your TLS certificate and key via `docker-compose.yml` and set `SMTP_TLS_CERT` / `SMTP_TLS_KEY` in `.env`. See `.env.example` for details.
 
 <br>
 
@@ -288,7 +288,7 @@ curl http://127.0.0.1:8080/messages \
 ## Project Structure
 
 ```
-ManyMail/
+Memail/
 │
 ├── mail-service/                # SMTP + REST API
 │   ├── app.py                   #   FastAPI main app
@@ -354,7 +354,7 @@ ManyMail/
 
 ## Community
 
-ManyMail appreciates [linux.do](https://linux.do/) — a friendly Chinese tech community where people share ideas, projects, and practical self-hosting experience.
+Memail appreciates [linux.do](https://linux.do/) — a friendly Chinese tech community where people share ideas, projects, and practical self-hosting experience.
 
 <br>
 
