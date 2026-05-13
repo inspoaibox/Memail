@@ -518,20 +518,22 @@
         }
         .mail-action-menu {
             position: relative;
-            display: inline-flex;
+            display: flex;
             gap: 4px;
             flex-wrap: nowrap;
-            justify-content: flex-end;
+            justify-content: flex-start;
             align-items: center;
             white-space: nowrap;
             pointer-events: auto;
         }
         .mail-detail-actions-wrap {
-            flex: 0 1 auto;
-            min-width: 0;
-            overflow-x: auto;
-            overflow-y: hidden;
+            width: 100%;
+            margin-top: 8px;
             pointer-events: auto;
+        }
+        .mail-detail-meta-block {
+            flex: 1 1 auto;
+            min-width: 0;
         }
         
         /* Quill 编辑器样式 */
@@ -2896,7 +2898,7 @@
 
         function _detailTranslateButton() {
             return `
-                <button class="btn btn-sm btn-outline-primary me-1" id="btn-translate-mail" onclick="translateCurrentMail()">
+                <button type="button" class="btn btn-sm btn-outline-primary" id="btn-translate-mail" data-mail-action="translate">
                     <i class="bi bi-translate me-1"></i>${t('translateZh')}
                 </button>`;
         }
@@ -5446,6 +5448,13 @@
             applyLang();
             _loadGroupCollapseState();
             _loadAutoRefreshPreference();
+            document.addEventListener('click', event => {
+                const target = event.target.closest('[data-mail-action]');
+                if (!target) return;
+                event.preventDefault();
+                event.stopPropagation();
+                _handleDetailAction(target.getAttribute('data-mail-action') || '');
+            });
             document.querySelectorAll('#settingsModal [data-bs-toggle="tab"]').forEach(tab => {
                 tab.addEventListener('shown.bs.tab', _syncSettingsFooter);
             });
@@ -6380,18 +6389,18 @@
             return `
                 <div class="mail-action-menu">
                     ${_detailTranslateButton()}
-                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleFavoriteCurrentMail()" title="${meta.favorite ? t('unfavorite') : t('favorite')}">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-mail-action="favorite" title="${meta.favorite ? t('unfavorite') : t('favorite')}">
                         <i class="bi ${meta.favorite ? 'bi-star-fill text-warning' : 'bi-star'}"></i>
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="togglePinCurrentMail()" title="${meta.pinned ? t('unpin') : t('pin')}">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-mail-action="pin" title="${meta.pinned ? t('unpin') : t('pin')}">
                         <i class="bi ${meta.pinned ? 'bi-pin-angle-fill text-warning' : 'bi-pin-angle'}"></i>
                     </button>
-                    ${canToggleRead ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleReadCurrentMail()" title="${t('markReadUnread')}">
+                    ${canToggleRead ? `<button type="button" class="btn btn-sm btn-outline-secondary" data-mail-action="toggle-read" title="${t('markReadUnread')}">
                         <i class="bi ${isUnread ? 'bi-envelope-open' : 'bi-envelope'}"></i>
                     </button>` : ''}
-                    ${canReply ? `<button type="button" class="btn btn-sm btn-outline-primary" onclick="openReply()"><i class="bi bi-reply me-1"></i>${t('reply')}</button>` : ''}
-                    ${canReply ? `<button type="button" class="btn btn-sm btn-outline-primary" onclick="openReplyAll()"><i class="bi bi-reply-all me-1"></i>${t('replyAll')}</button>` : ''}
-                    ${canForward ? `<button type="button" class="btn btn-sm btn-outline-primary" onclick="openForward()"><i class="bi bi-forward me-1"></i>${t('forward')}</button>` : ''}
+                    ${canReply ? `<button type="button" class="btn btn-sm btn-outline-primary" data-mail-action="reply"><i class="bi bi-reply me-1"></i>${t('reply')}</button>` : ''}
+                    ${canReply ? `<button type="button" class="btn btn-sm btn-outline-primary" data-mail-action="reply-all"><i class="bi bi-reply-all me-1"></i>${t('replyAll')}</button>` : ''}
+                    ${canForward ? `<button type="button" class="btn btn-sm btn-outline-primary" data-mail-action="forward"><i class="bi bi-forward me-1"></i>${t('forward')}</button>` : ''}
                 </div>`;
         }
 
@@ -6448,6 +6457,17 @@
             const ref = _currentDetailRef();
             if (!bar || !ref) return;
             bar.innerHTML = renderMessageActions(ref, _detailMsgForRef(ref) || _findMessageByRef(ref) || {});
+        }
+
+        function _handleDetailAction(action) {
+            if (!action) return;
+            if (action === 'translate') return translateCurrentMail();
+            if (action === 'favorite') return toggleFavoriteCurrentMail();
+            if (action === 'pin') return togglePinCurrentMail();
+            if (action === 'toggle-read') return toggleReadCurrentMail();
+            if (action === 'reply') return openReply();
+            if (action === 'reply-all') return openReplyAll();
+            if (action === 'forward') return openForward();
         }
 
         async function setMessageReadState(ref, seen) {
@@ -6768,8 +6788,8 @@
             };
             window._currentDetailRef = detailRef;
             detailContent.innerHTML = `
-                <div class="d-flex justify-content-between align-items-start mb-3 gap-2">
-                    <div><strong>${t('from')}:</strong> ${_escapeHtml(msg.from_address || currentEmail)}</div>
+                <div class="mb-3">
+                    <div class="mail-detail-meta-block"><strong>${t('from')}:</strong> ${_escapeHtml(msg.from_address || currentEmail)}</div>
                     <div class="mail-detail-actions-wrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
                 </div>
                 <div id="mail-detail-inline-alert" style="display:none;"></div>
@@ -7287,8 +7307,8 @@
                 const to = _escapeHtml(msg.to || '');
                 const cc = _escapeHtml(msg.cc || '');
                 detailContent.innerHTML = `
-                    <div class="d-flex justify-content-between align-items-start mb-3 gap-2">
-                        <div><strong>${t('from')}:</strong> ${from}</div>
+                    <div class="mb-3">
+                        <div class="mail-detail-meta-block"><strong>${t('from')}:</strong> ${from}</div>
                         <div class="mail-detail-actions-wrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
                     </div>
                     <div id="mail-detail-inline-alert" style="display:none;"></div>
@@ -7528,8 +7548,8 @@
                                 <i class="bi bi-trash me-1"></i>${t('delete')}
                             </button>`;
                 detailContent.innerHTML = `
-                    <div class="d-flex justify-content-between align-items-start mb-3">
-                        <div>
+                    <div class="mb-3">
+                        <div class="mail-detail-meta-block">
                             <strong>${t('from')}:</strong> ${escapedFromName} &lt;${escapedFromAddr}&gt;
                         </div>
                         <div class="mail-detail-actions-wrap" id="mail-detail-actions">${actionButtons}</div>
