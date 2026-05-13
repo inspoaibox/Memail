@@ -801,6 +801,9 @@ def _update_outbox_item(settings: dict, item_id: str, status: str, error: str = 
 
 
 def _message_meta_key(account_type: str, account_id: str, folder: str, message_id: str) -> str:
+    account_type = str(account_type or "")
+    account_id = str(account_id or "")
+    folder = str(folder or "")
     return "|".join([
         account_type.strip().lower() or "local",
         account_id.strip().lower(),
@@ -1146,7 +1149,7 @@ def _strip_layout_html_for_translation(html: str) -> str:
 
 
 def _prepare_html_for_render(html: str) -> str:
-    return _rewrite_html_images(_sanitize_email_html(html))
+    return _sanitize_email_html(html)
 
 
 def _rewrite_imap_html(html: str) -> str:

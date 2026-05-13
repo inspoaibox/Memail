@@ -2713,19 +2713,11 @@
             iframe.style.overflow = 'auto';
             const mailBodyCss = `
                 html,body{margin:0;padding:0;background:transparent;}
-                body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:0;overflow-wrap:anywhere;word-break:normal;line-height:1.55;overflow-x:auto;}
+                body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:0;line-height:1.55;}
                 img{max-width:100%;height:auto;}
-                a{color:#4a7c9b;}
-                table{border-collapse:collapse;table-layout:auto;border-spacing:0;}
-                table:not(.memail-data-table){max-width:100%;}
-                table[width="100%"],table[role="presentation"]{width:100%;}
-                .memail-data-table{max-width:none;min-width:max-content;margin:8px 0;background:#fff;}
-                caption{text-align:left;}
-                col,colgroup{display:table-column;}
-                th,td{vertical-align:top;word-break:normal;overflow-wrap:normal;}
-                .memail-data-table th,.memail-data-table td{padding:6px 8px;border:1px solid #d8e2df;}
-                .memail-data-table th{background:#f4f8f7;font-weight:700;}
-                pre{white-space:pre-wrap;overflow-wrap:anywhere;}
+                table{max-width:100%;}
+                th,td{vertical-align:top;overflow-wrap:anywhere;word-break:break-word;}
+                pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;}
             `;
 
             iframeDoc.open();
@@ -2736,23 +2728,6 @@
             iframeDoc.querySelectorAll('a[href]').forEach(a => {
                 a.setAttribute('target', '_blank');
                 a.setAttribute('rel', 'noopener noreferrer');
-            });
-            iframeDoc.querySelectorAll('table').forEach(table => {
-                const role = String(table.getAttribute('role') || '').toLowerCase();
-                const border = String(table.getAttribute('border') || '').trim();
-                const rows = table.querySelectorAll('tr').length;
-                const cells = table.querySelectorAll('td,th').length;
-                const hasHeader = Boolean(table.querySelector('th'));
-                const width = String(table.getAttribute('width') || '').trim().toLowerCase();
-                const hasColgroup = Boolean(table.querySelector('col, colgroup'));
-                const firstRowCells = table.querySelectorAll('tr:first-child td, tr:first-child th').length;
-                const isPresentation = role === 'presentation' || role === 'none';
-                const looksLikeData = !isPresentation && (
-                    hasHeader ||
-                    (rows >= 3 && cells >= 8 && firstRowCells >= 2) ||
-                    (border && border !== '0' && rows >= 2 && cells >= 6 && !width.includes('100%') && !hasColgroup)
-                );
-                if (looksLikeData) table.classList.add('memail-data-table');
             });
 
             // 从父页面计算 iframe 高度（sandbox 无 allow-scripts，脚本无法在 iframe 内执行）
