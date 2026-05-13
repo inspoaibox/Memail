@@ -2672,7 +2672,7 @@
         }
 
         function _detailMsgForRef(ref) {
-            return _messageDetailRefsMatch(ref, _currentDetailRef())
+            return _messageDetailRefsMatch(ref, _getCurrentDetailRef())
                 ? window._currentDetailMsg
                 : null;
         }
@@ -6337,7 +6337,7 @@
             await viewMailDetail(messageId, element);
         }
 
-        function _currentDetailRef() {
+        function _getCurrentDetailRef() {
             return window._currentDetailRef || null;
         }
 
@@ -6405,7 +6405,7 @@
         }
 
         async function toggleFavoriteCurrentMail() {
-            const ref = _currentDetailRef();
+            const ref = _getCurrentDetailRef();
             if (!ref) return;
             const detailMsg = _detailMsgForRef(ref);
             const msg = _findMessageByRef(ref) || detailMsg;
@@ -6421,7 +6421,7 @@
                 }
                 const saved = await updateMessageMeta(ref, { favorite: !meta.favorite });
                 if (msg) _applyMetaToMessage(msg, saved, ref);
-                if (_messageDetailRefsMatch(ref, _currentDetailRef())) {
+                if (_messageDetailRefsMatch(ref, _getCurrentDetailRef())) {
                     window._currentDetailMsg = { ...(window._currentDetailMsg || {}), meta: saved, flagged: !meta.favorite };
                 }
                 rerenderCurrentList();
@@ -6433,7 +6433,7 @@
         }
 
         async function togglePinCurrentMail() {
-            const ref = _currentDetailRef();
+            const ref = _getCurrentDetailRef();
             if (!ref) return;
             const detailMsg = _detailMsgForRef(ref);
             const msg = _findMessageByRef(ref) || detailMsg;
@@ -6441,7 +6441,7 @@
             try {
                 const saved = await updateMessageMeta(ref, { pinned: !meta.pinned });
                 if (msg) _applyMetaToMessage(msg, saved, ref);
-                if (_messageDetailRefsMatch(ref, _currentDetailRef())) {
+                if (_messageDetailRefsMatch(ref, _getCurrentDetailRef())) {
                     window._currentDetailMsg = { ...(window._currentDetailMsg || {}), meta: saved };
                 }
                 rerenderCurrentList();
@@ -6454,7 +6454,7 @@
 
         function refreshDetailActionBar() {
             const bar = document.getElementById('mail-detail-actions');
-            const ref = _currentDetailRef();
+            const ref = _getCurrentDetailRef();
             if (!bar || !ref) return;
             bar.innerHTML = renderMessageActions(ref, _detailMsgForRef(ref) || _findMessageByRef(ref) || {});
         }
@@ -6490,7 +6490,7 @@
             const msg = _findMessageByRef(ref);
             const wasUnread = msg ? !msg.seen : false;
             if (msg) msg.seen = seen;
-            if (_messageDetailRefsMatch(ref, _currentDetailRef())) window._currentDetailMsg.seen = seen;
+            if (_messageDetailRefsMatch(ref, _getCurrentDetailRef())) window._currentDetailMsg.seen = seen;
             const inMixedContext = ['global', 'group', 'keyword'].includes(currentAccountType);
             if (ref.accountType === 'local' && msg && wasUnread === seen) {
                 const delta = seen ? -1 : 1;
@@ -6559,7 +6559,7 @@
         }
 
         async function toggleReadCurrentMail() {
-            const ref = _currentDetailRef();
+            const ref = _getCurrentDetailRef();
             const msg = _detailMsgForRef(ref) || _findMessageByRef(ref);
             if (!ref || !msg) return;
             try {
@@ -7604,7 +7604,7 @@
         }
 
         function _currentSenderAccount() {
-            const detailRef = _currentDetailRef();
+            const detailRef = _getCurrentDetailRef();
             if (detailRef?.accountType === 'external') {
                 const account = _externalAccountById(detailRef.accountId) || currentExternalAccount;
                 const email = account?.email || currentEmail || '';

@@ -367,6 +367,11 @@ def _prepare_translation_payload(html_content: str, text_content: str) -> tuple[
     return content, wants_html, original_length, truncated
 
 
+def _translation_preview(value: str, limit: int = 320) -> str:
+    text = re.sub(r"\s+", " ", (value or "").replace("\r", " ").replace("\n", " ")).strip()
+    return text[:limit]
+
+
 def _normalize_ai_translation(value: str, wants_html: bool) -> str:
     value = (value or "").strip()
     value = re.sub(r"^```(?:html)?\s*", "", value, flags=re.IGNORECASE)
@@ -387,6 +392,7 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wan
         if wants_html else
         "你是专业邮件翻译助手。请只输出中文译文，保留原邮件结构、链接文本和关键信息，不要添加解释。"
     )
+    request_started_at = time.time()
     resp = fast_http_session.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -399,6 +405,15 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wan
             "temperature": 0.2,
         },
         timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
+    )
+    app.logger.info(
+        "AI 请求完成(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s status=%s elapsed_ms=%s",
+        base_url,
+        model,
+        wants_html,
+        len(content or ""),
+        resp.status_code,
+        int((time.time() - request_started_at) * 1000),
     )
     if resp.status_code >= 400:
         raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
@@ -421,6 +436,7 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_ht
         if wants_html else
         "请把下面邮件翻译为中文。只输出中文译文，保留结构、链接文本和关键信息，不要添加解释。\n\n"
     )
+    request_started_at = time.time()
     resp = fast_http_session.post(
         f"{base_url}/{model_name}:generateContent",
         params={"key": api_key},
@@ -434,6 +450,15 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_ht
             "generationConfig": {"temperature": 0.2},
         },
         timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
+    )
+    app.logger.info(
+        "AI 请求完成(gemini): base_url=%s model=%s wants_html=%s input_chars=%s status=%s elapsed_ms=%s",
+        base_url,
+        model_name,
+        wants_html,
+        len(content or ""),
+        resp.status_code,
+        int((time.time() - request_started_at) * 1000),
     )
     if resp.status_code >= 400:
         raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
@@ -1889,14 +1914,37 @@ def translate_mail_to_chinese():
     try:
         data = request.get_json(silent=True) or {}
         html_content = (data.get("html", "") or "").strip()
+        text_content = (data.get("text", "") or "").strip()
+        subject_raw = (data.get("subject", "") or "").strip()
+        html_detected = bool(html_content)
+        html_length = len(html_content)
+        text_length = len(text_content)
         content, wants_html, original_length, truncated = _prepare_translation_payload(html_content, data.get("text", ""))
-        subject = _extract_plain_text(data.get("subject", ""))
+        subject = _extract_plain_text(subject_raw)
+        app.logger.info(
+            "邮件翻译开始: subject=%s html_detected=%s html_chars=%s text_chars=%s wants_html=%s payload_chars=%s original_chars=%s truncated=%s preview=%s",
+            subject[:120],
+            html_detected,
+            html_length,
+            text_length,
+            wants_html,
+            len(content),
+            original_length,
+            truncated,
+            _translation_preview(content),
+        )
         if subject:
             content = f"主题：{subject}\n\n{content}"
             original_length += len(subject)
             if len(content) > AI_TRANSLATION_MAX_CHARS:
                 content = content[:AI_TRANSLATION_MAX_CHARS]
                 truncated = True
+            app.logger.info(
+                "邮件翻译主题已拼接: subject_chars=%s payload_chars=%s preview=%s",
+                len(subject),
+                len(content),
+                _translation_preview(content),
+            )
         if not content:
             return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
 
@@ -1909,6 +1957,15 @@ def translate_mail_to_chinese():
         api_key = _decrypt_setting(channel.get("api_key"))
         if not api_key:
             return jsonify({"success": False, "message": "默认渠道 API Key 不可用，请重新新增渠道"}), 400
+
+        app.logger.info(
+            "邮件翻译准备请求: provider=%s model=%s base_url=%s wants_html=%s payload_chars=%s",
+            channel.get("provider"),
+            model,
+            channel.get("base_url", ""),
+            wants_html,
+            len(content),
+        )
 
         if channel.get("provider") == "gemini":
             translated = _call_gemini(channel, api_key, model, content, wants_html)
@@ -1938,17 +1995,26 @@ def translate_mail_to_chinese():
         }), 502
     if not translated:
         return jsonify({"success": False, "message": "模型没有返回翻译内容"}), 502
+    app.logger.info(
+        "邮件翻译原始返回: provider=%s model=%s output_chars=%s preview=%s",
+        channel.get("provider"),
+        model,
+        len(translated),
+        _translation_preview(translated),
+    )
     translated = _normalize_ai_translation(translated, wants_html)
     elapsed_ms = int((time.time() - started_at) * 1000)
     app.logger.info(
-        "邮件翻译完成: provider=%s model=%s format=%s input_chars=%s original_chars=%s truncated=%s elapsed_ms=%s",
+        "邮件翻译完成: provider=%s model=%s format=%s input_chars=%s original_chars=%s output_chars=%s truncated=%s elapsed_ms=%s preview=%s",
         channel.get("provider"),
         model,
         "html" if wants_html else "text",
         len(content),
         original_length,
+        len(translated),
         truncated,
         elapsed_ms,
+        _translation_preview(translated),
     )
     return jsonify({
         "success": True,
