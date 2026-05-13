@@ -1930,6 +1930,7 @@
                 translationResult: '中文翻译',
                 translationFailed: '翻译失败',
                 translationTimeout: '翻译请求超时，请稍后重试或换一个更快的默认模型',
+                translationTruncated: '邮件内容较长，已截取前半部分发送给 AI 翻译。',
                 mailboxControls: '邮箱控件',
                 localMailboxHint: '本地邮箱用于接收当前系统托管域名的邮件。',
                 externalMailboxHint: '外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。',
@@ -2214,6 +2215,7 @@
                 translationResult: 'Chinese translation',
                 translationFailed: 'Translation failed',
                 translationTimeout: 'Translation timed out. Try again later or choose a faster default model.',
+                translationTruncated: 'This email is long, so only the first part was sent for AI translation.',
                 mailboxControls: 'Mailbox Controls',
                 localMailboxHint: 'Local mailboxes receive mail for domains hosted by this system.',
                 externalMailboxHint: 'External accounts connect Gmail, Outlook, or other IMAP mailboxes.',
@@ -2863,6 +2865,7 @@
                     : { success: false, message: (await resp.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() };
                 if (!data.success) throw new Error(data.message || t('translationFailed'));
                 panel.innerHTML = `
+                    ${data.truncated ? `<div class="small text-warning mb-2">${t('translationTruncated')}</div>` : ''}
                     <div class="fw-semibold mb-2"><i class="bi bi-translate me-1"></i>${t('translationResult')}</div>
                     <iframe id="mail-translation-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`;
                 const frame = document.getElementById('mail-translation-frame');
@@ -3130,19 +3133,30 @@
             return `${type}:${id}`;
         }
 
+        function _accountOrderEmailKey(type, email) {
+            const normalized = String(email || '').trim().toLowerCase();
+            return normalized ? `${type}:${normalized}` : '';
+        }
+
         function _ensureAccountOrder() {
             const existing = new Set([
                 ...mailboxes.map(item => _accountOrderKey('local', item.address)),
                 ...externalAccounts.map(item => _accountOrderKey('external', item.id)),
+                ...mailboxes.map(item => _accountOrderEmailKey('localEmail', item.address)),
+                ...externalAccounts.map(item => _accountOrderEmailKey('externalEmail', item.email)),
             ]);
             accountOrder = accountOrder.filter(key => existing.has(key));
             for (const item of mailboxes) {
                 const key = _accountOrderKey('local', item.address);
                 if (!accountOrder.includes(key)) accountOrder.push(key);
+                const emailKey = _accountOrderEmailKey('localEmail', item.address);
+                if (emailKey && !accountOrder.includes(emailKey)) accountOrder.push(emailKey);
             }
             for (const item of externalAccounts) {
                 const key = _accountOrderKey('external', item.id);
                 if (!accountOrder.includes(key)) accountOrder.push(key);
+                const emailKey = _accountOrderEmailKey('externalEmail', item.email);
+                if (emailKey && !accountOrder.includes(emailKey)) accountOrder.push(emailKey);
             }
         }
 
@@ -3152,9 +3166,19 @@
                 const item = mailboxes.find(mailbox => mailbox.address === address);
                 return item ? { type: 'local', id: address, account: item } : null;
             }
+            if (key.startsWith('localEmail:')) {
+                const address = key.slice(11).toLowerCase();
+                const item = mailboxes.find(mailbox => String(mailbox.address || '').toLowerCase() === address);
+                return item ? { type: 'local', id: item.address, account: item } : null;
+            }
             if (key.startsWith('external:')) {
                 const id = key.slice(9);
                 const item = externalAccounts.find(account => String(account.id) === String(id));
+                return item ? { type: 'external', id: String(item.id), account: item } : null;
+            }
+            if (key.startsWith('externalEmail:')) {
+                const email = key.slice(14).toLowerCase();
+                const item = externalAccounts.find(account => String(account.email || '').toLowerCase() === email);
                 return item ? { type: 'external', id: String(item.id), account: item } : null;
             }
             return null;
@@ -3163,9 +3187,13 @@
         function _groupedAccountEntries() {
             _ensureAccountOrder();
             const buckets = new Map();
+            const seen = new Set();
             accountOrder.forEach(key => {
                 const entry = _accountFromOrderKey(key);
                 if (!entry) return;
+                const stableKey = _accountOrderKey(entry.type, entry.id);
+                if (seen.has(stableKey)) return;
+                seen.add(stableKey);
                 const group = _accountGroupName(entry.account);
                 if (!buckets.has(group)) buckets.set(group, []);
                 buckets.get(group).push(entry);
@@ -3175,7 +3203,15 @@
 
         function _applyAccountOrderFromDom() {
             const items = Array.from(document.querySelectorAll('#mail-account-list .mail-account-item[draggable="true"]'));
-            accountOrder = items.map(item => _accountOrderKey(item.dataset.accountType, item.dataset.accountId));
+            accountOrder = items.flatMap(item => {
+                const type = item.dataset.accountType;
+                const id = item.dataset.accountId;
+                const email = item.dataset.accountEmail || '';
+                const keys = [_accountOrderKey(type, id)];
+                const emailKey = _accountOrderEmailKey(`${type}Email`, email);
+                if (emailKey) keys.push(emailKey);
+                return keys;
+            });
             const localOrder = accountOrder.filter(key => key.startsWith('local:')).map(key => key.slice(6));
             const externalOrder = accountOrder.filter(key => key.startsWith('external:')).map(key => key.slice(9));
             mailboxes.sort((a, b) => {
@@ -3499,7 +3535,7 @@
                         const displayName = _accountDisplayName(item, address);
                         const showSubtitle = displayName && displayName !== address;
                         rows.push(`
-                        <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" draggable="true" data-account-type="local" data-account-id="${_escapeAttr(address)}" onclick="if(!suppressAccountClick) selectMailbox('${encodeURIComponent(address)}')">
+                        <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" draggable="true" data-account-type="local" data-account-id="${_escapeAttr(address)}" data-account-email="${_escapeAttr(address)}" onclick="if(!suppressAccountClick) selectMailbox('${encodeURIComponent(address)}')">
                             <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('local')}"></i></span>
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
@@ -3514,7 +3550,7 @@
                         const displayName = _accountDisplayName(account, email);
                         const showSubtitle = displayName && displayName !== email;
                         rows.push(`
-                        <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" draggable="true" data-account-type="external" data-account-id="${_escapeAttr(String(account.id))}" onclick="if(!suppressAccountClick) selectExternalAccount('${id}')">
+                        <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" draggable="true" data-account-type="external" data-account-id="${_escapeAttr(String(account.id))}" data-account-email="${_escapeAttr(email)}" onclick="if(!suppressAccountClick) selectExternalAccount('${id}')">
                             <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('external', provider)}"></i></span>
                             <span class="mail-account-main">
                                 <span class="mail-account-title-row">

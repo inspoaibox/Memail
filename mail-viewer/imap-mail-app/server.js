@@ -1307,6 +1307,14 @@ async function accountSummaryWithSync(id, account, extra = {}) {
   return accountSummary(id, account, { syncStatus, ...extra });
 }
 
+function accountList() {
+  const list = [];
+  clients.forEach((c, id) => {
+    list.push(accountSummary(id, c.account));
+  });
+  return list;
+}
+
 async function accountListWithSync() {
   const list = [];
   for (const [id, c] of clients) {
@@ -1688,6 +1696,7 @@ async function restoreAccounts() {
   if (!Array.isArray(data) || data.length === 0) return;
 
   console.log(`正在恢复 ${data.length} 个已保存的账户...`);
+  const pendingConnects = [];
   for (const item of data) {
     const account = deserializeAccount(item);
     if (!account) {
@@ -1695,17 +1704,24 @@ async function restoreAccounts() {
       continue;
     }
     const client = createMailClient(account);
-    const id = ++clientId;
+    const persistedId = parseInt(item?.id, 10);
+    const id = Number.isInteger(persistedId) && persistedId > 0 ? persistedId : ++clientId;
+    clientId = Math.max(clientId, id);
     clients.set(id, client);
-    try {
-      await client.connect();
-      console.log(`  ✓ ${account.auth.user} 已恢复`);
-    } catch (err) {
-      console.log(`  ✗ ${account.auth.user} 暂未连接，已保留账号: ${err.message}`);
-    }
+    pendingConnects.push((async () => {
+      try {
+        await client.connect();
+        console.log(`  ✓ ${account.auth.user} 已恢复`);
+      } catch (err) {
+        console.log(`  ✗ ${account.auth.user} 暂未连接，已保留账号: ${err.message}`);
+      }
+    })());
   }
   // 重写持久化文件，迁移旧的明文格式；连接失败的账号仍保留。
   saveAccounts();
+  Promise.allSettled(pendingConnects).then(() => {
+    console.log('已保存账户后台恢复任务完成');
+  });
 }
 
 // 获取可用预设列表
@@ -1969,9 +1985,13 @@ app.post('/api/accounts', async (req, res) => {
 // 已连接账户列表
 app.get('/api/accounts', async (req, res) => {
   try {
+    if (!cacheDb) {
+      return res.json(accountList());
+    }
     res.json(await accountListWithSync());
   } catch (err) {
-    res.status(500).json({ error: err.message || '账户列表加载失败' });
+    console.warn(`账户同步状态加载失败，降级返回账号列表: ${err.message}`);
+    res.json(accountList());
   }
 });
 
@@ -1979,11 +1999,7 @@ app.get('/api/accounts', async (req, res) => {
 app.post('/api/accounts/reorder', (req, res) => {
   if (!requirePersistenceSecret(res)) return;
   reorderAccounts(req.body?.order || []);
-  const list = [];
-  clients.forEach((c, id) => {
-    list.push(accountSummary(id, c.account));
-  });
-  res.json({ ok: true, accounts: list });
+  res.json({ ok: true, accounts: accountList() });
 });
 
 app.get('/api/accounts/:id/sync/status', async (req, res) => {
@@ -2723,9 +2739,12 @@ const PORT = process.env.PORT || 3939;
 loadSettings();
 initCacheDb().catch(err => {
   console.warn(`IMAP cache init failed, running without persistent mail cache: ${err.message}`);
-}).then(() => restoreAccounts()).then(() => {
+}).then(() => {
   app.listen(PORT, () => {
     console.log(`IMAP Mail Client 已启动: http://localhost:${PORT}`);
+    restoreAccounts().catch(err => {
+      console.warn(`IMAP account restore failed: ${err.message}`);
+    });
     startSyncScheduler();
   });
 });

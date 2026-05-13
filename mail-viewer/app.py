@@ -348,6 +348,8 @@ def _normalize_ai_translation(value: str, wants_html: bool) -> str:
 
 def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
     base_url = channel.get("base_url", "").rstrip("/")
+    if not base_url:
+        raise RuntimeError("AI 渠道 Base URL 为空，请重新配置渠道")
     system_prompt = (
         "你是专业邮件翻译助手。请把用户提供的邮件 HTML 翻译为中文。"
         "必须保留原始 HTML 结构、表格、段落、列表、链接、按钮文本、图片和行内样式；"
@@ -370,12 +372,18 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wan
     )
     if resp.status_code >= 400:
         raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
-    payload = resp.json()
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        snippet = re.sub(r"\s+", " ", (resp.text or "").replace("\r", " ").replace("\n", " ")).strip()[:500]
+        raise RuntimeError(f"AI 服务返回了非 JSON 内容: {snippet}") from exc
     return (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
 
 def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
     base_url = channel.get("base_url", "").rstrip("/")
+    if not base_url:
+        raise RuntimeError("AI 渠道 Base URL 为空，请重新配置渠道")
     model_name = model if model.startswith("models/") else f"models/{model}"
     prompt = (
         "请把下面邮件 HTML 翻译为中文。必须保留原始 HTML 结构、表格、段落、列表、链接、按钮文本、图片和行内样式；"
@@ -399,7 +407,11 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_ht
     )
     if resp.status_code >= 400:
         raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
-    payload = resp.json()
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        snippet = re.sub(r"\s+", " ", (resp.text or "").replace("\r", " ").replace("\n", " ")).strip()[:500]
+        raise RuntimeError(f"AI 服务返回了非 JSON 内容: {snippet}") from exc
     candidates = payload.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
     return "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
@@ -436,9 +448,15 @@ def _normalize_account_order(order: list) -> list[str]:
         if key.startswith("local:"):
             address = _normalize_mailbox_address(key.removeprefix("local:"))
             key = f"local:{address}" if address else ""
+        elif key.startswith("localEmail:"):
+            address = _normalize_mailbox_address(key.removeprefix("localEmail:"))
+            key = f"localEmail:{address}" if address else ""
         elif key.startswith("external:"):
             account_id = key.removeprefix("external:").strip()
             key = f"external:{account_id}" if re.match(r"^[\w.-]{1,80}$", account_id) else ""
+        elif key.startswith("externalEmail:"):
+            email = _normalize_mailbox_address(key.removeprefix("externalEmail:"))
+            key = f"externalEmail:{email}" if email else ""
         else:
             key = ""
         if key and key not in seen:
@@ -1556,9 +1574,15 @@ def _response_error(resp, default: str) -> str:
     try:
         payload = resp.json()
     except Exception:
-        return default
+        text = (resp.text or "").replace("\r", " ").replace("\n", " ")
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return f"{default}: {text[:500]}" if text else default
     if isinstance(payload, dict):
-        return payload.get("message") or payload.get("error") or payload.get("detail") or default
+        detail = payload.get("message") or payload.get("error") or payload.get("detail")
+        if detail:
+            return f"{default}: {detail}"
+        return default
     return default
 
 
@@ -1807,30 +1831,30 @@ def save_ai_default_model():
 @login_required
 def translate_mail_to_chinese():
     started_at = time.time()
-    data = request.json or {}
-    html_content = (data.get("html", "") or "").strip()
-    content, wants_html, original_length, truncated = _prepare_translation_payload(html_content, data.get("text", ""))
-    subject = _extract_plain_text(data.get("subject", ""))
-    if subject:
-        content = f"主题：{subject}\n\n{content}"
-        original_length += len(subject)
-        if len(content) > AI_TRANSLATION_MAX_CHARS:
-            content = content[:AI_TRANSLATION_MAX_CHARS]
-            truncated = True
-    if not content:
-        return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
-
-    ai = _get_ai_settings()
-    default_model = ai.get("default_model", {})
-    channel = next((item for item in ai.get("channels", []) if item.get("id") == default_model.get("channel_id")), None)
-    model = default_model.get("model", "")
-    if not channel or not model:
-        return jsonify({"success": False, "message": "请先在 AI 设置中配置默认模型"}), 400
-    api_key = _decrypt_setting(channel.get("api_key"))
-    if not api_key:
-        return jsonify({"success": False, "message": "默认渠道 API Key 不可用，请重新新增渠道"}), 400
-
     try:
+        data = request.get_json(silent=True) or {}
+        html_content = (data.get("html", "") or "").strip()
+        content, wants_html, original_length, truncated = _prepare_translation_payload(html_content, data.get("text", ""))
+        subject = _extract_plain_text(data.get("subject", ""))
+        if subject:
+            content = f"主题：{subject}\n\n{content}"
+            original_length += len(subject)
+            if len(content) > AI_TRANSLATION_MAX_CHARS:
+                content = content[:AI_TRANSLATION_MAX_CHARS]
+                truncated = True
+        if not content:
+            return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
+
+        ai = _get_ai_settings()
+        default_model = ai.get("default_model", {})
+        channel = next((item for item in ai.get("channels", []) if item.get("id") == default_model.get("channel_id")), None)
+        model = default_model.get("model", "")
+        if not channel or not model:
+            return jsonify({"success": False, "message": "请先在 AI 设置中配置默认模型"}), 400
+        api_key = _decrypt_setting(channel.get("api_key"))
+        if not api_key:
+            return jsonify({"success": False, "message": "默认渠道 API Key 不可用，请重新新增渠道"}), 400
+
         if channel.get("provider") == "gemini":
             translated = _call_gemini(channel, api_key, model, content, wants_html)
         else:
@@ -1849,8 +1873,13 @@ def translate_mail_to_chinese():
             "message": f"翻译请求超时（{AI_TRANSLATION_TIMEOUT_SECONDS} 秒），请稍后重试或换一个更快的默认模型",
         }), 504
     except Exception as e:
-        app.logger.warning(f"邮件翻译失败: {e}", exc_info=True)
-        return jsonify({"success": False, "message": str(e)}), 502
+        elapsed_ms = int((time.time() - started_at) * 1000)
+        app.logger.warning("邮件翻译失败: %s elapsed_ms=%s", e, elapsed_ms, exc_info=True)
+        return jsonify({
+            "success": False,
+            "message": str(e) or "翻译服务异常，请查看 mail-viewer 日志",
+            "elapsed_ms": elapsed_ms,
+        }), 502
     if not translated:
         return jsonify({"success": False, "message": "模型没有返回翻译内容"}), 502
     translated = _normalize_ai_translation(translated, wants_html)
@@ -2023,7 +2052,16 @@ def reorder_mailboxes():
         for item in mailboxes
         if isinstance(item, dict) and _normalize_mailbox_address(item.get("address", ""))
     }
-    local_order = [item.removeprefix("local:") for item in order if item.startswith("local:")]
+    local_order = [
+        item.removeprefix("local:")
+        for item in order
+        if item.startswith("local:")
+    ] + [
+        item.removeprefix("localEmail:")
+        for item in order
+        if item.startswith("localEmail:")
+    ]
+    local_order = list(dict.fromkeys(local_order))
     reordered = [by_address[address] for address in local_order if address in by_address]
     reordered.extend(item for address, item in by_address.items() if address not in local_order)
     settings["mailboxes"] = reordered
