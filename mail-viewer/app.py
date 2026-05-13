@@ -482,8 +482,6 @@ def _normalize_account_order(order: list) -> list[str]:
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
 if IS_PRODUCTION and not _get_admin_password_hash() and not ACCESS_PASSWORD:
     raise RuntimeError("ADMIN_PASSWORD_HASH or ACCESS_PASSWORD must be configured for production")
-if IS_PRODUCTION and not _get_configured_admin_username():
-    raise RuntimeError("ADMIN_USERNAME must be configured for production")
 _require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
 _require_production_value("DUCKMAIL_API_KEY", DUCKMAIL_API_KEY)
 _require_production_value("IMAP_MAIL_BASE_URL", IMAP_MAIL_BASE_URL)
