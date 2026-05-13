@@ -5,6 +5,7 @@ import json
 import hashlib
 import html as html_lib
 import os
+import threading
 import re
 import secrets
 import socket
@@ -64,7 +65,7 @@ CONFIG_ENCRYPTION_KEY = (
 MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 1024)))
 IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS", "3"))
 IMAGE_PROXY_READ_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_READ_TIMEOUT_SECONDS", "8"))
-AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "20"))
+AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "45"))
 AI_TRANSLATION_MAX_CHARS = int(os.getenv("AI_TRANSLATION_MAX_CHARS", "12000"))
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
@@ -162,10 +163,12 @@ def _write_viewer_settings(settings: dict):
     settings_dir = os.path.dirname(VIEWER_SETTINGS_FILE)
     if settings_dir:
         os.makedirs(settings_dir, exist_ok=True)
-    tmp_path = f"{VIEWER_SETTINGS_FILE}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, VIEWER_SETTINGS_FILE)
+    lock = globals().setdefault("_VIEWER_SETTINGS_WRITE_LOCK", threading.Lock())
+    with lock:
+        tmp_path = f"{VIEWER_SETTINGS_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, VIEWER_SETTINGS_FILE)
 
 
 def _get_viewer_secret(name: str) -> str:
@@ -342,7 +345,13 @@ def _prepare_translation_payload(html_content: str, text_content: str) -> tuple[
     html_content = (html_content or "").strip()
     text_content = (text_content or "").strip()
     wants_html = bool(html_content and _html_needs_structured_translation(html_content))
-    content = html_content if wants_html else _extract_plain_text(text_content or html_content)
+    if wants_html:
+        content = _prepare_html_for_render(html_content)
+        # Drop base64 inline images and oversized style/script remnants before sending to the LLM.
+        content = re.sub(r"(?is)<img([^>]+?)src=[\"']data:image/[^\"']+[\"']([^>]*)>", r"<img\1\2>", content)
+        content = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", content)
+    else:
+        content = _extract_plain_text(text_content or html_content)
     original_length = len(content)
     truncated = False
     if len(content) > AI_TRANSLATION_MAX_CHARS:

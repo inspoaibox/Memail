@@ -687,7 +687,7 @@ function messageDetailFromParsed(parsed) {
   };
 }
 
-async function readCachedMessages(client, folderPath, count, before = null) {
+async function readCachedMessages(client, folderPath, count, before = null, offset = 0) {
   const collections = cacheCollections();
   if (!collections) return null;
   const accountKey = stableAccountKey(client.account);
@@ -699,11 +699,13 @@ async function readCachedMessages(client, folderPath, count, before = null) {
   }
   const query = { ...baseQuery };
   if (before) query.seq = { $lt: before };
-  const docs = await collections.messages
+  const sortSpec = folderPath === VIRTUAL_ALL_FOLDER || folderPath === VIRTUAL_UNREAD_FOLDER ? { date: -1 } : { seq: -1 };
+  const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
+  const cursor = collections.messages
     .find(query)
-    .sort(folderPath === VIRTUAL_ALL_FOLDER || folderPath === VIRTUAL_UNREAD_FOLDER ? { date: -1 } : { seq: -1 })
-    .limit(count)
-    .toArray();
+    .sort(sortSpec);
+  if (!before && safeOffset > 0) cursor.skip(safeOffset);
+  const docs = await cursor.limit(count).toArray();
   const total = await collections.messages.countDocuments(baseQuery);
   const pageRemaining = await collections.messages.countDocuments(query);
   const unseen = await collections.messages.countDocuments({ accountKey, ...(baseQuery.folder ? { folder: baseQuery.folder } : {}), seen: false });
@@ -715,7 +717,7 @@ async function readCachedMessages(client, folderPath, count, before = null) {
     total,
     unseen,
     mails,
-    hasMore: pageRemaining > mails.length,
+    hasMore: before ? pageRemaining > mails.length : (safeOffset + mails.length) < total,
     cached: true,
     syncStatus: await readSyncStatus(client, folderPath),
   };
@@ -727,15 +729,16 @@ async function readCachedMessagesByAccountKeys(accountKeys, options = {}) {
   const keys = (Array.isArray(accountKeys) ? accountKeys : []).filter(Boolean);
   if (!keys.length) return { total: 0, unseen: 0, mails: [], hasMore: false, cached: true };
   const count = Math.min(Math.max(parseInt(options.count, 10) || 30, 1), 100);
+  const offset = Math.max(parseInt(options.offset, 10) || 0, 0);
   const before = options.before ? new Date(options.before) : null;
   const query = { accountKey: { $in: keys } };
   if (options.unreadOnly) query.seen = false;
   if (before && Number.isFinite(before.getTime())) query.date = { $lt: before };
-  const docs = await collections.messages
+  const cursor = collections.messages
     .find(query)
-    .sort({ date: -1 })
-    .limit(count)
-    .toArray();
+    .sort({ date: -1 });
+  if (!before && offset > 0) cursor.skip(offset);
+  const docs = await cursor.limit(count).toArray();
   const baseQuery = { accountKey: { $in: keys }, ...(options.unreadOnly ? { seen: false } : {}) };
   const total = await collections.messages.countDocuments(baseQuery);
   const pageRemaining = await collections.messages.countDocuments(query);
@@ -744,7 +747,7 @@ async function readCachedMessagesByAccountKeys(accountKeys, options = {}) {
     total,
     unseen,
     mails: docs.map(normalizeCacheMessage),
-    hasMore: pageRemaining > docs.length,
+    hasMore: before ? pageRemaining > docs.length : (offset + docs.length) < total,
     cached: true,
   };
 }
@@ -2171,13 +2174,15 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
 
   const folder = req.query.folder || 'INBOX';
   const count = parseInt(req.query.count, 10) || 20;
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const offset = Math.max(parseInt(req.query.offset, 10) || ((page - 1) * count), 0);
   const before = req.query.before ? parseInt(req.query.before, 10) : null;
   const forceSync = ['1', 'true', 'yes'].includes(String(req.query.sync || '').toLowerCase());
   const cacheOnly = ['1', 'true', 'yes'].includes(String(req.query.cacheOnly || '').toLowerCase());
 
   try {
-    const cached = await readCachedMessages(client, folder, count, before);
-    const needsInitialSync = cached && !forceSync && !cacheOnly && !before && !cached.syncStatus?.synced && cached.mails.length === 0;
+    const cached = await readCachedMessages(client, folder, count, before, offset);
+    const needsInitialSync = cached && !forceSync && !cacheOnly && !before && offset === 0 && !cached.syncStatus?.synced && cached.mails.length === 0;
     const needsOlderRemotePage = cached && !forceSync && !cacheOnly && before && cached.mails.length < count
       && folder !== VIRTUAL_ALL_FOLDER && folder !== VIRTUAL_UNREAD_FOLDER
       && Number(cached.syncStatus?.messages || 0) > Number(cached.total || 0);
@@ -2193,7 +2198,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
     if (isVirtualFolder(folder)) {
       if (forceSync || needsInitialSync) {
         await syncVirtualFolderToCache(client, folder, { force: true, window: count });
-        const nextCached = await readCachedMessages(client, folder, count, before);
+        const nextCached = await readCachedMessages(client, folder, count, before, offset);
         if (nextCached && (nextCached.mails.length || folder !== VIRTUAL_UNREAD_FOLDER)) return res.json({ ...nextCached, syncedNow: true });
       }
       return res.json(await fetchVirtualFolderMessages(client, folder, count));
@@ -2202,7 +2207,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
     if (forceSync || needsInitialSync) {
       const resolvedFolder = await resolveFolder(client, folder);
       await syncFolderToCache(client, resolvedFolder, { force: true, window: count });
-      const nextCached = await readCachedMessages(client, folder, count, before);
+      const nextCached = await readCachedMessages(client, folder, count, before, offset);
       if (nextCached) return res.json({ ...nextCached, syncedNow: true });
     }
 
@@ -2320,6 +2325,8 @@ app.get('/api/accounts/:id/mails/:uid/attachments/:index', async (req, res) => {
 
 app.get('/api/mails', async (req, res) => {
   const count = parseInt(req.query.count, 10) || 30;
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const offset = Math.max(parseInt(req.query.offset, 10) || ((page - 1) * count), 0);
   const before = req.query.before || '';
   const unreadOnly = ['1', 'true', 'yes'].includes(String(req.query.unread || '').toLowerCase());
   const accountIds = String(req.query.accountIds || '')
@@ -2329,7 +2336,7 @@ app.get('/api/mails', async (req, res) => {
   try {
     const selectedClients = accountIds.length ? accountIds.map(id => clients.get(id)) : Array.from(clients.values());
     const keys = selectedClients.map(client => stableAccountKey(client.account));
-    const data = await readCachedMessagesByAccountKeys(keys, { count, before, unreadOnly });
+    const data = await readCachedMessagesByAccountKeys(keys, { count, offset, before, unreadOnly });
     const payload = data || { total: 0, unseen: 0, mails: [], hasMore: false, cached: true };
     payload.mails = attachCurrentAccountIds(payload.mails);
     res.json(payload);

@@ -2075,6 +2075,9 @@
                 noDomains: '暂无域名',
                 noMatch: '没有找到匹配的邮件',
                 loadMore: '加载更多',
+                pageInfo: '第 {page} / {pages} 页',
+                prevPage: '上一页',
+                nextPage: '下一页',
                 querying: '查询中...',
                 searching: '搜索中...',
                 sending: '发送中...',
@@ -2369,6 +2372,9 @@
                 noDomains: 'No domains',
                 noMatch: 'No matching emails found',
                 loadMore: 'Load more',
+                pageInfo: 'Page {page} / {pages}',
+                prevPage: 'Previous',
+                nextPage: 'Next',
                 querying: 'Querying...',
                 searching: 'Searching...',
                 sending: 'Sending...',
@@ -2480,12 +2486,10 @@
         let currentExternalFolders = [];
         let currentExternalMessages = [];
         let currentExternalTotal = 0;
-        let currentExternalHasMore = false;
+        let currentExternalPage = 1;
         let currentGlobalMessages = [];
         let currentGlobalTotal = 0;
-        let currentGlobalHasMore = false;
-        let currentGlobalExternalBefore = '';
-        let currentLocalVirtualSlices = {};
+        let currentGlobalPage = 1;
         let currentMailbox = '';
         let currentMessages = [];
         let currentSentMessages = [];
@@ -2494,11 +2498,15 @@
         let currentOutboxMessages = [];
         let activeDomains = [];
         let accountOrder = [];
-        let currentOffset = 0;
+        let currentPage = 1;
         let currentTotal = 0;
+        let currentSentPage = 1;
         let currentSentTotal = 0;
+        let currentTrashPage = 1;
         let currentTrashTotal = 0;
+        let currentDraftPage = 1;
         let currentDraftTotal = 0;
+        let currentOutboxPage = 1;
         let currentOutboxTotal = 0;
         let currentInboxUnreadCount = 0;
         let currentFolderCounts = {};
@@ -2603,6 +2611,30 @@
         function _folderBadge(value) {
             const n = Number(value) || 0;
             return n > 0 ? `<span class="badge mail-count-badge ms-auto">${n > 99 ? '99+' : n}</span>` : '';
+        }
+
+        function _totalPages(total) {
+            return Math.max(1, Math.ceil((Number(total) || 0) / PAGE_SIZE));
+        }
+
+        function _renderPagination({ currentPage = 1, total = 0, onPageChange = '' } = {}) {
+            const pages = _totalPages(total);
+            if (pages <= 1) return '';
+            const safePage = Math.min(Math.max(Number(currentPage) || 1, 1), pages);
+            const prevDisabled = safePage <= 1 ? 'disabled' : '';
+            const nextDisabled = safePage >= pages ? 'disabled' : '';
+            const prevHandler = safePage > 1 ? `${onPageChange}(${safePage - 1})` : '';
+            const nextHandler = safePage < pages ? `${onPageChange}(${safePage + 1})` : '';
+            return `
+                <div class="d-flex align-items-center justify-content-center gap-2 py-3">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" ${prevDisabled} ${prevHandler ? `onclick="${prevHandler}"` : ''}>
+                        <i class="bi bi-chevron-left me-1"></i>${t('prevPage')}
+                    </button>
+                    <span class="small text-muted">${t('pageInfo', { page: safePage, pages })}</span>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" ${nextDisabled} ${nextHandler ? `onclick="${nextHandler}"` : ''}>
+                        ${t('nextPage')}<i class="bi bi-chevron-right ms-1"></i>
+                    </button>
+                </div>`;
         }
 
         function _updateFolderCounts(counts = {}) {
@@ -3421,27 +3453,29 @@
             currentDraftMessages = [];
             currentOutboxMessages = [];
             currentFolderCounts = {};
+            currentPage = 1;
             currentTotal = 0;
+            currentSentPage = 1;
             currentSentTotal = 0;
+            currentTrashPage = 1;
             currentTrashTotal = 0;
+            currentDraftPage = 1;
             currentDraftTotal = 0;
+            currentOutboxPage = 1;
             currentOutboxTotal = 0;
             currentInboxUnreadCount = 0;
-            currentLocalVirtualSlices = {};
         }
 
         function _resetExternalMessageState() {
             currentExternalMessages = [];
+            currentExternalPage = 1;
             currentExternalTotal = 0;
-            currentExternalHasMore = false;
-            currentGlobalExternalBefore = '';
         }
 
         function _resetGlobalMessageState() {
             currentGlobalMessages = [];
+            currentGlobalPage = 1;
             currentGlobalTotal = 0;
-            currentGlobalHasMore = false;
-            currentGlobalExternalBefore = '';
         }
 
         function _groupExternalIds(group) {
@@ -5798,11 +5832,12 @@
             else if (currentTab === 'trash') queryTrash();
         }
 
-        async function querySent(append = false) {
+        async function querySent(page = currentSentPage) {
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
-            const offset = append ? currentSentMessages.length : 0;
-            if (!append) mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            const safePage = Math.max(Number(page) || 1, 1);
+            const offset = (safePage - 1) * PAGE_SIZE;
+            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
 
             try {
                 const resp = await fetch('/api/sent/query', {
@@ -5815,9 +5850,10 @@
                     mailList.innerHTML = `<div class="error-state"><p>${_escapeHtml(data.message || t('loadFailed'))}</p></div>`;
                     return;
                 }
+                currentSentPage = safePage;
                 currentSentTotal = data.total || data.messages.length;
                 _updateFolderCounts({ localSent: currentSentTotal });
-                renderSentMessages(append ? currentSentMessages.concat(data.messages) : data.messages);
+                renderSentMessages(data.messages);
             } catch (e) {
                 mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
             }
@@ -5853,36 +5889,22 @@
             return { messages, total: data.total || messages.length };
         }
 
-        function _localVirtualSliceKey() {
-            return currentTab === LOCAL_UNREAD_FOLDER ? 'unread' : 'all';
-        }
-
-        async function queryLocalVirtualMessages(silent = false, append = false) {
+        async function queryLocalVirtualMessages(silent = false, page = currentPage) {
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
-            if (!silent && !append) {
+            if (!silent) {
                 resetMailDetail();
                 mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
             }
-            const sliceKey = _localVirtualSliceKey();
-            const prevSlice = currentLocalVirtualSlices[sliceKey] || { inboxOffset: 0, sentOffset: 0, trashOffset: 0, total: 0 };
-            if (append) {
-                const loadMoreBtn = document.getElementById('btn-load-more');
-                if (loadMoreBtn) {
-                    loadMoreBtn.disabled = true;
-                    loadMoreBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('loading')}`;
-                }
-            }
+            const safePage = Math.max(Number(page) || 1, 1);
+            const baseOffset = (safePage - 1) * PAGE_SIZE;
 
             try {
-                const inboxOffset = append ? prevSlice.inboxOffset || 0 : 0;
-                const sentOffset = append ? prevSlice.sentOffset || 0 : 0;
-                const trashOffset = append ? prevSlice.trashOffset || 0 : 0;
                 const [inboxResult, unreadResult, sentResult, trashResult] = await Promise.all([
-                    _fetchLocalMailboxSlice('/api/inbox/query', { offset: inboxOffset }),
-                    _fetchLocalMailboxSlice('/api/inbox/query', { unread_only: true, offset: currentTab === LOCAL_UNREAD_FOLDER ? inboxOffset : 0 }),
-                    currentTab === LOCAL_UNREAD_FOLDER ? Promise.resolve({ messages: [], total: 0 }) : _fetchLocalMailboxSlice('/api/sent/query', { offset: sentOffset }).catch(() => ({ messages: [], total: 0 })),
-                    currentTab === LOCAL_UNREAD_FOLDER ? Promise.resolve({ messages: [], total: 0 }) : _fetchLocalMailboxSlice('/api/trash/query', { offset: trashOffset }).catch(() => ({ messages: [], total: 0 })),
+                    _fetchLocalMailboxSlice('/api/inbox/query', { offset: baseOffset }),
+                    _fetchLocalMailboxSlice('/api/inbox/query', { unread_only: true, offset: baseOffset }),
+                    currentTab === LOCAL_UNREAD_FOLDER ? Promise.resolve({ messages: [], total: 0 }) : _fetchLocalMailboxSlice('/api/sent/query', { offset: baseOffset }).catch(() => ({ messages: [], total: 0 })),
+                    currentTab === LOCAL_UNREAD_FOLDER ? Promise.resolve({ messages: [], total: 0 }) : _fetchLocalMailboxSlice('/api/trash/query', { offset: baseOffset }).catch(() => ({ messages: [], total: 0 })),
                 ]);
                 const inbox = currentTab === LOCAL_UNREAD_FOLDER ? unreadResult.messages : inboxResult.messages;
                 const unread = unreadResult.messages;
@@ -5903,20 +5925,11 @@
                 ]
                     .sort((a, b) => b._sortTime - a._sortTime)
                     .slice(0, PAGE_SIZE);
-                const shownSourceCounts = merged.reduce((acc, msg) => {
-                    acc[msg._source] = (acc[msg._source] || 0) + 1;
-                    return acc;
-                }, {});
-                currentMessages = append ? currentMessages.concat(merged) : merged;
-                currentSentMessages = currentMessages.filter(msg => msg._source === 'sent');
-                currentTrashMessages = currentMessages.filter(msg => msg._source === 'trash');
+                currentPage = safePage;
+                currentMessages = merged;
+                currentSentMessages = merged.filter(msg => msg._source === 'sent');
+                currentTrashMessages = merged.filter(msg => msg._source === 'trash');
                 currentTotal = currentTab === LOCAL_UNREAD_FOLDER ? unreadResult.total : currentFolderCounts.localAll;
-                currentLocalVirtualSlices[sliceKey] = {
-                    inboxOffset: inboxOffset + (shownSourceCounts.inbox || 0),
-                    sentOffset: sentOffset + (shownSourceCounts.sent || 0),
-                    trashOffset: trashOffset + (shownSourceCounts.trash || 0),
-                    total: currentTotal,
-                };
                 await loadMessageMetaFor(currentMessages, { accountType: 'local', accountId: currentEmail });
                 renderMessages(currentMessages);
             } catch (e) {
@@ -5950,27 +5963,6 @@
                 }
             }));
             return results.flat();
-        }
-
-        function _localAggregateOffsets(messages = currentGlobalMessages) {
-            return (messages || []).reduce((acc, msg) => {
-                if (msg?._accountType !== 'local') return acc;
-                const email = msg._accountId || '';
-                if (!email) return acc;
-                acc[email] = (acc[email] || 0) + 1;
-                return acc;
-            }, {});
-        }
-
-        function _externalAggregateBefore(messages = currentGlobalMessages) {
-            const times = (messages || [])
-                .filter(msg => msg?._accountType === 'external')
-                .map(msg => msg.date || msg.createdAt || msg.created_at)
-                .filter(Boolean)
-                .map(value => new Date(value).getTime())
-                .filter(Number.isFinite);
-            if (!times.length) return '';
-            return new Date(Math.min(...times)).toISOString();
         }
 
         async function _searchLocalAggregate(query, unreadOnly = false, sourceMailboxes = mailboxes) {
@@ -6117,41 +6109,34 @@
             return normalized;
         }
 
-        async function queryGlobalMessages(silent = false, append = false) {
+        async function queryGlobalMessages(silent = false, page = currentGlobalPage) {
             if (currentAccountType !== 'global') return;
             const mailList = document.getElementById('mail-list');
-            if (!silent && !append) {
+            if (!silent) {
                 resetMailDetail();
                 mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
             }
-            if (append) {
-                const loadMoreBtn = document.getElementById('btn-load-more-global');
-                if (loadMoreBtn) {
-                    loadMoreBtn.disabled = true;
-                    loadMoreBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('loading')}`;
-                }
-            }
             try {
                 const unreadOnly = currentGlobalFolder === GLOBAL_UNREAD_FOLDER;
-                const externalBefore = append ? _externalAggregateBefore(currentGlobalMessages) : '';
+                const safePage = Math.max(Number(page) || 1, 1);
+                const offset = (safePage - 1) * PAGE_SIZE;
                 const externalParams = new URLSearchParams({
                     count: String(PAGE_SIZE),
+                    page: String(safePage),
+                    offset: String(offset),
                     unread: unreadOnly ? 'true' : 'false',
                 });
-                if (externalBefore) externalParams.set('before', externalBefore);
                 const [localMessages, externalData] = await Promise.all([
-                    _fetchLocalAggregate(unreadOnly, mailboxes, append ? _localAggregateOffsets(currentGlobalMessages) : {}),
+                    _fetchLocalAggregate(unreadOnly, mailboxes, Object.fromEntries(mailboxes.map(item => [item.address, offset]))),
                     _imapApi(`/mails?${externalParams.toString()}`).catch(() => ({ mails: [], total: 0, hasMore: false })),
                 ]);
                 const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                 const merged = localMessages.concat(externalMessages)
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
                     .slice(0, PAGE_SIZE);
-                currentGlobalMessages = append ? currentGlobalMessages.concat(merged) : merged;
-                const localShown = append ? _localAggregateOffsets(currentGlobalMessages) : {};
-                const localCanMore = localMessages.length >= Math.min(PAGE_SIZE, Math.max(1, mailboxes.length));
-                currentGlobalTotal = (externalData.total || externalMessages.length) + Object.values(localShown).reduce((sum, value) => sum + value, 0) + localMessages.length;
-                currentGlobalHasMore = Boolean(externalData.hasMore) || localCanMore;
+                currentGlobalPage = safePage;
+                currentGlobalMessages = merged;
+                currentGlobalTotal = Math.max(externalData.total || 0, merged.length);
                 _updateFolderCounts({
                     globalAll: currentGlobalTotal,
                     globalUnread: currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? currentGlobalTotal : merged.filter(msg => !msg.seen).length,
@@ -6165,33 +6150,28 @@
             }
         }
 
-        async function queryGroupMessages(silent = false, append = false) {
+        async function queryGroupMessages(silent = false, page = currentGlobalPage) {
             if (currentAccountType !== 'group' || !currentGroupName) return;
             const mailList = document.getElementById('mail-list');
-            if (!silent && !append) {
+            if (!silent) {
                 resetMailDetail();
                 mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
-            }
-            if (append) {
-                const loadMoreBtn = document.getElementById('btn-load-more-global');
-                if (loadMoreBtn) {
-                    loadMoreBtn.disabled = true;
-                    loadMoreBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('loading')}`;
-                }
             }
             try {
                 const unreadOnly = currentGroupFolder === GROUP_UNREAD_FOLDER;
                 const localAccounts = _groupLocalMailboxes(currentGroupName);
                 const externalIds = _groupExternalIds(currentGroupName);
-                const externalBefore = append ? _externalAggregateBefore(currentGlobalMessages) : '';
+                const safePage = Math.max(Number(page) || 1, 1);
+                const offset = (safePage - 1) * PAGE_SIZE;
                 const externalParams = new URLSearchParams({
                     count: String(PAGE_SIZE),
+                    page: String(safePage),
+                    offset: String(offset),
                     unread: unreadOnly ? 'true' : 'false',
                 });
                 if (externalIds.length) externalParams.set('accountIds', externalIds.join(','));
-                if (externalBefore) externalParams.set('before', externalBefore);
                 const [localMessages, externalData] = await Promise.all([
-                    _fetchLocalAggregate(unreadOnly, localAccounts, append ? _localAggregateOffsets(currentGlobalMessages) : {}),
+                    _fetchLocalAggregate(unreadOnly, localAccounts, Object.fromEntries(localAccounts.map(item => [item.address, offset]))),
                     externalIds.length
                         ? _imapApi(`/mails?${externalParams.toString()}`).catch(() => ({ mails: [], total: 0, unseen: 0, hasMore: false }))
                         : Promise.resolve({ mails: [], total: 0, unseen: 0, hasMore: false }),
@@ -6200,11 +6180,9 @@
                 const merged = localMessages.concat(externalMessages)
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
                     .slice(0, PAGE_SIZE);
-                currentGlobalMessages = append ? currentGlobalMessages.concat(merged) : merged;
-                const localShown = append ? _localAggregateOffsets(currentGlobalMessages) : {};
-                const localCanMore = localMessages.length >= Math.min(PAGE_SIZE, Math.max(1, localAccounts.length));
-                currentGlobalTotal = (externalData.total || externalMessages.length) + Object.values(localShown).reduce((sum, value) => sum + value, 0) + localMessages.length;
-                currentGlobalHasMore = Boolean(externalData.hasMore) || localCanMore;
+                currentGlobalPage = safePage;
+                currentGlobalMessages = merged;
+                currentGlobalTotal = Math.max(externalData.total || 0, merged.length);
                 _updateFolderCounts({
                     groupAll: unreadOnly ? (currentFolderCounts.groupAll || 0) : currentGlobalTotal,
                     groupUnread: unreadOnly ? currentGlobalTotal : merged.filter(msg => !msg.seen).length,
@@ -6225,7 +6203,6 @@
             if (!rule || rule.enabled === false) {
                 currentGlobalMessages = [];
                 currentGlobalTotal = 0;
-                currentGlobalHasMore = false;
                 _updateFolderCounts({ keywordMatches: 0 });
                 if (!silent) {
                     mailList.innerHTML = `<div class="empty-state"><i class="bi bi-funnel d-block"></i><p>${t('noKeywordMatches')}</p></div>`;
@@ -6247,7 +6224,6 @@
                     .slice(0, PAGE_SIZE);
                 currentGlobalMessages = merged;
                 currentGlobalTotal = merged.length;
-                currentGlobalHasMore = false;
                 _updateFolderCounts({ keywordMatches: merged.length });
                 await loadMessageMetaFor(merged);
                 renderGlobalMessages(merged);
@@ -6310,15 +6286,13 @@
                         </div>
                     </div>`;
             }).join('');
-            if (currentGlobalHasMore) {
-                const handler = currentAccountType === 'group' ? 'queryGroupMessages(false, true)' : 'queryGlobalMessages(false, true)';
-                mailList.insertAdjacentHTML('beforeend', `
-                    <div class="text-center py-3">
-                        <button class="btn btn-outline-primary btn-sm" id="btn-load-more-global" onclick="${handler}">
-                            <i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentGlobalMessages.length}/${Math.max(currentGlobalTotal, currentGlobalMessages.length)})
-                        </button>
-                    </div>`);
-            }
+            mailList.insertAdjacentHTML('beforeend', _renderPagination({
+                currentPage: currentGlobalPage,
+                total: currentGlobalTotal,
+                onPageChange: currentAccountType === 'group'
+                    ? 'queryGroupMessages.bind(null, false)'
+                    : 'queryGlobalMessages.bind(null, false)',
+            }));
         }
 
         async function viewGlobalExternalMail(encodedAccountId, encodedMsgId, element) {
@@ -6593,9 +6567,11 @@
                         </div>
                     </div>`;
             }).join('');
-            if (currentSentTotal > currentSentMessages.length) {
-                mailList.insertAdjacentHTML('beforeend', `<div class="text-center py-3"><button class="btn btn-outline-primary btn-sm" onclick="querySent(true)"><i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentSentMessages.length}/${currentSentTotal})</button></div>`);
-            }
+            mailList.insertAdjacentHTML('beforeend', _renderPagination({
+                currentPage: currentSentPage,
+                total: currentSentTotal,
+                onPageChange: 'querySent',
+            }));
         }
 
         async function queryDrafts() {
@@ -6803,11 +6779,12 @@
             _renderMailBodyIframe(iframe, mailContent);
         }
 
-        async function queryTrash(append = false) {
+        async function queryTrash(page = currentTrashPage) {
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
-            const offset = append ? currentTrashMessages.length : 0;
-            if (!append) mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            const safePage = Math.max(Number(page) || 1, 1);
+            const offset = (safePage - 1) * PAGE_SIZE;
+            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
 
             try {
                 const resp = await fetch('/api/trash/query', {
@@ -6820,8 +6797,9 @@
                     mailList.innerHTML = `<div class="error-state"><p>${_escapeHtml(data.message || t('loadFailed'))}</p></div>`;
                     return;
                 }
+                currentTrashPage = safePage;
                 currentTrashTotal = data.total || data.messages.length;
-                renderTrashMessages(append ? currentTrashMessages.concat(data.messages) : data.messages);
+                renderTrashMessages(data.messages);
             } catch (e) {
                 mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
             }
@@ -6850,9 +6828,11 @@
                     </div>
                 </div>
             `; }).join('');
-            if (currentTrashTotal > currentTrashMessages.length) {
-                mailList.insertAdjacentHTML('beforeend', `<div class="text-center py-3"><button class="btn btn-outline-primary btn-sm" onclick="queryTrash(true)"><i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentTrashMessages.length}/${currentTrashTotal})</button></div>`);
-            }
+            mailList.insertAdjacentHTML('beforeend', _renderPagination({
+                currentPage: currentTrashPage,
+                total: currentTrashTotal,
+                onPageChange: 'queryTrash',
+            }));
         }
 
         function resetMailDetail() {
@@ -6868,8 +6848,8 @@
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
         }
 
-        async function queryInbox(silent = false, append = false) {
-            if (!silent && !append) resetMailDetail();
+        async function queryInbox(silent = false, page = currentPage) {
+            if (!silent) resetMailDetail();
             const email = currentMailbox || currentEmail;
             const mailList = document.getElementById('mail-list');
             
@@ -6880,10 +6860,10 @@
                 return;
             }
             
-            // 计算分页偏移量
-            const reqOffset = append ? currentMessages.length : 0;
+            const safePage = Math.max(Number(page) || 1, 1);
+            const reqOffset = (safePage - 1) * PAGE_SIZE;
             
-            if (!silent && !append) {
+            if (!silent) {
                 mailList.innerHTML = `
                     <div class="card mb-2">
                         <div class="card-body py-3">
@@ -6899,14 +6879,6 @@
                         </div>
                     </div>`;
             }
-            if (append) {
-                const loadMoreBtn = document.getElementById('btn-load-more');
-                if (loadMoreBtn) {
-                    loadMoreBtn.disabled = true;
-                    loadMoreBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('loading')}`;
-                }
-            }
-            
             try {
                 const resp = await fetch('/api/inbox/query', {
                     method: 'POST',
@@ -6935,12 +6907,8 @@
                     localAll: Math.max(currentFolderCounts.localAll || 0, data.total || 0),
                 });
                 
-                if (append) {
-                    // 追加模式：合并新消息到已有列表
-                    currentMessages = currentMessages.concat(data.messages);
-                } else {
-                    currentMessages = data.messages;
-                }
+                currentPage = safePage;
+                currentMessages = data.messages;
                 await loadMessageMetaFor(currentMessages, { accountType: 'local', accountId: email, folder: 'inbox' });
                 
                 document.getElementById('btn-refresh-mail').disabled = false;
@@ -6962,7 +6930,7 @@
                 renderMessages(currentMessages);
                 
                 // 恢复选中和 checkbox 状态
-                if (silent || append) {
+                if (silent) {
                     if (activeId) {
                         const el = document.querySelector(`.mail-item[data-msg-id="${activeId}"]`);
                         if (el) el.classList.add('active');
@@ -7061,24 +7029,21 @@
                 </div>`;
             }).join('');
             
-            // 添加"加载更多"按钮（当还有更多数据时）
-            if (currentTotal > currentMessages.length && (isInboxTab || isVirtualTab)) {
-                const loadMoreHandler = isVirtualTab ? 'queryLocalVirtualMessages(false, true)' : 'queryInbox(false, true)';
-                mailList.insertAdjacentHTML('beforeend', `
-                    <div class="text-center py-3">
-                        <button class="btn btn-outline-primary btn-sm" id="btn-load-more" onclick="${loadMoreHandler}">
-                            <i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentMessages.length}/${currentTotal})
-                        </button>
-                    </div>`);
+            if (isInboxTab || isVirtualTab) {
+                mailList.insertAdjacentHTML('beforeend', _renderPagination({
+                    currentPage,
+                    total: currentTotal,
+                    onPageChange: isVirtualTab ? 'queryLocalVirtualMessages.bind(null, false)' : 'queryInbox.bind(null, false)',
+                }));
             }
             _updateUnreadBadge();
         }
 
-        async function queryExternalMails(silent = false, append = false, expectedSwitchSeq = externalAccountSwitchSeq, options = {}) {
+        async function queryExternalMails(silent = false, page = currentExternalPage, expectedSwitchSeq = externalAccountSwitchSeq, options = {}) {
             if (!currentExternalAccountId) return;
             const accountId = currentExternalAccountId;
             const folderPath = currentExternalFolder || 'INBOX';
-            if (!silent && !append) resetMailDetail();
+            if (!silent) resetMailDetail();
             const mailList = document.getElementById('mail-list');
             if (folderPath === '__memail_sent_pending__') {
                 if (!silent) {
@@ -7087,11 +7052,10 @@
                 return;
             }
             const isVirtualFolder = _isExternalVirtualFolder(folderPath);
-            const before = append && !isVirtualFolder && currentExternalMessages.length
-                ? Math.min(...currentExternalMessages.map(m => Number(m.seq)).filter(Boolean))
-                : null;
+            const safePage = Math.max(Number(page) || 1, 1);
+            const offset = (safePage - 1) * PAGE_SIZE;
 
-            if (!silent && !append) {
+            if (!silent) {
                 mailList.innerHTML = `
                     <div class="card mb-2">
                         <div class="card-body py-3">
@@ -7101,21 +7065,14 @@
                         </div>
                     </div>`;
             }
-            if (append) {
-                const loadMoreBtn = document.getElementById('btn-load-more-external');
-                if (loadMoreBtn) {
-                    loadMoreBtn.disabled = true;
-                    loadMoreBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('loading')}`;
-                }
-            }
-
             try {
                 const params = new URLSearchParams({
                     folder: folderPath,
                     count: String(PAGE_SIZE),
+                    page: String(safePage),
+                    offset: String(offset),
                 });
-                if (before) params.set('before', String(before));
-                if (options.forceSync || options.blockingSync || (silent && !append)) params.set('sync', '1');
+                if (options.forceSync || options.blockingSync || silent) params.set('sync', '1');
                 const data = await _imapApi(`/accounts/${encodeURIComponent(accountId)}/mails?${params.toString()}`);
                 if (
                     expectedSwitchSeq !== externalAccountSwitchSeq ||
@@ -7124,8 +7081,8 @@
                 ) {
                     return;
                 }
+                currentExternalPage = safePage;
                 currentExternalTotal = data.total || 0;
-                currentExternalHasMore = isVirtualFolder ? false : !!data.hasMore;
                 const nextExternalCounts = {
                     externalUnread: data.unseen ?? currentFolderCounts.externalUnread,
                 };
@@ -7144,7 +7101,7 @@
                     _updateFolderChrome();
                 }
                 const mails = data.mails || [];
-                currentExternalMessages = append ? currentExternalMessages.concat(mails) : mails;
+                currentExternalMessages = mails;
                 await loadMessageMetaFor(currentExternalMessages, { accountType: 'external', accountId });
                 document.getElementById('btn-refresh-mail').disabled = false;
                 const searchBar = document.getElementById('search-bar');
@@ -7156,7 +7113,7 @@
                     if (activeEl) activeId = activeEl.dataset.msgId;
                 }
                 renderExternalMessages(currentExternalMessages);
-                if ((silent || append) && activeId) {
+                if (silent && activeId) {
                     const el = document.querySelector(`.mail-item[data-msg-id="${activeId}"]`);
                     if (el) el.classList.add('active');
                 }
@@ -7224,14 +7181,11 @@
                     </div>`;
             }).join('');
 
-            if (currentExternalHasMore) {
-                mailList.insertAdjacentHTML('beforeend', `
-                    <div class="text-center py-3">
-                        <button class="btn btn-outline-primary btn-sm" id="btn-load-more-external" onclick="queryExternalMails(false, true)">
-                            <i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentExternalMessages.length}/${currentExternalTotal})
-                        </button>
-                    </div>`);
-            }
+            mailList.insertAdjacentHTML('beforeend', _renderPagination({
+                currentPage: currentExternalPage,
+                total: currentExternalTotal,
+                onPageChange: 'queryExternalMails.bind(null, false)',
+            }));
         }
 
         function _parseExternalMessageRef(raw) {
@@ -7376,9 +7330,9 @@
                     const merged = localMessages.concat(externalMessages)
                         .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
                         .slice(0, PAGE_SIZE);
+                    currentGlobalPage = 1;
                     currentGlobalMessages = merged;
                     currentGlobalTotal = merged.length;
-                    currentGlobalHasMore = false;
                     await loadMessageMetaFor(merged);
                     renderGlobalMessages(merged);
                     if (merged.length === 0) {
@@ -7404,9 +7358,9 @@
                     const merged = localMessages.concat(externalMessages)
                         .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
                         .slice(0, PAGE_SIZE);
+                    currentGlobalPage = 1;
                     currentGlobalMessages = merged;
                     currentGlobalTotal = merged.length;
-                    currentGlobalHasMore = false;
                     await loadMessageMetaFor(merged);
                     renderGlobalMessages(merged);
                     if (merged.length === 0) {
@@ -7441,8 +7395,8 @@
                         const data = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/search?${params.toString()}`);
                         mails = Array.isArray(data) ? data : (data.mails || []);
                     }
+                    currentExternalPage = 1;
                     currentExternalMessages = mails;
-                    currentExternalHasMore = false;
                     await loadMessageMetaFor(currentExternalMessages, { accountType: 'external', accountId: currentExternalAccountId });
                     renderExternalMessages(currentExternalMessages);
                     if (currentExternalMessages.length === 0) {
