@@ -520,13 +520,18 @@
             position: relative;
             display: inline-flex;
             gap: 4px;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             justify-content: flex-end;
             align-items: center;
+            white-space: nowrap;
+            pointer-events: auto;
         }
         .mail-detail-actions-wrap {
             flex: 0 1 auto;
-            max-width: min(100%, 620px);
+            min-width: 0;
+            overflow-x: auto;
+            overflow-y: hidden;
+            pointer-events: auto;
         }
         
         /* Quill 编辑器样式 */
@@ -1261,6 +1266,9 @@
                             <button class="btn btn-sm btn-outline-secondary w-100" onclick="openSettings('accounts')">
                                 <i class="bi bi-sliders me-1"></i><span data-i18n="settings">设置</span>
                             </button>
+                            <button class="btn btn-sm btn-outline-secondary w-100 mt-2" type="button" onclick="window.location.href='/logout'">
+                                <i class="bi bi-box-arrow-right me-1"></i><span data-i18n="logout">退出登录</span>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1827,6 +1835,7 @@
         const LANGS = {
             zh: {
                 compose: '写邮件',
+                logout: '退出登录',
                 settings: '设置',
                 mailAccounts: '邮箱账号',
                 addMailbox: '添加邮箱',
@@ -2120,6 +2129,7 @@
             },
             en: {
                 compose: 'Compose',
+                logout: 'Log out',
                 settings: 'Settings',
                 mailAccounts: 'Mail Accounts',
                 addMailbox: 'Add mailbox',
