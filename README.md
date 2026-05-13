@@ -120,6 +120,8 @@ docker-compose ps
 
 Use this mode when you are building directly from the source code on your server. Do not set `MAIL_SERVICE_IMAGE`, `MAIL_VIEWER_IMAGE`, `IMAP_MAIL_IMAGE`, or `IMAP_SERVER_IMAGE` in `.env`.
 
+Memail persists MongoDB data, runtime settings, external mailbox accounts, and the external IMAP mail cache. For routine updates, keep volumes and do not use `docker-compose down -v`.
+
 When updating from source, rebuild the images. Otherwise the running containers can still use old templates baked into the previous image:
 
 ```bash
@@ -201,6 +203,10 @@ docker-compose ps
 ```
 
 Your `.env` file and Docker volumes are kept. Do not run `docker-compose down -v` unless you intentionally want to delete persisted MongoDB data, external IMAP accounts, and runtime settings.
+
+External IMAP accounts, folders, message lists, cached message bodies, and runtime settings are stored in Docker volumes / MongoDB. By default, external IMAP lists and opened message bodies are cached for 24 hours; the refresh button still forces a remote sync. Override `IMAP_CACHE_TTL_SECONDS` in `.env` if you need a different TTL. The default is `86400`.
+
+The background sync scheduler is enabled by default: after startup it waits about 20 seconds, then checks external IMAP accounts every 15 minutes. Fresh accounts are skipped until their TTL expires; clicking refresh still syncs the current folder immediately. Tune or disable it with `IMAP_SYNC_CHECK_INTERVAL_SECONDS`, `IMAP_SYNC_STARTUP_DELAY_SECONDS`, or `IMAP_SYNC_SCHEDULER_ENABLED=0`.
 
 To roll back, change the image tag in `.env` to an older tag, such as a release tag or `sha-...` tag shown in GitHub Actions, then run `docker-compose pull && docker-compose up -d`.
 

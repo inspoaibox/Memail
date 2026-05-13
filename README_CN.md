@@ -120,6 +120,8 @@ docker-compose ps
 
 这种方式适合直接在服务器上用当前源码构建镜像。此时 `.env` 中不要设置 `MAIL_SERVICE_IMAGE`、`MAIL_VIEWER_IMAGE`、`IMAP_MAIL_IMAGE`、`IMAP_SERVER_IMAGE`。
 
+本项目会持久化 MongoDB 数据、后台运行配置、外部邮箱账号和外部 IMAP 邮件缓存。常规更新不要删除 volume，也不要使用 `docker-compose down -v`。
+
 以后更新代码时，必须重新构建镜像；否则页面仍然会使用旧容器镜像里的旧模板：
 
 ```bash
@@ -186,7 +188,7 @@ docker-compose up -d
 docker-compose ps
 ```
 
-只有 `.env` 中设置了上面的 4 个 `*_IMAGE` 变量时，`docker-compose pull` 才会拉取 GitHub 构建好的 GHCR 镜像。如果没有设置这些变量，Compose 会使用本地源码构建的 `manymail-*:local` 镜像，此时 `docker-compose pull` 不会让刚 `git pull` 下来的源码生效，必须回到第 2 节执行 `docker-compose up -d --build --force-recreate`。
+只有 `.env` 中设置了上面的 4 个 `*_IMAGE` 变量时，`docker-compose pull` 才会拉取 GitHub 构建好的 GHCR 镜像。如果没有设置这些变量，Compose 会使用本地源码构建的 `manymail-*:local` 镜像，此时 `docker-compose pull` 不会让刚 `git pull` 下来的源码生效，必须回到第 2 节执行本地构建更新命令。
 
 以后 GitHub 有新代码并构建成功后，在服务器执行：
 
@@ -201,6 +203,10 @@ docker-compose ps
 ```
 
 `.env` 和 Docker volume 会保留。不要运行 `docker-compose down -v`，除非你明确想删除 MongoDB 数据、外部邮箱账号和后台运行配置。
+
+外部 IMAP 聚合账号、文件夹列表、邮件列表、已缓存正文以及后台运行配置都会保存在 Docker volume / MongoDB 中。默认情况下，外部 IMAP 邮件列表和已打开过的正文会缓存 24 小时；刷新按钮仍会主动拉取远端最新数据。可以通过 `.env` 中的 `IMAP_CACHE_TTL_SECONDS` 调整缓存过期时间，默认 `86400` 秒。
+
+后台同步器默认启用：服务启动约 20 秒后会检查外部 IMAP 账号，之后每 15 分钟检查一次。未过期账号不会重复拉取；手动点击刷新会立即同步当前文件夹。可通过 `IMAP_SYNC_CHECK_INTERVAL_SECONDS`、`IMAP_SYNC_STARTUP_DELAY_SECONDS`、`IMAP_SYNC_SCHEDULER_ENABLED=0` 调整或关闭。
 
 需要回滚时，把 `.env` 中的镜像 tag 改成旧版本，比如 release tag 或 GitHub Actions 里显示的 `sha-...` tag，然后执行：
 

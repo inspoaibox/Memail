@@ -634,6 +634,32 @@
             font-size: 0.72rem;
             margin-top: 1px;
         }
+        .mail-sync-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: var(--muted-text);
+            font-size: 0.7rem;
+            margin-top: 2px;
+            min-width: 0;
+            max-width: 100%;
+        }
+        .mail-sync-status.syncing {
+            color: var(--primary-color);
+        }
+        .mail-sync-status.error {
+            color: #b94a48;
+        }
+        .mail-sync-status.stale {
+            color: #8a6d3b;
+        }
+        .mail-sync-status .bi-arrow-repeat {
+            animation: syncSpin 0.9s linear infinite;
+        }
+        @keyframes syncSpin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
         .mail-folder-item > span:not(.badge) {
             min-width: 0;
             overflow: hidden;
@@ -1657,6 +1683,14 @@
                 smtpCheckFailed: 'SMTP 检查失败',
                 smtpCheckSkipped: '未检查 SMTP',
                 externalLoadFailed: '外部邮箱加载失败',
+                syncing: '同步中',
+                syncNow: '立即同步',
+                syncedJustNow: '刚刚同步',
+                syncedMinutesAgo: '{n} 分钟前同步',
+                syncedHoursAgo: '{n} 小时前同步',
+                syncedDaysAgo: '{n} 天前同步',
+                syncStale: '待同步',
+                syncFailed: '同步失败',
                 foldersLoadFailed: '文件夹加载失败',
                 noFolders: '没有可用文件夹',
                 noExternalMail: '此文件夹暂无邮件',
@@ -1859,6 +1893,14 @@
                 smtpCheckFailed: 'SMTP check failed',
                 smtpCheckSkipped: 'SMTP not checked',
                 externalLoadFailed: 'Failed to load external mailboxes',
+                syncing: 'Syncing',
+                syncNow: 'Sync now',
+                syncedJustNow: 'Synced just now',
+                syncedMinutesAgo: 'Synced {n}m ago',
+                syncedHoursAgo: 'Synced {n}h ago',
+                syncedDaysAgo: 'Synced {n}d ago',
+                syncStale: 'Sync pending',
+                syncFailed: 'Sync failed',
                 foldersLoadFailed: 'Failed to load folders',
                 noFolders: 'No folders available',
                 noExternalMail: 'No email in this folder',
@@ -2053,6 +2095,7 @@
         let quillEditor = null;
         let externalAccountFormMode = 'add';
         let editingExternalAccountId = null;
+        let externalStatusTimer = null;
         const PAGE_SIZE = 30;
         const LOCAL_ALL_FOLDER = 'all';
         const LOCAL_UNREAD_FOLDER = 'unread';
@@ -2212,6 +2255,17 @@
             if (label) label.textContent = currentAccountType === 'external'
                 ? _accountDisplayName(currentExternalAccount, currentExternalAccount?.email || '')
                 : _accountDisplayName(mailboxes.find(item => item.address === currentMailbox), currentMailbox);
+        }
+
+        function _mergeExternalAccount(nextAccount) {
+            if (!nextAccount?.id) return;
+            const idx = externalAccounts.findIndex(item => String(item.id) === String(nextAccount.id));
+            if (idx >= 0) {
+                externalAccounts[idx] = { ...externalAccounts[idx], ...nextAccount };
+            }
+            if (currentExternalAccountId && String(currentExternalAccountId) === String(nextAccount.id)) {
+                currentExternalAccount = { ...(currentExternalAccount || {}), ...nextAccount };
+            }
         }
 
         function _renderAttachments(messageId, attachments) {
@@ -2391,6 +2445,26 @@
             if (name.includes('outlook') || name.includes('hotmail') || name.includes('microsoft')) return 'bi-microsoft';
             if (name.includes('qq') || name.includes('163') || name.includes('126') || name.includes('netease')) return 'bi-envelope-check';
             return 'bi-cloud-arrow-down';
+        }
+
+        function _syncStatusMeta(status) {
+            if (!status) return null;
+            if (status.syncing) return { cls: 'syncing', icon: 'bi-arrow-repeat', text: t('syncing') };
+            if (status.error) return { cls: 'error', icon: 'bi-exclamation-triangle', text: t('syncFailed') };
+            if (!status.syncedAt) return { cls: 'stale', icon: 'bi-clock-history', text: t('syncStale') };
+            const elapsed = Date.now() - new Date(status.syncedAt).getTime();
+            if (!Number.isFinite(elapsed)) return { cls: 'stale', icon: 'bi-clock-history', text: t('syncStale') };
+            if (elapsed < 60 * 1000) return { cls: '', icon: 'bi-check2-circle', text: t('syncedJustNow') };
+            if (elapsed < 60 * 60 * 1000) return { cls: '', icon: 'bi-check2-circle', text: t('syncedMinutesAgo', {n: Math.max(1, Math.floor(elapsed / 60000))}) };
+            if (elapsed < 24 * 60 * 60 * 1000) return { cls: '', icon: 'bi-check2-circle', text: t('syncedHoursAgo', {n: Math.max(1, Math.floor(elapsed / 3600000))}) };
+            return { cls: status.stale ? 'stale' : '', icon: 'bi-check2-circle', text: t('syncedDaysAgo', {n: Math.max(1, Math.floor(elapsed / 86400000))}) };
+        }
+
+        function _renderSyncStatus(status) {
+            const meta = _syncStatusMeta(status);
+            if (!meta) return '';
+            const title = status?.error || meta.text;
+            return `<span class="mail-sync-status ${meta.cls}" title="${_escapeAttr(title)}"><i class="bi ${meta.icon}"></i><span>${_escapeHtml(meta.text)}</span></span>`;
         }
 
         function _externalFolderCacheKey(accountId) {
@@ -2651,6 +2725,9 @@
             try {
                 const accounts = await _imapApi('/accounts');
                 externalAccounts = Array.isArray(accounts) ? accounts : [];
+                if (currentExternalAccountId) {
+                    currentExternalAccount = _externalAccountById(currentExternalAccountId) || currentExternalAccount;
+                }
             } catch (e) {
                 externalError = e.message;
                 externalAccounts = [];
@@ -2682,6 +2759,22 @@
             } else {
                 renderFolderList();
                 _updateFolderChrome();
+            }
+        }
+
+        async function refreshExternalAccountStatuses() {
+            if (!externalAccounts.length && currentAccountType !== 'external') return;
+            try {
+                const accounts = await _imapApi('/accounts');
+                externalAccounts = Array.isArray(accounts) ? accounts : [];
+                if (currentExternalAccountId) {
+                    currentExternalAccount = _externalAccountById(currentExternalAccountId) || currentExternalAccount;
+                }
+                renderMailboxes();
+                renderFolderList();
+                _updateFolderChrome();
+            } catch (e) {
+                // Status refresh is opportunistic; normal account loading still reports errors.
             }
         }
 
@@ -2727,6 +2820,7 @@
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
+                                ${_renderSyncStatus(account.syncStatus)}
                             </span>
                         </button>`);
                     }
@@ -2838,13 +2932,16 @@
                     list.innerHTML = `${composeButton}<div class="text-muted small px-2">${t('queryHint')}</div>`;
                     return;
                 }
+                const syncStatus = _renderSyncStatus(currentExternalAccount?.syncStatus);
+                const syncLine = syncStatus ? `<div class="px-2 pb-2">${syncStatus}</div>` : '';
+                const syncPrefix = composeButton + syncLine;
                 if (!currentExternalFolders.length) {
                     const fallbackFolder = _isExternalVirtualFolder(currentExternalFolder) ? 'INBOX' : (currentExternalFolder || 'INBOX');
                     const virtualFolders = _externalVirtualFolders().map(folder => `
                         <button class="mail-folder-item ${folder.path === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(folder.path)}" onclick="selectFolder(${_jsString(encodeURIComponent(folder.path))})">
                             <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(folder.name)}</span>
                         </button>`).join('');
-                    list.innerHTML = composeButton + virtualFolders + `
+                    list.innerHTML = syncPrefix + virtualFolders + `
                         <button class="mail-folder-item ${fallbackFolder === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(fallbackFolder)}" onclick="selectFolder(${_jsString(encodeURIComponent(fallbackFolder))})">
                             <i class="bi bi-inbox"></i><span class="text-truncate">${_escapeHtml(fallbackFolder)}</span>
                         </button>`;
@@ -2855,7 +2952,7 @@
                     ...currentExternalFolders,
                     { path: '__memail_sent_pending__', name: t('sent'), specialUse: '\\Sent', virtual: true },
                 ];
-                list.innerHTML = composeButton + _externalVirtualFolders().concat(foldersToRender).map(folder => {
+                list.innerHTML = syncPrefix + _externalVirtualFolders().concat(foldersToRender).map(folder => {
                     const path = folder.path || folder.name || 'INBOX';
                     const label = folder.name || folder.path || 'INBOX';
                     return `
@@ -3035,14 +3132,15 @@
             if (!account) return;
             const switchSeq = ++externalAccountSwitchSeq;
             currentAccountType = 'external';
+            currentExternalAccountId = account.id;
+            currentExternalAccount = account;
+            currentEmail = account.email || '';
+            const foldersHadCache = Boolean(_readExternalFolderCache(id));
             if (autoRefreshTimer) {
                 clearInterval(autoRefreshTimer);
                 autoRefreshTimer = null;
                 document.getElementById('auto-refresh-toggle').checked = false;
             }
-            currentExternalAccountId = account.id;
-            currentExternalAccount = account;
-            currentEmail = account.email || '';
             currentMailbox = '';
             _resetLocalMessageState();
             _resetExternalMessageState();
@@ -3056,8 +3154,22 @@
             currentComposeSender = null;
             quillEditor = null;
             resetMailDetail();
-                queryExternalMails(false, false, switchSeq);
-                if (cachedFolders) return;
+            if (account.syncStatus?.stale && foldersHadCache) {
+                _imapApi(`/accounts/${encodeURIComponent(id)}/sync`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force: false }),
+                }).then(sync => {
+                    if (sync.account) {
+                        _mergeExternalAccount({ id, syncStatus: sync.account });
+                        renderMailboxes();
+                        renderFolderList();
+                        _updateFolderChrome();
+                    }
+                }).catch(() => {});
+            }
+            queryExternalMails(false, false, switchSeq);
+            if (cachedFolders) return;
 
             try {
                 const folders = await _imapApi(`/accounts/${encodeURIComponent(id)}/folders`);
@@ -3885,6 +3997,7 @@
             await loadDomains();
             await loadMailboxes();
             _updateFolderChrome();
+            externalStatusTimer = window.setInterval(refreshExternalAccountStatuses, 60000);
         });
         window.addEventListener('message', (event) => {
             if (event.origin !== window.location.origin) return;
@@ -4020,13 +4133,38 @@
             }
         }
 
-        function refreshCurrentTab() {
+        async function refreshCurrentTab() {
             if (currentAccountType === 'external') {
                 if (!currentExternalAccountId) {
                     document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
                     return;
                 }
-                queryExternalMails(false, false);
+                const accountId = currentExternalAccountId;
+                const folderPath = currentExternalFolder || 'INBOX';
+                const btn = document.getElementById('btn-refresh-mail');
+                if (btn) btn.disabled = true;
+                try {
+                    const payload = {
+                        force: true,
+                        folder: folderPath,
+                    };
+                    const sync = await _imapApi(`/accounts/${encodeURIComponent(accountId)}/sync`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    if (sync.account) {
+                        _mergeExternalAccount({ id: accountId, syncStatus: sync.account });
+                        renderMailboxes();
+                        renderFolderList();
+                        _updateFolderChrome();
+                    }
+                } catch (e) {
+                    _showMailboxError(`${t('syncFailed')}: ${e.message}`);
+                } finally {
+                    if (btn) btn.disabled = false;
+                }
+                queryExternalMails(false, false, externalAccountSwitchSeq);
                 return;
             }
             if (!currentEmail) {
@@ -4080,15 +4218,16 @@
             return copy;
         }
 
-        async function _fetchLocalMailboxSlice(endpoint) {
+        async function _fetchLocalMailboxSlice(endpoint, extra = {}) {
             const resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: currentEmail, offset: 0, limit: PAGE_SIZE }),
+                body: JSON.stringify({ email: currentEmail, offset: 0, limit: PAGE_SIZE, ...extra }),
             });
             const data = await resp.json();
             if (!data.success) throw new Error(data.message || t('loadFailed'));
-            return Array.isArray(data.messages) ? data.messages : [];
+            const messages = Array.isArray(data.messages) ? data.messages : [];
+            return { messages, total: data.total || messages.length };
         }
 
         async function queryLocalVirtualMessages(silent = false) {
@@ -4100,18 +4239,22 @@
             }
 
             try {
-                const [inbox, sent, trash] = await Promise.all([
+                const [inboxResult, unreadResult, sentResult, trashResult] = await Promise.all([
                     _fetchLocalMailboxSlice('/api/inbox/query'),
-                    _fetchLocalMailboxSlice('/api/sent/query').catch(() => []),
-                    _fetchLocalMailboxSlice('/api/trash/query').catch(() => []),
+                    _fetchLocalMailboxSlice('/api/inbox/query', { unread_only: true }),
+                    _fetchLocalMailboxSlice('/api/sent/query').catch(() => ({ messages: [], total: 0 })),
+                    _fetchLocalMailboxSlice('/api/trash/query').catch(() => ({ messages: [], total: 0 })),
                 ]);
-                currentInboxUnreadCount = inbox.filter(msg => !msg.seen).length;
+                const inbox = inboxResult.messages;
+                const unread = unreadResult.messages;
+                const sent = sentResult.messages;
+                const trash = trashResult.messages;
+                currentInboxUnreadCount = unreadResult.total;
                 const merged = [
-                    ...inbox.map(msg => _normalizeLocalVirtualMessage(msg, 'inbox')),
-                    ...sent.map(msg => _normalizeLocalVirtualMessage(msg, 'sent')),
-                    ...trash.map(msg => _normalizeLocalVirtualMessage(msg, 'trash')),
+                    ...(currentTab === LOCAL_UNREAD_FOLDER ? unread : inbox).map(msg => _normalizeLocalVirtualMessage(msg, 'inbox')),
+                    ...(currentTab === LOCAL_UNREAD_FOLDER ? [] : sent.map(msg => _normalizeLocalVirtualMessage(msg, 'sent'))),
+                    ...(currentTab === LOCAL_UNREAD_FOLDER ? [] : trash.map(msg => _normalizeLocalVirtualMessage(msg, 'trash'))),
                 ]
-                    .filter(msg => currentTab !== LOCAL_UNREAD_FOLDER || !msg.seen)
                     .sort((a, b) => b._sortTime - a._sortTime)
                     .slice(0, PAGE_SIZE);
                 currentMessages = merged;
@@ -4445,7 +4588,7 @@
             _updateUnreadBadge();
         }
 
-        async function queryExternalMails(silent = false, append = false, expectedSwitchSeq = externalAccountSwitchSeq) {
+        async function queryExternalMails(silent = false, append = false, expectedSwitchSeq = externalAccountSwitchSeq, options = {}) {
             if (!currentExternalAccountId) return;
             const accountId = currentExternalAccountId;
             const folderPath = currentExternalFolder || 'INBOX';
@@ -4486,6 +4629,7 @@
                     count: String(PAGE_SIZE),
                 });
                 if (before) params.set('before', String(before));
+                if (options.forceSync && options.blockingSync) params.set('sync', '1');
                 const data = await _imapApi(`/accounts/${encodeURIComponent(accountId)}/mails?${params.toString()}`);
                 if (
                     expectedSwitchSeq !== externalAccountSwitchSeq ||
@@ -4496,6 +4640,13 @@
                 }
                 currentExternalTotal = data.total || 0;
                 currentExternalHasMore = isVirtualFolder ? false : !!data.hasMore;
+                if (data.syncStatus && currentExternalAccount) {
+                    currentExternalAccount.syncStatus = data.syncStatus;
+                    _mergeExternalAccount({ id: accountId, syncStatus: data.syncStatus });
+                    renderMailboxes();
+                    renderFolderList();
+                    _updateFolderChrome();
+                }
                 const mails = data.mails || [];
                 currentExternalMessages = append ? currentExternalMessages.concat(mails) : mails;
                 document.getElementById('btn-refresh-mail').disabled = false;

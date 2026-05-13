@@ -113,6 +113,13 @@ services:
       - PORT=3939
       - ACCOUNTS_FILE=/data/accounts.json
       - SETTINGS_FILE=/data/settings.json
+      - MONGO_URL=mongodb://mongodb:27017
+      - MONGO_DB_NAME=mailserver
+      - IMAP_CACHE_TTL_SECONDS=${IMAP_CACHE_TTL_SECONDS:-86400}
+      - IMAP_CACHE_SYNC_WINDOW=${IMAP_CACHE_SYNC_WINDOW:-100}
+      - IMAP_CACHE_LOOKBACK=${IMAP_CACHE_LOOKBACK:-50}
+      - IMAP_SYNC_CHECK_INTERVAL_SECONDS=${IMAP_SYNC_CHECK_INTERVAL_SECONDS:-900}
+      - IMAP_SYNC_STARTUP_DELAY_SECONDS=${IMAP_SYNC_STARTUP_DELAY_SECONDS:-20}
     volumes:
       - imap_mail_data:/data
     expose:
@@ -125,6 +132,9 @@ services:
       start_period: 20s
     networks:
       - mail-net
+    depends_on:
+      mongodb:
+        condition: service_healthy
 
   # ---- IMAP Server (Node.js) ----
   imap-server:

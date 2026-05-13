@@ -907,6 +907,7 @@ def inbox_query():
     password = data.get("password", "").strip() or _get_unified_password()
     offset = int(data.get("offset", 0))
     limit = int(data.get("limit", 30))
+    unread_only = bool(data.get("unread_only") or data.get("unreadOnly"))
 
     if not email:
         return jsonify({"success": False, "message": "请输入邮箱", "messages": []})
@@ -966,7 +967,7 @@ def inbox_query():
         # 获取邮件列表（带分页参数）
         mail_resp = http_session.get(
             f"{base_url}/messages",
-            params={"offset": offset, "limit": limit},
+            params={"offset": offset, "limit": limit, **({"unread": "true"} if unread_only else {})},
             headers={"Authorization": f"Bearer {token}"},
             timeout=30
         )

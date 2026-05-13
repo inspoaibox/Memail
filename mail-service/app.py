@@ -239,6 +239,7 @@ def init_db():
     db.accounts.create_index("address", unique=True)
     db.messages.create_index("to_addresses")
     db.messages.create_index([("created_at", DESCENDING)])
+    db.messages.create_index([("to_addresses", 1), ("seen", 1), ("is_deleted", 1), ("created_at", DESCENDING)])
     # TTL: 自动删除过期邮件
     db.messages.create_index(
         "created_at", expireAfterSeconds=MESSAGE_TTL_DAYS * 86400, name="ttl_cleanup"
@@ -608,6 +609,7 @@ async def list_messages(
     account=Depends(get_current_account),
     offset: int = 0,
     limit: int = 30,
+    unread: bool = False,
 ):
     """查询收件箱 (Bearer Token 鉴权)，支持分页"""
     address = account["address"]
@@ -615,6 +617,8 @@ async def list_messages(
     offset = max(offset, 0)
 
     query_filter = {"to_addresses": address, "is_deleted": {"$ne": True}}
+    if unread:
+        query_filter["seen"] = {"$ne": True}
     total = db.messages.count_documents(query_filter)
 
     cursor = (

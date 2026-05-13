@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
+const { MongoClient } = require('mongodb');
 const MailClient = require('./client');
 const { fromPreset, PRESETS, DOMAIN_MAP, autoDetect } = require('./config');
 const { prepareHtmlForRender } = require('./sanitize');
@@ -21,6 +22,14 @@ let clientId = 0;
 const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || path.join(__dirname, 'accounts.json');
 const SETTINGS_FILE = process.env.SETTINGS_FILE || path.join(path.dirname(ACCOUNTS_FILE), 'settings.json');
 const ACCOUNTS_SECRET = process.env.IMAP_ACCOUNTS_SECRET || process.env.SECRET_KEY || process.env.APP_SECRET || '';
+const MONGO_URL = process.env.MONGO_URL || '';
+const MONGO_DB_NAME = process.env.MONGO_DB_NAME || process.env.DB_NAME || 'mailserver';
+const IMAP_CACHE_TTL_MS = Math.max(30, parseInt(process.env.IMAP_CACHE_TTL_SECONDS || '86400', 10)) * 1000;
+const IMAP_CACHE_SYNC_WINDOW = Math.max(30, parseInt(process.env.IMAP_CACHE_SYNC_WINDOW || '100', 10));
+const IMAP_CACHE_LOOKBACK = Math.max(20, parseInt(process.env.IMAP_CACHE_LOOKBACK || '50', 10));
+const IMAP_SYNC_SCHEDULER_ENABLED = process.env.IMAP_SYNC_SCHEDULER_ENABLED !== '0';
+const IMAP_SYNC_CHECK_INTERVAL_MS = Math.max(60, parseInt(process.env.IMAP_SYNC_CHECK_INTERVAL_SECONDS || '900', 10)) * 1000;
+const IMAP_SYNC_STARTUP_DELAY_MS = Math.max(5, parseInt(process.env.IMAP_SYNC_STARTUP_DELAY_SECONDS || '20', 10)) * 1000;
 const GOOGLE_SCOPE = 'https://mail.google.com/';
 const GOOGLE_AUTH_SCOPE = `${GOOGLE_SCOPE} openid email profile`;
 const MICROSOFT_SCOPE = 'offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send openid email profile';
@@ -28,9 +37,15 @@ const MICROSOFT_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.
 const MICROSOFT_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
 const VIRTUAL_ALL_FOLDER = '__memail_all__';
 const VIRTUAL_UNREAD_FOLDER = '__memail_unread__';
+const ACCOUNT_SYNC_STATE_FOLDER = '__memail_account__';
 const VIRTUAL_FOLDER_SCAN_LIMIT = 30;
 const oauthStates = new Map();
 let runtimeSettings = {};
+let mongoClient = null;
+let cacheDb = null;
+const accountSyncJobs = new Map();
+let syncSchedulerTimer = null;
+let syncSchedulerRunning = false;
 if (!ACCOUNTS_SECRET) {
   console.warn('WARNING: IMAP_ACCOUNTS_SECRET/APP_SECRET is not configured; external IMAP accounts cannot be persisted.');
 }
@@ -491,6 +506,55 @@ function buildRawMessage(mailOptions) {
   return new MailComposer(mailOptions).compile().build();
 }
 
+function stableAccountKey(account) {
+  const raw = [
+    String(account?.auth?.user || '').trim().toLowerCase(),
+    String(account?.host || '').trim().toLowerCase(),
+    String(account?.port || ''),
+  ].join('|');
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function cacheCollections() {
+  if (!cacheDb) return null;
+  return {
+    folders: cacheDb.collection('external_folders'),
+    messages: cacheDb.collection('external_messages'),
+    bodies: cacheDb.collection('external_message_bodies'),
+    syncState: cacheDb.collection('external_sync_state'),
+  };
+}
+
+async function initCacheDb() {
+  if (!MONGO_URL) {
+    console.warn('IMAP cache is disabled: MONGO_URL is not configured.');
+    return;
+  }
+  mongoClient = new MongoClient(MONGO_URL, { serverSelectionTimeoutMS: 5000 });
+  await mongoClient.connect();
+  cacheDb = mongoClient.db(MONGO_DB_NAME);
+  const collections = cacheCollections();
+  await Promise.all([
+    collections.messages.createIndex({ accountKey: 1, folder: 1, uid: 1 }, { unique: true }),
+    collections.messages.createIndex({ accountKey: 1, folder: 1, date: -1 }),
+    collections.messages.createIndex({ accountKey: 1, seen: 1, date: -1 }),
+    collections.messages.createIndex({ accountKey: 1, date: -1 }),
+    collections.bodies.createIndex({ accountKey: 1, folder: 1, uid: 1 }, { unique: true }),
+    collections.bodies.createIndex({ accountKey: 1, updatedAt: -1 }),
+    collections.folders.createIndex({ accountKey: 1, path: 1 }, { unique: true }),
+    collections.syncState.createIndex({ accountKey: 1, folder: 1 }, { unique: true }),
+  ]);
+  console.log(`IMAP cache connected: ${MONGO_DB_NAME}`);
+}
+
+async function closeCacheDb() {
+  if (mongoClient) {
+    await mongoClient.close();
+    mongoClient = null;
+    cacheDb = null;
+  }
+}
+
 function isSelectableFolder(folder) {
   return folder && !folder.flags?.has('\\Noselect') && !folder.flags?.has('\\NonExistent');
 }
@@ -532,6 +596,140 @@ function selectedMailboxStatus(client, fallbackFolder) {
   };
 }
 
+function normalizeUid(uid) {
+  const num = Number(uid);
+  return Number.isFinite(num) ? num : String(uid || '');
+}
+
+function normalizeUidList(uids) {
+  return (Array.isArray(uids) ? uids : [uids])
+    .map(normalizeUid)
+    .filter(uid => uid !== '');
+}
+
+function normalizeCacheMessage(doc) {
+  return {
+    uid: doc.uid,
+    seq: doc.seq || 0,
+    folder: doc.folder,
+    folderName: doc.folderName || doc.folder,
+    date: doc.date,
+    from: doc.from || { name: '', address: '(unknown)' },
+    to: Array.isArray(doc.to) ? doc.to : [],
+    subject: doc.subject || '(no subject)',
+    seen: !!doc.seen,
+    flagged: !!doc.flagged,
+    cached: true,
+  };
+}
+
+function normalizeCachedBody(doc) {
+  return {
+    subject: doc.subject || '(no subject)',
+    from: doc.from || '',
+    to: doc.to || '',
+    cc: doc.cc || '',
+    date: doc.date || null,
+    text: doc.text || '',
+    html: doc.html || '',
+    attachments: Array.isArray(doc.attachments) ? doc.attachments : [],
+    cached: true,
+    cachedAt: doc.updatedAt || doc.createdAt || null,
+  };
+}
+
+function normalizeSyncStatus(state) {
+  if (!state) return { synced: false, stale: true, syncing: false };
+  const syncedAtMs = new Date(state.syncedAt || 0).getTime();
+  return {
+    synced: !!state.syncedAt,
+    stale: !state.syncedAt || Date.now() - syncedAtMs > IMAP_CACHE_TTL_MS,
+    syncing: !!state.syncing,
+    syncedAt: state.syncedAt || null,
+    error: state.error || '',
+    uidValidity: state.uidValidity ? String(state.uidValidity) : '',
+    highestUid: state.highestUid || 0,
+    messages: state.messages || 0,
+    unseen: state.unseen || 0,
+    folders: state.folders || 0,
+  };
+}
+
+function messageDetailFromParsed(parsed) {
+  return {
+    subject: parsed.subject || '(no subject)',
+    from: parsed.from?.text || '',
+    to: parsed.to?.text || '',
+    cc: parsed.cc?.text || '',
+    date: parsed.date || null,
+    text: parsed.text || '',
+    html: parsed.html ? prepareHtmlForRender(parsed.html) : '',
+    attachments: (parsed.attachments || []).map((a, i) => ({
+      index: i,
+      filename: a.filename || `attachment_${i}`,
+      size: a.size,
+      contentType: a.contentType,
+    })),
+  };
+}
+
+async function readCachedMessages(client, folderPath, count, before = null) {
+  const collections = cacheCollections();
+  if (!collections) return null;
+  const accountKey = stableAccountKey(client.account);
+  const baseQuery = { accountKey };
+  if (folderPath === VIRTUAL_UNREAD_FOLDER) {
+    baseQuery.seen = false;
+  } else if (folderPath !== VIRTUAL_ALL_FOLDER) {
+    baseQuery.folder = folderPath;
+  }
+  const query = { ...baseQuery };
+  if (before) query.seq = { $lt: before };
+  const docs = await collections.messages
+    .find(query)
+    .sort(folderPath === VIRTUAL_ALL_FOLDER || folderPath === VIRTUAL_UNREAD_FOLDER ? { date: -1 } : { seq: -1 })
+    .limit(count)
+    .toArray();
+  const total = await collections.messages.countDocuments(baseQuery);
+  const pageRemaining = await collections.messages.countDocuments(query);
+  const unseen = await collections.messages.countDocuments({ accountKey, ...(baseQuery.folder ? { folder: baseQuery.folder } : {}), seen: false });
+  const mails = docs.map(normalizeCacheMessage);
+  if (folderPath !== VIRTUAL_ALL_FOLDER && folderPath !== VIRTUAL_UNREAD_FOLDER) {
+    mails.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  }
+  return {
+    total,
+    unseen,
+    mails,
+    hasMore: pageRemaining > mails.length,
+    cached: true,
+    syncStatus: await readSyncStatus(client, folderPath),
+  };
+}
+
+async function readCachedMessageBody(client, folderPath, uid) {
+  const collections = cacheCollections();
+  if (!collections) return null;
+  const doc = await collections.bodies.findOne({
+    accountKey: stableAccountKey(client.account),
+    folder: folderPath,
+    uid: normalizeUid(uid),
+  });
+  return doc ? normalizeCachedBody(doc) : null;
+}
+
+async function readSyncStatus(client, folderPath) {
+  const collections = cacheCollections();
+  if (!collections) return null;
+  const accountKey = stableAccountKey(client.account);
+  const state = await collections.syncState.findOne({ accountKey, folder: folderPath });
+  return normalizeSyncStatus(state);
+}
+
+async function readAccountSyncStatus(client) {
+  return readSyncStatus(client, ACCOUNT_SYNC_STATE_FOLDER);
+}
+
 function isVirtualFolder(folderPath) {
   return folderPath === VIRTUAL_ALL_FOLDER || folderPath === VIRTUAL_UNREAD_FOLDER;
 }
@@ -546,6 +744,26 @@ function aggregateFolders(folders) {
   const selectable = (Array.isArray(folders) ? folders : []).filter(isSelectableFolder);
   const allMail = selectable.find(isAllMailFolder);
   return (allMail ? [allMail] : selectable).slice(0, VIRTUAL_FOLDER_SCAN_LIMIT);
+}
+
+function primaryUnreadFolders(folders) {
+  const selectable = (Array.isArray(folders) ? folders : []).filter(isSelectableFolder);
+  const inbox = selectable.find(folder => String(folder.path || '').toLowerCase() === 'inbox')
+    || selectable.find(folder => String(folder.name || '').toLowerCase() === 'inbox');
+  return (inbox ? [inbox] : aggregateFolders(selectable)).slice(0, VIRTUAL_FOLDER_SCAN_LIMIT);
+}
+
+async function getSelectableFolders(client) {
+  await client.ensureConnected();
+  const folders = await client.client.list();
+  return (Array.isArray(folders) ? folders : []).filter(isSelectableFolder);
+}
+
+async function resolveFolder(client, folderPath) {
+  const folders = await getSelectableFolders(client);
+  return folders.find(folder => String(folder.path) === String(folderPath))
+    || folders.find(folder => String(folder.path || '').toLowerCase() === String(folderPath || '').toLowerCase())
+    || { path: folderPath, name: folderPath };
 }
 
 function mapEnvelopeMessage(msg, folder) {
@@ -563,6 +781,482 @@ function mapEnvelopeMessage(msg, folder) {
     seen: msg.flags?.has('\\Seen') || false,
     flagged: msg.flags?.has('\\Flagged') || false,
   };
+}
+
+function cacheDocFromMail(client, folder, mail) {
+  const account = client.account;
+  const accountEmail = account?.auth?.user || '';
+  return {
+    accountKey: stableAccountKey(account),
+    accountEmail,
+    provider: account?.name || '',
+    host: account?.host || '',
+    port: account?.port || 993,
+    uid: normalizeUid(mail.uid),
+    seq: Number(mail.seq) || 0,
+    folder: folder?.path || mail.folder || '',
+    folderName: folder?.name || mail.folderName || folder?.path || mail.folder || '',
+    date: mail.date ? new Date(mail.date) : null,
+    from: mail.from || { name: '', address: '(unknown)' },
+    to: Array.isArray(mail.to) ? mail.to : [],
+    subject: mail.subject || '(no subject)',
+    seen: !!mail.seen,
+    flagged: !!mail.flagged,
+    updatedAt: new Date(),
+  };
+}
+
+async function upsertCachedFolder(client, folder, status = {}) {
+  const collections = cacheCollections();
+  if (!collections || !folder?.path) return;
+  const accountKey = stableAccountKey(client.account);
+  await collections.folders.updateOne(
+    { accountKey, path: folder.path },
+    {
+      $set: {
+        accountKey,
+        accountEmail: client.account?.auth?.user || '',
+        path: folder.path,
+        name: folder.name || folder.path,
+        specialUse: folder.specialUse || '',
+        messages: status.messages || 0,
+        unseen: status.unseen || 0,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: { createdAt: new Date() },
+    },
+    { upsert: true },
+  );
+}
+
+async function upsertCachedMessages(client, folder, mails) {
+  const collections = cacheCollections();
+  if (!collections || !Array.isArray(mails) || !mails.length) return;
+  const ops = mails.filter(mail => mail.uid).map(mail => {
+    const doc = cacheDocFromMail(client, folder, mail);
+    return {
+      updateOne: {
+        filter: { accountKey: doc.accountKey, folder: doc.folder, uid: doc.uid },
+        update: {
+          $set: doc,
+          $setOnInsert: { createdAt: new Date(), bodyCached: false },
+        },
+        upsert: true,
+      },
+    };
+  });
+  if (ops.length) await collections.messages.bulkWrite(ops, { ordered: false });
+}
+
+async function upsertCachedMessageBody(client, folderPath, uid, detail) {
+  const collections = cacheCollections();
+  if (!collections) return;
+  const account = client.account;
+  const accountKey = stableAccountKey(account);
+  const normalizedUid = normalizeUid(uid);
+  const now = new Date();
+  await collections.bodies.updateOne(
+    { accountKey, folder: folderPath, uid: normalizedUid },
+    {
+      $set: {
+        accountKey,
+        accountEmail: account?.auth?.user || '',
+        provider: account?.name || '',
+        host: account?.host || '',
+        port: account?.port || 993,
+        folder: folderPath,
+        uid: normalizedUid,
+        subject: detail.subject || '(no subject)',
+        from: detail.from || '',
+        to: detail.to || '',
+        cc: detail.cc || '',
+        date: detail.date ? new Date(detail.date) : null,
+        text: detail.text || '',
+        html: detail.html || '',
+        attachments: Array.isArray(detail.attachments) ? detail.attachments : [],
+        updatedAt: now,
+      },
+      $setOnInsert: { createdAt: now },
+    },
+    { upsert: true },
+  );
+  await collections.messages.updateOne(
+    { accountKey, folder: folderPath, uid: normalizedUid },
+    {
+      $set: {
+        subject: detail.subject || '(no subject)',
+        date: detail.date ? new Date(detail.date) : null,
+        seen: true,
+        bodyCached: true,
+        bodyCachedAt: now,
+        updatedAt: now,
+      },
+    },
+  );
+}
+
+async function deleteCachedAccount(account) {
+  const collections = cacheCollections();
+  if (!collections || !account) return;
+  const accountKey = stableAccountKey(account);
+  await Promise.all([
+    collections.folders.deleteMany({ accountKey }),
+    collections.messages.deleteMany({ accountKey }),
+    collections.bodies.deleteMany({ accountKey }),
+    collections.syncState.deleteMany({ accountKey }),
+  ]);
+}
+
+async function safeDeleteCachedAccount(account, label = '') {
+  try {
+    await deleteCachedAccount(account);
+    return true;
+  } catch (err) {
+    console.warn(`Delete cached account failed${label ? ` (${label})` : ''}: ${err.message}`);
+    return false;
+  }
+}
+
+async function updateCachedMessageSeen(client, folderPath, uid, seen = true) {
+  const collections = cacheCollections();
+  if (!collections) return;
+  await collections.messages.updateOne(
+    { accountKey: stableAccountKey(client.account), folder: folderPath, uid: normalizeUid(uid) },
+    { $set: { seen: !!seen, updatedAt: new Date() } },
+  );
+}
+
+async function updateCachedMessagesFlag(client, folderPath, uids, patch) {
+  const collections = cacheCollections();
+  const normalized = normalizeUidList(uids);
+  if (!collections || !normalized.length) return;
+  await collections.messages.updateMany(
+    { accountKey: stableAccountKey(client.account), folder: folderPath, uid: { $in: normalized } },
+    { $set: { ...patch, updatedAt: new Date() } },
+  );
+}
+
+async function deleteCachedMessages(client, folderPath, uids) {
+  const collections = cacheCollections();
+  const normalized = normalizeUidList(uids);
+  if (!collections || !normalized.length) return;
+  const filter = { accountKey: stableAccountKey(client.account), folder: folderPath, uid: { $in: normalized } };
+  await Promise.all([
+    collections.messages.deleteMany(filter),
+    collections.bodies.deleteMany(filter),
+  ]);
+}
+
+async function markRemoteMessageSeen(client, folderPath, uid) {
+  await client.ensureConnected();
+  const lock = await client.client.getMailboxLock(folderPath);
+  try {
+    await client.client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+    await updateCachedMessageSeen(client, folderPath, uid, true);
+  } finally {
+    lock.release();
+  }
+}
+
+function backgroundMarkRemoteSeen(client, folderPath, uid) {
+  markRemoteMessageSeen(client, folderPath, uid).catch(err => {
+    console.warn(`Background mark seen failed ${client.account?.auth?.user || ''} ${folderPath}/${uid}: ${imapApiError(err, { folder: folderPath, command: 'STORE \\Seen' })}`);
+  });
+}
+
+async function markSyncState(client, folderPath, patch) {
+  const collections = cacheCollections();
+  if (!collections) return;
+  const accountKey = stableAccountKey(client.account);
+  await collections.syncState.updateOne(
+    { accountKey, folder: folderPath },
+    {
+      $set: {
+        accountKey,
+        accountEmail: client.account?.auth?.user || '',
+        folder: folderPath,
+        updatedAt: new Date(),
+        ...patch,
+      },
+      $setOnInsert: { createdAt: new Date() },
+    },
+    { upsert: true },
+  );
+}
+
+async function fetchMessagesByUid(client, folder, uids) {
+  if (!uids.length) return [];
+  const mails = [];
+  for await (const msg of client.client.fetch(uids, {
+    envelope: true,
+    flags: true,
+    uid: true,
+  }, { uid: true })) {
+    mails.push(mapEnvelopeMessage(msg, folder));
+  }
+  mails.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  return mails;
+}
+
+async function pruneRecentCacheWindow(client, folder, liveMails, windowSize) {
+  const collections = cacheCollections();
+  if (!collections || !Array.isArray(liveMails) || !liveMails.length) return;
+  const accountKey = stableAccountKey(client.account);
+  const folderPath = folder?.path || '';
+  if (!folderPath) return;
+  const newest = liveMails
+    .map(mail => ({ seq: Number(mail.seq) || 0, uid: normalizeUid(mail.uid) }))
+    .filter(item => item.seq > 0 && item.uid !== '');
+  if (!newest.length) return;
+  const minSeq = Math.max(1, Math.min(...newest.map(item => item.seq)));
+  const liveUidSet = new Set(newest.map(item => item.uid));
+  const cached = await collections.messages
+    .find({ accountKey, folder: folderPath, seq: { $gte: minSeq } })
+    .project({ uid: 1 })
+    .limit(Math.max(windowSize, newest.length) * 2)
+    .toArray();
+  const staleUids = cached.map(doc => doc.uid).filter(uid => !liveUidSet.has(uid));
+  if (staleUids.length) {
+    await deleteCachedMessages(client, folderPath, staleUids);
+  }
+}
+
+async function syncFolderToCache(client, folder, options = {}) {
+  const collections = cacheCollections();
+  if (!collections || !folder?.path) return { synced: false, reason: 'cache-disabled' };
+  const accountKey = stableAccountKey(client.account);
+  const folderPath = folder.path;
+  const existingState = await collections.syncState.findOne({ accountKey, folder: folderPath });
+  if (!options.force && existingState?.syncing && Date.now() - new Date(existingState.updatedAt || 0).getTime() < 2 * 60 * 1000) {
+    return { synced: false, reason: 'already-syncing' };
+  }
+
+  await markSyncState(client, folderPath, { syncing: true, error: '' });
+  const lock = await client.client.getMailboxLock(folderPath);
+  try {
+    const status = selectedMailboxStatus(client, folderPath);
+    const mailbox = client.client.mailbox || {};
+    await upsertCachedFolder(client, folder, status);
+
+    const uidValidity = mailbox.uidValidity ? String(mailbox.uidValidity) : '';
+    const previousUidValidity = existingState?.uidValidity ? String(existingState.uidValidity) : '';
+    const resetNeeded = previousUidValidity && uidValidity && previousUidValidity !== uidValidity;
+    if (resetNeeded) {
+      await Promise.all([
+        collections.messages.deleteMany({ accountKey, folder: folderPath }),
+        collections.bodies.deleteMany({ accountKey, folder: folderPath }),
+      ]);
+    }
+
+    const highestUid = resetNeeded ? 0 : Number(existingState?.highestUid || 0);
+    let newUids = [];
+    if (highestUid > 0) {
+      newUids = await client.client.search({ uid: `${highestUid + 1}:*` }, { uid: true });
+    }
+
+    let newestUids = [];
+    if (status.messages > 0) {
+      const endSeq = status.messages;
+      const startSeq = Math.max(1, endSeq - Math.max(options.window || IMAP_CACHE_SYNC_WINDOW, IMAP_CACHE_LOOKBACK) + 1);
+      for await (const msg of client.client.fetch(`${startSeq}:${endSeq}`, { uid: true, flags: true })) {
+        if (msg.uid) newestUids.push(Number(msg.uid));
+      }
+    }
+
+    const selectedUids = Array.from(new Set([...newUids.map(Number), ...newestUids]))
+      .filter(Boolean)
+      .sort((a, b) => a - b)
+      .slice(-Math.max(options.window || IMAP_CACHE_SYNC_WINDOW, IMAP_CACHE_LOOKBACK));
+    const mails = await fetchMessagesByUid(client, folder, selectedUids);
+    await upsertCachedMessages(client, folder, mails);
+    await pruneRecentCacheWindow(client, folder, mails, Math.max(options.window || IMAP_CACHE_SYNC_WINDOW, IMAP_CACHE_LOOKBACK));
+
+    const nextHighestUid = Math.max(highestUid, ...selectedUids, 0);
+    await markSyncState(client, folderPath, {
+      syncing: false,
+      syncedAt: new Date(),
+      error: '',
+      messages: status.messages || 0,
+      unseen: status.unseen || 0,
+      highestUid: nextHighestUid,
+      uidValidity,
+      uidNext: mailbox.uidNext || 0,
+      highestModseq: mailbox.highestModseq ? String(mailbox.highestModseq) : '',
+    });
+    return { synced: true, count: mails.length, total: status.messages || 0, unseen: status.unseen || 0 };
+  } catch (err) {
+    await markSyncState(client, folderPath, {
+      syncing: false,
+      error: imapApiError(err, { folder: folderPath, command: 'SYNC' }),
+    });
+    throw err;
+  } finally {
+    lock.release();
+  }
+}
+
+function backgroundSyncFolder(client, folder, options = {}) {
+  syncFolderToCache(client, folder, options).catch(err => {
+    console.warn(`Background sync failed ${client.account?.auth?.user || ''} ${folder?.path || ''}: ${imapApiError(err, { folder: folder?.path, command: 'SYNC' })}`);
+  });
+}
+
+async function syncVirtualFolderToCache(client, folderPath, options = {}) {
+  await client.ensureConnected();
+  const listedFolders = await client.client.list();
+  const folders = folderPath === VIRTUAL_UNREAD_FOLDER
+    ? primaryUnreadFolders(listedFolders)
+    : aggregateFolders(listedFolders);
+  const results = [];
+  for (const folder of folders) {
+    try {
+      results.push(await syncFolderToCache(client, folder, options));
+    } catch (err) {
+      results.push({ synced: false, error: imapApiError(err, { folder: folder.path, command: 'SYNC' }) });
+    }
+  }
+  const accountKey = stableAccountKey(client.account);
+  const baseQuery = folderPath === VIRTUAL_UNREAD_FOLDER
+    ? { accountKey, seen: false }
+    : { accountKey };
+  const messages = await cacheCollections()?.messages.countDocuments(baseQuery) || 0;
+  const unseen = await cacheCollections()?.messages.countDocuments({ accountKey, seen: false }) || 0;
+  await markSyncState(client, folderPath, {
+    syncing: false,
+    syncedAt: new Date(),
+    error: '',
+    messages,
+    unseen,
+  });
+  return { synced: true, virtual: folderPath, results };
+}
+
+function backgroundSyncVirtualFolder(client, folderPath, options = {}) {
+  syncVirtualFolderToCache(client, folderPath, options).catch(err => {
+    console.warn(`Background virtual sync failed ${client.account?.auth?.user || ''}: ${imapApiError(err, { folder: folderPath, command: 'SYNC' })}`);
+  });
+}
+
+function syncJobKey(client) {
+  return stableAccountKey(client.account);
+}
+
+async function syncAccountToCache(client, options = {}) {
+  const collections = cacheCollections();
+  if (!collections) return { synced: false, reason: 'cache-disabled' };
+  const key = syncJobKey(client);
+  if (accountSyncJobs.has(key)) {
+    return accountSyncJobs.get(key);
+  }
+  const job = (async () => {
+    const accountState = await readAccountSyncStatus(client);
+    if (!options.force && accountState && !accountState.stale && accountState.synced) {
+      return { synced: false, reason: 'fresh', syncStatus: accountState };
+    }
+
+    await markSyncState(client, ACCOUNT_SYNC_STATE_FOLDER, { syncing: true, error: '' });
+    try {
+      await client.ensureConnected();
+      const folders = aggregateFolders(await client.client.list());
+      const results = [];
+      for (const folder of folders) {
+        try {
+          results.push(await syncFolderToCache(client, folder, options));
+        } catch (err) {
+          results.push({
+            folder: folder.path,
+            synced: false,
+            error: imapApiError(err, { folder: folder.path, command: 'SYNC' }),
+          });
+        }
+      }
+      const accountKey = stableAccountKey(client.account);
+      const messages = await collections.messages.countDocuments({ accountKey });
+      const unseen = await collections.messages.countDocuments({ accountKey, seen: false });
+      const hasErrors = results.some(result => result.error);
+      await markSyncState(client, ACCOUNT_SYNC_STATE_FOLDER, {
+        syncing: false,
+        syncedAt: new Date(),
+        error: hasErrors ? results.filter(result => result.error).map(result => `${result.folder}: ${result.error}`).slice(0, 3).join('；') : '',
+        messages,
+        unseen,
+        folders: folders.length,
+      });
+      await markSyncState(client, VIRTUAL_ALL_FOLDER, {
+        syncing: false,
+        syncedAt: new Date(),
+        error: '',
+        messages,
+        unseen,
+      });
+      await markSyncState(client, VIRTUAL_UNREAD_FOLDER, {
+        syncing: false,
+        syncedAt: new Date(),
+        error: '',
+        messages: unseen,
+        unseen,
+      });
+      return { synced: true, messages, unseen, folders: folders.length, results };
+    } catch (err) {
+      const error = imapApiError(err, { command: 'ACCOUNT_SYNC' });
+      await markSyncState(client, ACCOUNT_SYNC_STATE_FOLDER, { syncing: false, error });
+      throw err;
+    }
+  })().finally(() => {
+    accountSyncJobs.delete(key);
+  });
+  accountSyncJobs.set(key, job);
+  return job;
+}
+
+function backgroundSyncAccount(client, options = {}) {
+  syncAccountToCache(client, options).catch(err => {
+    console.warn(`Background account sync failed ${client.account?.auth?.user || ''}: ${imapApiError(err, { command: 'ACCOUNT_SYNC' })}`);
+  });
+}
+
+async function accountSummaryWithSync(id, account, extra = {}) {
+  const syncStatus = cacheDb ? await readAccountSyncStatus({ account }) : null;
+  return accountSummary(id, account, { syncStatus, ...extra });
+}
+
+async function accountListWithSync() {
+  const list = [];
+  for (const [id, c] of clients) {
+    list.push(await accountSummaryWithSync(id, c.account));
+  }
+  return list;
+}
+
+async function runScheduledSync({ force = false } = {}) {
+  if (!IMAP_SYNC_SCHEDULER_ENABLED || syncSchedulerRunning) return;
+  syncSchedulerRunning = true;
+  try {
+    for (const client of clients.values()) {
+      backgroundSyncAccount(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
+    }
+  } finally {
+    syncSchedulerRunning = false;
+  }
+}
+
+function startSyncScheduler() {
+  if (!IMAP_SYNC_SCHEDULER_ENABLED || syncSchedulerTimer) return;
+  setTimeout(() => runScheduledSync().catch(err => {
+    console.warn(`Initial IMAP sync scheduling failed: ${err.message}`);
+  }), IMAP_SYNC_STARTUP_DELAY_MS);
+  syncSchedulerTimer = setInterval(() => {
+    runScheduledSync().catch(err => {
+      console.warn(`IMAP sync scheduling failed: ${err.message}`);
+    });
+  }, IMAP_SYNC_CHECK_INTERVAL_MS);
+}
+
+function stopSyncScheduler() {
+  if (syncSchedulerTimer) {
+    clearInterval(syncSchedulerTimer);
+    syncSchedulerTimer = null;
+  }
 }
 
 async function fetchFolderSlice(client, folder, count, unreadOnly = false) {
@@ -607,7 +1301,8 @@ async function fetchFolderSlice(client, folder, count, unreadOnly = false) {
 
 async function fetchVirtualFolderMessages(client, folderPath, count) {
   const unreadOnly = folderPath === VIRTUAL_UNREAD_FOLDER;
-  const folders = aggregateFolders(await client.client.list());
+  const listedFolders = await client.client.list();
+  const folders = unreadOnly ? primaryUnreadFolders(listedFolders) : aggregateFolders(listedFolders);
   const allMessages = [];
   let total = 0;
   let unseen = 0;
@@ -1059,6 +1754,7 @@ app.get('/api/oauth/gmail/callback', async (req, res) => {
     const client = createMailClient(account);
     await client.connect();
     const id = setClient(account, client);
+    backgroundSyncAccount(client, { force: true, window: IMAP_CACHE_SYNC_WINDOW });
     res.send(`<!doctype html><meta charset="utf-8"><script>window.opener&&window.opener.postMessage({type:'gmail-oauth-success',id:${JSON.stringify(id)},email:${JSON.stringify(email)}},window.location.origin);window.close();</script><p>Gmail OAuth 登录成功，可以关闭此窗口。</p>`);
   } catch (err) {
     res.status(500).send(`Gmail OAuth failed: ${err.message}`);
@@ -1124,6 +1820,7 @@ app.get('/api/oauth/outlook/callback', async (req, res) => {
     const client = createMailClient(account);
     await client.connect();
     const id = setClient(account, client);
+    backgroundSyncAccount(client, { force: true, window: IMAP_CACHE_SYNC_WINDOW });
     res.send(`<!doctype html><meta charset="utf-8"><script>window.opener&&window.opener.postMessage({type:'outlook-oauth-success',id:${JSON.stringify(id)},email:${JSON.stringify(email)}},window.location.origin);window.close();</script><p>Outlook OAuth 登录成功，可以关闭此窗口。</p>`);
   } catch (err) {
     res.status(500).send(`Outlook OAuth failed: ${err.message}`);
@@ -1165,6 +1862,7 @@ app.post('/api/accounts', async (req, res) => {
     const id = ++clientId;
     clients.set(id, client);
     saveAccounts();
+    backgroundSyncAccount(client, { force: true, window: IMAP_CACHE_SYNC_WINDOW });
     res.json(accountSummary(id, account, { checks: { imap: imapCheck, smtp: smtpCheck } }));
   } catch (err) {
     const imapCheck = resultFail('imap', account, err);
@@ -1182,13 +1880,9 @@ app.post('/api/accounts', async (req, res) => {
 });
 
 // 已连接账户列表
-app.get('/api/accounts', (req, res) => {
+app.get('/api/accounts', async (req, res) => {
   try {
-    const list = [];
-    clients.forEach((c, id) => {
-      list.push(accountSummary(id, c.account));
-    });
-    res.json(list);
+    res.json(await accountListWithSync());
   } catch (err) {
     res.status(500).json({ error: err.message || '账户列表加载失败' });
   }
@@ -1203,6 +1897,38 @@ app.post('/api/accounts/reorder', (req, res) => {
     list.push(accountSummary(id, c.account));
   });
   res.json({ ok: true, accounts: list });
+});
+
+app.get('/api/accounts/:id/sync/status', async (req, res) => {
+  const client = clients.get(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).json({ error: '账户不存在' });
+  try {
+    const accountStatus = await readAccountSyncStatus(client);
+    const folder = req.query.folder ? String(req.query.folder) : '';
+    const folderStatus = folder ? await readSyncStatus(client, folder) : null;
+    res.json({ ok: true, account: accountStatus, folder: folderStatus });
+  } catch (err) {
+    res.status(500).json({ error: err.message || '同步状态读取失败' });
+  }
+});
+
+app.post('/api/accounts/:id/sync', async (req, res) => {
+  const client = clients.get(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).json({ error: '账户不存在' });
+  const folder = String(req.body?.folder || req.query.folder || '').trim();
+  const force = ['1', 'true', 'yes'].includes(String(req.body?.force ?? req.query.force ?? '1').toLowerCase());
+  try {
+    let result;
+    if (folder) {
+      if (isVirtualFolder(folder)) result = await syncVirtualFolderToCache(client, folder, { force, window: IMAP_CACHE_SYNC_WINDOW });
+      else result = await syncFolderToCache(client, await resolveFolder(client, folder), { force, window: IMAP_CACHE_SYNC_WINDOW });
+    } else {
+      result = await syncAccountToCache(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
+    }
+    res.json({ ok: true, result, account: await readAccountSyncStatus(client), folder: folder ? await readSyncStatus(client, folder) : null });
+  } catch (err) {
+    res.status(500).json({ error: imapApiError(err, { folder, command: folder ? 'SYNC_FOLDER' : 'ACCOUNT_SYNC' }) });
+  }
 });
 
 // 更新账户信息
@@ -1234,9 +1960,15 @@ app.patch('/api/accounts/:id', async (req, res) => {
     } catch (smtpErr) {
       smtpCheck = resultFail('smtp', effectiveSmtp(account) || {}, smtpErr);
     }
+    const oldAccountKey = stableAccountKey(client.account);
+    const newAccountKey = stableAccountKey(account);
+    if (oldAccountKey !== newAccountKey) {
+      await safeDeleteCachedAccount(client.account, account.auth?.user || '');
+    }
     try { await client.disconnect(); } catch {}
     clients.set(id, updatedClient);
     saveAccounts();
+    backgroundSyncAccount(updatedClient, { force: true, window: IMAP_CACHE_SYNC_WINDOW });
     res.json(accountSummary(id, account, { checks: { imap: imapCheck, smtp: smtpCheck } }));
   } catch (err) {
     const imapCheck = resultFail('imap', account, err);
@@ -1259,6 +1991,7 @@ app.delete('/api/accounts/:id', async (req, res) => {
   const client = clients.get(id);
   if (!client) return res.status(404).json({ error: '账户不存在' });
   try { await client.disconnect(); } catch {}
+  await safeDeleteCachedAccount(client.account, client.account?.auth?.user || '');
   clients.delete(id);
   saveAccounts();
   res.json({ ok: true });
@@ -1290,12 +2023,40 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
   const folder = req.query.folder || 'INBOX';
   const count = parseInt(req.query.count, 10) || 20;
   const before = req.query.before ? parseInt(req.query.before, 10) : null;
+  const forceSync = ['1', 'true', 'yes'].includes(String(req.query.sync || '').toLowerCase());
+  const cacheOnly = ['1', 'true', 'yes'].includes(String(req.query.cacheOnly || '').toLowerCase());
 
   try {
+    const cached = await readCachedMessages(client, folder, count, before);
+    const needsInitialSync = cached && !forceSync && !cacheOnly && !before && !cached.syncStatus?.synced && cached.mails.length === 0;
+    const needsOlderRemotePage = cached && !forceSync && !cacheOnly && before && cached.mails.length < count
+      && folder !== VIRTUAL_ALL_FOLDER && folder !== VIRTUAL_UNREAD_FOLDER
+      && Number(cached.syncStatus?.messages || 0) > Number(cached.total || 0);
+    if (cached && !forceSync && !needsInitialSync && !needsOlderRemotePage) {
+      if (!cacheOnly && (!cached.syncStatus || cached.syncStatus.stale) && !before) {
+        if (isVirtualFolder(folder)) backgroundSyncVirtualFolder(client, folder, { window: count });
+        else resolveFolder(client, folder).then(resolved => backgroundSyncFolder(client, resolved, { window: count })).catch(() => {});
+      }
+      return res.json(cached);
+    }
+
     await client.ensureConnected();
     if (isVirtualFolder(folder)) {
+      if (forceSync || needsInitialSync) {
+        await syncVirtualFolderToCache(client, folder, { force: true, window: count });
+        const nextCached = await readCachedMessages(client, folder, count, before);
+        if (nextCached && (nextCached.mails.length || folder !== VIRTUAL_UNREAD_FOLDER)) return res.json({ ...nextCached, syncedNow: true });
+      }
       return res.json(await fetchVirtualFolderMessages(client, folder, count));
     }
+
+    if (forceSync || needsInitialSync) {
+      const resolvedFolder = await resolveFolder(client, folder);
+      await syncFolderToCache(client, resolvedFolder, { force: true, window: count });
+      const nextCached = await readCachedMessages(client, folder, count, before);
+      if (nextCached) return res.json({ ...nextCached, syncedNow: true });
+    }
+
     const lock = await client.client.getMailboxLock(folder);
     try {
       const status = selectedMailboxStatus(client, folder);
@@ -1327,6 +2088,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
       }
 
       mails.sort((a, b) => new Date(b.date) - new Date(a.date));
+      await upsertCachedMessages(client, { path: folder, name: folder }, mails);
       res.json({ total, unseen: status.unseen, mails, hasMore: startSeq > 1 });
     } finally {
       lock.release();
@@ -1343,31 +2105,31 @@ app.get('/api/accounts/:id/mails/:uid', async (req, res) => {
 
   const folder = req.query.folder || 'INBOX';
   const uid = req.params.uid;
+  const forceSync = ['1', 'true', 'yes'].includes(String(req.query.sync || req.query.refresh || '').toLowerCase());
 
   try {
+    const cached = forceSync ? null : await readCachedMessageBody(client, folder, uid);
+    if (cached) {
+      updateCachedMessageSeen(client, folder, uid, true).catch(() => {});
+      backgroundMarkRemoteSeen(client, folder, uid);
+      return res.json(cached);
+    }
+
     await client.ensureConnected();
     const lock = await client.client.getMailboxLock(folder);
     try {
       const source = await client.client.download(uid, undefined, { uid: true });
       const parsed = await simpleParser(source.content);
+      const detail = messageDetailFromParsed(parsed);
 
-      await client.client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+      try {
+        await client.client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+      } catch (flagErr) {
+        console.warn(`Mark seen failed ${client.account?.auth?.user || ''} ${folder}/${uid}: ${imapApiError(flagErr, { folder, command: 'STORE \\Seen' })}`);
+      }
+      await upsertCachedMessageBody(client, folder, uid, detail);
 
-      res.json({
-        subject: parsed.subject || '(no subject)',
-        from: parsed.from?.text || '',
-        to: parsed.to?.text || '',
-        cc: parsed.cc?.text || '',
-        date: parsed.date,
-        text: parsed.text || '',
-        html: parsed.html ? prepareHtmlForRender(parsed.html) : '',
-        attachments: (parsed.attachments || []).map((a, i) => ({
-          index: i,
-          filename: a.filename || `attachment_${i}`,
-          size: a.size,
-          contentType: a.contentType,
-        })),
-      });
+      res.json({ ...detail, cached: false });
     } finally {
       lock.release();
     }
@@ -1471,6 +2233,7 @@ app.delete('/api/accounts/:id/mails/:uid', async (req, res) => {
     const lock = await client.client.getMailboxLock(folder);
     try {
       await client.client.messageDelete(uid, { uid: true });
+      await deleteCachedMessages(client, folder, uid);
       res.json({ ok: true });
     } finally {
       lock.release();
@@ -1559,6 +2322,22 @@ app.put('/api/accounts/:id/mails/:uid/flags', async (req, res) => {
     const lock = await client.client.getMailboxLock(folder);
     try {
       await client.client[methods[action]](uid, safeFlags, { uid: true });
+      const patch = {};
+      if (safeFlags.includes('\\Seen')) {
+        if (action === 'add') patch.seen = true;
+        else if (action === 'remove') patch.seen = false;
+      }
+      if (safeFlags.includes('\\Flagged')) {
+        if (action === 'add') patch.flagged = true;
+        else if (action === 'remove') patch.flagged = false;
+      }
+      if (action === 'set') {
+        patch.seen = safeFlags.includes('\\Seen');
+        patch.flagged = safeFlags.includes('\\Flagged');
+      }
+      if (Object.keys(patch).length) {
+        await updateCachedMessagesFlag(client, folder, uid, patch);
+      }
       res.json({ ok: true });
     } finally {
       lock.release();
@@ -1586,6 +2365,7 @@ app.post('/api/accounts/:id/mails/:uid/move', async (req, res) => {
     const lock = await client.client.getMailboxLock(folder);
     try {
       await client.client.messageMove(uid, destination, { uid: true });
+      await deleteCachedMessages(client, folder, uid);
       res.json({ ok: true });
     } finally {
       lock.release();
@@ -1616,22 +2396,28 @@ app.post('/api/accounts/:id/batch', async (req, res) => {
       switch (action) {
         case 'delete':
           await client.client.messageDelete(uidRange, { uid: true });
+          await deleteCachedMessages(client, folder, uids);
           break;
         case 'read':
           await client.client.messageFlagsAdd(uidRange, ['\\Seen'], { uid: true });
+          await updateCachedMessagesFlag(client, folder, uids, { seen: true });
           break;
         case 'unread':
           await client.client.messageFlagsRemove(uidRange, ['\\Seen'], { uid: true });
+          await updateCachedMessagesFlag(client, folder, uids, { seen: false });
           break;
         case 'flag':
           await client.client.messageFlagsAdd(uidRange, ['\\Flagged'], { uid: true });
+          await updateCachedMessagesFlag(client, folder, uids, { flagged: true });
           break;
         case 'unflag':
           await client.client.messageFlagsRemove(uidRange, ['\\Flagged'], { uid: true });
+          await updateCachedMessagesFlag(client, folder, uids, { flagged: false });
           break;
         case 'move':
           if (!destination) return res.status(400).json({ error: '移动操作需要 destination 参数' });
           await client.client.messageMove(uidRange, destination, { uid: true });
+          await deleteCachedMessages(client, folder, uids);
           break;
         default:
           return res.status(400).json({ error: `未知操作: ${action}` });
@@ -1755,11 +2541,29 @@ app.post('/api/accounts/batch', async (req, res) => {
 const PORT = process.env.PORT || 3939;
 
 loadSettings();
-restoreAccounts().then(() => {
+initCacheDb().catch(err => {
+  console.warn(`IMAP cache init failed, running without persistent mail cache: ${err.message}`);
+}).then(() => restoreAccounts()).then(() => {
   app.listen(PORT, () => {
     console.log(`IMAP Mail Client 已启动: http://localhost:${PORT}`);
+    startSyncScheduler();
   });
 });
+
+async function shutdown() {
+  try {
+    for (const client of clients.values()) {
+      try { await client.disconnect(); } catch {}
+    }
+    stopSyncScheduler();
+    await closeCacheDb();
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 app.use((err, req, res, next) => {
   console.error(`IMAP API 未处理错误 ${req.method} ${req.originalUrl}:`, err);
