@@ -609,6 +609,9 @@ function normalizeUidList(uids) {
 
 function normalizeCacheMessage(doc) {
   return {
+    accountKey: doc.accountKey || '',
+    accountEmail: doc.accountEmail || '',
+    provider: doc.provider || '',
     uid: doc.uid,
     seq: doc.seq || 0,
     folder: doc.folder,
@@ -621,6 +624,17 @@ function normalizeCacheMessage(doc) {
     flagged: !!doc.flagged,
     cached: true,
   };
+}
+
+function attachCurrentAccountIds(mails) {
+  const accountIdsByKey = new Map();
+  for (const [id, client] of clients.entries()) {
+    accountIdsByKey.set(stableAccountKey(client.account), id);
+  }
+  return (Array.isArray(mails) ? mails : []).map(mail => ({
+    ...mail,
+    accountId: accountIdsByKey.get(mail.accountKey) || mail.accountId || null,
+  }));
 }
 
 function normalizeCachedBody(doc) {
@@ -704,6 +718,72 @@ async function readCachedMessages(client, folderPath, count, before = null) {
     hasMore: pageRemaining > mails.length,
     cached: true,
     syncStatus: await readSyncStatus(client, folderPath),
+  };
+}
+
+async function readCachedMessagesByAccountKeys(accountKeys, options = {}) {
+  const collections = cacheCollections();
+  if (!collections) return null;
+  const keys = (Array.isArray(accountKeys) ? accountKeys : []).filter(Boolean);
+  if (!keys.length) return { total: 0, unseen: 0, mails: [], hasMore: false, cached: true };
+  const count = Math.min(Math.max(parseInt(options.count, 10) || 30, 1), 100);
+  const before = options.before ? new Date(options.before) : null;
+  const query = { accountKey: { $in: keys } };
+  if (options.unreadOnly) query.seen = false;
+  if (before && Number.isFinite(before.getTime())) query.date = { $lt: before };
+  const docs = await collections.messages
+    .find(query)
+    .sort({ date: -1 })
+    .limit(count)
+    .toArray();
+  const baseQuery = { accountKey: { $in: keys }, ...(options.unreadOnly ? { seen: false } : {}) };
+  const total = await collections.messages.countDocuments(baseQuery);
+  const pageRemaining = await collections.messages.countDocuments(query);
+  const unseen = await collections.messages.countDocuments({ accountKey: { $in: keys }, seen: false });
+  return {
+    total,
+    unseen,
+    mails: docs.map(normalizeCacheMessage),
+    hasMore: pageRemaining > docs.length,
+    cached: true,
+  };
+}
+
+async function searchCachedMessages(accountKeys, keyword, options = {}) {
+  const collections = cacheCollections();
+  if (!collections) return null;
+  const keys = (Array.isArray(accountKeys) ? accountKeys : []).filter(Boolean);
+  const q = String(keyword || '').trim();
+  if (!keys.length || !q) return { total: 0, mails: [], cached: true };
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rx = new RegExp(escaped, 'i');
+  const bodyMatches = await collections.bodies
+    .find({ accountKey: { $in: keys }, $or: [{ text: rx }, { html: rx }, { from: rx }, { to: rx }, { subject: rx }] })
+    .project({ accountKey: 1, folder: 1, uid: 1 })
+    .limit(100)
+    .toArray();
+  const bodyKeys = bodyMatches.map(doc => ({
+    accountKey: doc.accountKey,
+    folder: doc.folder,
+    uid: doc.uid,
+  }));
+  const query = {
+    accountKey: { $in: keys },
+    $or: [
+      { subject: rx },
+      { 'from.name': rx },
+      { 'from.address': rx },
+      { folderName: rx },
+      ...bodyKeys.map(item => ({ accountKey: item.accountKey, folder: item.folder, uid: item.uid })),
+    ],
+  };
+  if (options.unreadOnly) query.seen = false;
+  const limit = Math.min(Math.max(parseInt(options.count, 10) || 50, 1), 100);
+  const docs = await collections.messages.find(query).sort({ date: -1 }).limit(limit).toArray();
+  return {
+    total: docs.length,
+    mails: docs.map(normalizeCacheMessage),
+    cached: true,
   };
 }
 
@@ -1213,6 +1293,13 @@ function backgroundSyncAccount(client, options = {}) {
   syncAccountToCache(client, options).catch(err => {
     console.warn(`Background account sync failed ${client.account?.auth?.user || ''}: ${imapApiError(err, { command: 'ACCOUNT_SYNC' })}`);
   });
+}
+
+async function markAccountSyncQueued(client) {
+  const current = await readAccountSyncStatus(client);
+  if (current?.syncing) return current;
+  await markSyncState(client, ACCOUNT_SYNC_STATE_FOLDER, { syncing: true, error: '' });
+  return readAccountSyncStatus(client);
 }
 
 async function accountSummaryWithSync(id, account, extra = {}) {
@@ -1931,6 +2018,44 @@ app.post('/api/accounts/:id/sync', async (req, res) => {
   }
 });
 
+app.post('/api/accounts/sync', async (req, res) => {
+  const force = ['1', 'true', 'yes'].includes(String(req.body?.force ?? req.query.force ?? '1').toLowerCase());
+  const background = ['1', 'true', 'yes'].includes(String(req.body?.background ?? req.query.background ?? '0').toLowerCase());
+  try {
+    if (background) {
+      const results = [];
+      for (const [id, client] of clients.entries()) {
+        const account = await markAccountSyncQueued(client);
+        backgroundSyncAccount(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
+        results.push({ id, ok: true, queued: true, account });
+      }
+      return res.json({ ok: true, background: true, results, accounts: await accountListWithSync() });
+    }
+    const results = [];
+    for (const [id, client] of clients.entries()) {
+      try {
+        const result = await syncAccountToCache(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
+        results.push({
+          id,
+          ok: true,
+          result,
+          account: await readAccountSyncStatus(client),
+        });
+      } catch (err) {
+        results.push({
+          id,
+          ok: false,
+          error: imapApiError(err, { command: 'ACCOUNT_SYNC' }),
+          account: await readAccountSyncStatus(client),
+        });
+      }
+    }
+    res.json({ ok: true, results, accounts: await accountListWithSync() });
+  } catch (err) {
+    res.status(500).json({ error: err.message || '批量同步失败' });
+  }
+});
+
 // 更新账户信息
 app.patch('/api/accounts/:id', async (req, res) => {
   if (!requirePersistenceSecret(res)) return;
@@ -2169,6 +2294,40 @@ app.get('/api/accounts/:id/mails/:uid/attachments/:index', async (req, res) => {
   }
 });
 
+app.get('/api/mails', async (req, res) => {
+  const count = parseInt(req.query.count, 10) || 30;
+  const before = req.query.before || '';
+  const unreadOnly = ['1', 'true', 'yes'].includes(String(req.query.unread || '').toLowerCase());
+  try {
+    const keys = Array.from(clients.values()).map(client => stableAccountKey(client.account));
+    const data = await readCachedMessagesByAccountKeys(keys, { count, before, unreadOnly });
+    const payload = data || { total: 0, unseen: 0, mails: [], hasMore: false, cached: true };
+    payload.mails = attachCurrentAccountIds(payload.mails);
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ error: err.message || '缓存邮件读取失败' });
+  }
+});
+
+app.get('/api/search', async (req, res) => {
+  const keyword = String(req.query.q || '').trim();
+  const accountId = req.query.accountId ? parseInt(req.query.accountId, 10) : null;
+  const unreadOnly = ['1', 'true', 'yes'].includes(String(req.query.unread || '').toLowerCase());
+  if (!keyword) return res.json({ total: 0, mails: [], cached: true });
+  try {
+    const selectedClients = Number.isInteger(accountId) && clients.has(accountId)
+      ? [clients.get(accountId)]
+      : Array.from(clients.values());
+    const keys = selectedClients.map(client => stableAccountKey(client.account));
+    const data = await searchCachedMessages(keys, keyword, { count: parseInt(req.query.count, 10) || 50, unreadOnly });
+    const payload = data || { total: 0, mails: [], cached: true };
+    payload.mails = attachCurrentAccountIds(payload.mails);
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ error: err.message || '缓存搜索失败' });
+  }
+});
+
 // 搜索邮件
 app.get('/api/accounts/:id/search', async (req, res) => {
   const client = clients.get(parseInt(req.params.id, 10));
@@ -2180,6 +2339,11 @@ app.get('/api/accounts/:id/search', async (req, res) => {
   if (!keyword) return res.status(400).json({ error: '请输入搜索关键词' });
 
   try {
+    const cached = await searchCachedMessages([stableAccountKey(client.account)], keyword, { count: 50 });
+    if (cached && cached.mails.length) {
+      return res.json(attachCurrentAccountIds(cached.mails));
+    }
+
     await client.ensureConnected();
     const lock = await client.client.getMailboxLock(folder);
     try {

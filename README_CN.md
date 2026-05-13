@@ -206,7 +206,7 @@ docker-compose ps
 
 外部 IMAP 聚合账号、文件夹列表、邮件列表、已缓存正文以及后台运行配置都会保存在 Docker volume / MongoDB 中。默认情况下，外部 IMAP 邮件列表和已打开过的正文会缓存 24 小时；刷新按钮仍会主动拉取远端最新数据。可以通过 `.env` 中的 `IMAP_CACHE_TTL_SECONDS` 调整缓存过期时间，默认 `86400` 秒。
 
-后台同步器默认启用：服务启动约 20 秒后会检查外部 IMAP 账号，之后每 15 分钟检查一次。未过期账号不会重复拉取；手动点击刷新会立即同步当前文件夹。可通过 `IMAP_SYNC_CHECK_INTERVAL_SECONDS`、`IMAP_SYNC_STARTUP_DELAY_SECONDS`、`IMAP_SYNC_SCHEDULER_ENABLED=0` 调整或关闭。
+后台同步器默认启用：服务启动约 20 秒后会检查外部 IMAP 账号，之后每 15 分钟检查一次。未过期账号不会重复拉取。左侧账号后的同步标签只是状态提示，不需要手动点击；进入“全部账号”后点刷新会把所有外部账号加入后台同步队列并立即显示已有缓存，单个外部账号内点刷新会立即同步当前文件夹。可通过 `IMAP_SYNC_CHECK_INTERVAL_SECONDS`、`IMAP_SYNC_STARTUP_DELAY_SECONDS`、`IMAP_SYNC_SCHEDULER_ENABLED=0` 调整或关闭。
 
 需要回滚时，把 `.env` 中的镜像 tag 改成旧版本，比如 release tag 或 GitHub Actions 里显示的 `sha-...` tag，然后执行：
 

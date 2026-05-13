@@ -206,7 +206,7 @@ Your `.env` file and Docker volumes are kept. Do not run `docker-compose down -v
 
 External IMAP accounts, folders, message lists, cached message bodies, and runtime settings are stored in Docker volumes / MongoDB. By default, external IMAP lists and opened message bodies are cached for 24 hours; the refresh button still forces a remote sync. Override `IMAP_CACHE_TTL_SECONDS` in `.env` if you need a different TTL. The default is `86400`.
 
-The background sync scheduler is enabled by default: after startup it waits about 20 seconds, then checks external IMAP accounts every 15 minutes. Fresh accounts are skipped until their TTL expires; clicking refresh still syncs the current folder immediately. Tune or disable it with `IMAP_SYNC_CHECK_INTERVAL_SECONDS`, `IMAP_SYNC_STARTUP_DELAY_SECONDS`, or `IMAP_SYNC_SCHEDULER_ENABLED=0`.
+The background sync scheduler is enabled by default: after startup it waits about 20 seconds, then checks external IMAP accounts every 15 minutes. Fresh accounts are skipped until their TTL expires. The small sync label beside an account name is only a status indicator and does not need to be clicked; refreshing “All Accounts” queues all external accounts for background sync and immediately shows existing cache, while refreshing inside one external account syncs the current folder immediately. Tune or disable it with `IMAP_SYNC_CHECK_INTERVAL_SECONDS`, `IMAP_SYNC_STARTUP_DELAY_SECONDS`, or `IMAP_SYNC_SCHEDULER_ENABLED=0`.
 
 To roll back, change the image tag in `.env` to an older tag, such as a release tag or `sha-...` tag shown in GitHub Actions, then run `docker-compose pull && docker-compose up -d`.
 
