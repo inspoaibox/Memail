@@ -86,7 +86,7 @@ services:
       - MAX_IMAGE_PROXY_BYTES=${MAX_IMAGE_PROXY_BYTES:-5242880}
       - IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS=${IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS:-3}
       - IMAGE_PROXY_READ_TIMEOUT_SECONDS=${IMAGE_PROXY_READ_TIMEOUT_SECONDS:-8}
-      - AI_TRANSLATION_TIMEOUT_SECONDS=${AI_TRANSLATION_TIMEOUT_SECONDS:-20}
+      - AI_TRANSLATION_TIMEOUT_SECONDS=${AI_TRANSLATION_TIMEOUT_SECONDS:-45}
       - AI_TRANSLATION_MAX_CHARS=${AI_TRANSLATION_MAX_CHARS:-12000}
       - IMAP_MAIL_BASE_URL=http://imap-mail:3939
     volumes:
@@ -101,7 +101,7 @@ services:
       mail-service:
         condition: service_healthy
       imap-mail:
-        condition: service_started
+        condition: service_healthy
     networks:
       - mail-net
 
