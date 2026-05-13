@@ -795,6 +795,76 @@ def _attach_message_meta(settings: dict, messages: list, account_type: str, acco
     return messages
 
 
+def _normalize_keyword_rule(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name", "")).strip()
+    raw_keywords = item.get("keywords", [])
+    if isinstance(raw_keywords, str):
+        raw_keywords = re.split(r"[\n,，]+", raw_keywords)
+    keywords = [
+        str(keyword).strip()
+        for keyword in raw_keywords
+        if str(keyword).strip()
+    ]
+    if not name or not keywords:
+        return None
+    scope_type = str(item.get("scope_type", "all")).strip().lower()
+    if scope_type not in {"all", "group", "accounts"}:
+        scope_type = "all"
+    fields = item.get("fields", [])
+    if not isinstance(fields, list):
+        fields = []
+    normalized_fields = [
+        field for field in fields
+        if field in {"subject", "from", "to", "intro", "body"}
+    ] or ["subject", "from", "intro"]
+    match_mode = str(item.get("match_mode", "any")).strip().lower()
+    if match_mode not in {"any", "all"}:
+        match_mode = "any"
+    raw_scope_accounts = item.get("scope_accounts", [])
+    if isinstance(raw_scope_accounts, str):
+        raw_scope_accounts = [part.strip() for part in raw_scope_accounts.split(",")]
+    raw_enabled = item.get("enabled", True)
+    enabled = raw_enabled
+    if isinstance(raw_enabled, str):
+        enabled = raw_enabled.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return {
+        "id": str(item.get("id") or _new_id("kw_")),
+        "name": name[:80],
+        "scope_type": scope_type,
+        "scope_group": _normalize_account_group(item.get("scope_group", "")),
+        "scope_accounts": [
+            str(account).strip()
+            for account in raw_scope_accounts
+            if str(account).strip()
+        ][:100],
+        "keywords": keywords[:30],
+        "match_mode": match_mode,
+        "fields": normalized_fields,
+        "enabled": bool(enabled),
+        "created_at": item.get("created_at", _iso_now()),
+        "updated_at": item.get("updated_at", _iso_now()),
+    }
+
+
+def _public_keyword_rule(item: dict) -> dict:
+    normalized = _normalize_keyword_rule(item) or {}
+    return {
+        "id": normalized.get("id", ""),
+        "name": normalized.get("name", ""),
+        "scope_type": normalized.get("scope_type", "all"),
+        "scope_group": normalized.get("scope_group", ""),
+        "scope_accounts": normalized.get("scope_accounts", []),
+        "keywords": normalized.get("keywords", []),
+        "match_mode": normalized.get("match_mode", "any"),
+        "fields": normalized.get("fields", ["subject", "from", "intro"]),
+        "enabled": bool(normalized.get("enabled", True)),
+        "created_at": normalized.get("created_at", ""),
+        "updated_at": normalized.get("updated_at", ""),
+    }
+
+
 def _device_auth() -> dict | None:
     token = _extract_device_token()
     if not token:
@@ -2176,6 +2246,63 @@ def save_message_meta():
     })
     _write_viewer_settings(settings)
     return jsonify({"success": True, "meta": _public_message_meta(item)})
+
+
+@app.route("/api/keyword-rules", methods=["GET"])
+@login_required
+def list_keyword_rules():
+    settings = _read_viewer_settings()
+    rules = [
+        _public_keyword_rule(item)
+        for item in _settings_list(settings, "keyword_rules")
+        if _normalize_keyword_rule(item)
+    ]
+    return jsonify({"success": True, "rules": rules})
+
+
+@app.route("/api/keyword-rules", methods=["POST"])
+@login_required
+def save_keyword_rule():
+    data = request.json or {}
+    settings = _read_viewer_settings()
+    rules = [
+        _normalize_keyword_rule(item)
+        for item in _settings_list(settings, "keyword_rules")
+    ]
+    rules = [item for item in rules if item]
+    now = _iso_now()
+    incoming = _normalize_keyword_rule({
+        **data,
+        "updated_at": now,
+        "created_at": data.get("created_at") or now,
+    })
+    if not incoming:
+        return jsonify({"success": False, "message": "规则名称和关键词不能为空"}), 400
+    existing = next((item for item in rules if item.get("id") == incoming["id"]), None)
+    if existing:
+        incoming["created_at"] = existing.get("created_at", incoming["created_at"])
+        existing.update(incoming)
+    else:
+        rules.append(incoming)
+    settings["keyword_rules"] = rules[-200:]
+    _touch_sync_event(settings, "keyword_rule.upserted", {"id": incoming["id"]})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "rule": _public_keyword_rule(incoming), "rules": [_public_keyword_rule(item) for item in rules]})
+
+
+@app.route("/api/keyword-rules/<rule_id>", methods=["DELETE"])
+@login_required
+def delete_keyword_rule(rule_id):
+    settings = _read_viewer_settings()
+    rules = [
+        _normalize_keyword_rule(item)
+        for item in _settings_list(settings, "keyword_rules")
+    ]
+    rules = [item for item in rules if item and item.get("id") != rule_id]
+    settings["keyword_rules"] = rules
+    _touch_sync_event(settings, "keyword_rule.deleted", {"id": rule_id})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "rules": [_public_keyword_rule(item) for item in rules]})
 
 
 # ---- 搜索邮件 API ----

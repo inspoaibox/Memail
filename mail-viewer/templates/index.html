@@ -1447,6 +1447,11 @@
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="settings-keywords-tab" data-bs-toggle="tab" data-bs-target="#settings-keywords-pane" type="button" role="tab">
+                                <i class="bi bi-funnel me-1"></i><span data-i18n="keywordRules">关键词规则</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
                             <button class="nav-link" id="settings-security-tab" data-bs-toggle="tab" data-bs-target="#settings-security-pane" type="button" role="tab">
                                 <i class="bi bi-shield-lock me-1"></i><span data-i18n="securitySettings">安全设置</span>
                             </button>
@@ -1632,6 +1637,63 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="tab-pane fade" id="settings-keywords-pane" role="tabpanel" aria-labelledby="settings-keywords-tab">
+                            <div id="keyword-settings-alert" class="alert" style="display:none;" role="alert"></div>
+                            <div class="row g-4">
+                                <div class="col-12 col-lg-5">
+                                    <h6 class="mb-2"><i class="bi bi-plus-circle me-1"></i><span data-i18n="keywordRuleForm">规则配置</span></h6>
+                                    <input type="hidden" id="keyword-rule-id">
+                                    <div class="mb-2">
+                                        <label class="form-label" for="keyword-rule-name" data-i18n="ruleName">规则名称</label>
+                                        <input type="text" class="form-control form-control-sm" id="keyword-rule-name" data-i18n-ph="ruleNamePlaceholder" placeholder="例如：Walmart 退款">
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="keyword-rule-keywords" data-i18n="keywords">关键词</label>
+                                        <textarea class="form-control form-control-sm" id="keyword-rule-keywords" rows="3" data-i18n-ph="keywordsPlaceholder" placeholder="每行一个关键词，也可用逗号分隔"></textarea>
+                                    </div>
+                                    <div class="row g-2">
+                                        <div class="col-6">
+                                            <label class="form-label" for="keyword-rule-match-mode" data-i18n="matchMode">匹配方式</label>
+                                            <select class="form-select form-select-sm" id="keyword-rule-match-mode">
+                                                <option value="any" data-i18n="matchAny">任意关键词</option>
+                                                <option value="all" data-i18n="matchAll">全部关键词</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label" for="keyword-rule-scope-type" data-i18n="monitorScope">监控范围</label>
+                                            <select class="form-select form-select-sm" id="keyword-rule-scope-type" onchange="renderKeywordScopeControls()">
+                                                <option value="all" data-i18n="scopeAll">全部账号</option>
+                                                <option value="group" data-i18n="scopeGroup">指定分组</option>
+                                                <option value="accounts" data-i18n="scopeAccounts">指定邮箱</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="mt-2" id="keyword-rule-scope-controls"></div>
+                                    <div class="mt-3">
+                                        <label class="form-label" data-i18n="matchFields">匹配字段</label>
+                                        <div class="d-flex flex-wrap gap-2 small">
+                                            <label class="form-check-label"><input class="form-check-input keyword-field" type="checkbox" value="subject" checked> <span data-i18n="fieldSubject">主题</span></label>
+                                            <label class="form-check-label"><input class="form-check-input keyword-field" type="checkbox" value="from" checked> <span data-i18n="fieldFrom">发件人</span></label>
+                                            <label class="form-check-label"><input class="form-check-input keyword-field" type="checkbox" value="to"> <span data-i18n="fieldTo">收件人</span></label>
+                                            <label class="form-check-label"><input class="form-check-input keyword-field" type="checkbox" value="intro" checked> <span data-i18n="fieldIntro">摘要</span></label>
+                                            <label class="form-check-label"><input class="form-check-input keyword-field" type="checkbox" value="body"> <span data-i18n="fieldBody">正文缓存</span></label>
+                                        </div>
+                                    </div>
+                                    <div class="form-check mt-3">
+                                        <input class="form-check-input" type="checkbox" id="keyword-rule-enabled" checked>
+                                        <label class="form-check-label" for="keyword-rule-enabled" data-i18n="enabled">启用</label>
+                                    </div>
+                                    <div class="d-flex gap-2 mt-3">
+                                        <button class="btn btn-primary btn-sm flex-grow-1" onclick="saveKeywordRule()"><i class="bi bi-save me-1"></i><span data-i18n="saveRule">保存规则</span></button>
+                                        <button class="btn btn-outline-secondary btn-sm" onclick="resetKeywordRuleForm()" data-i18n="reset">重置</button>
+                                    </div>
+                                </div>
+                                <div class="col-12 col-lg-7">
+                                    <h6 class="mb-2"><i class="bi bi-funnel me-1"></i><span data-i18n="keywordRules">关键词规则</span></h6>
+                                    <div class="account-settings-list" id="keyword-rule-list"></div>
+                                </div>
+                            </div>
+                        </div>
                         <div class="tab-pane fade" id="settings-security-pane" role="tabpanel" aria-labelledby="settings-security-tab">
                             <div id="security-settings-alert" class="alert" style="display:none;" role="alert"></div>
                             <div class="row g-4">
@@ -1800,6 +1862,38 @@
                 accountSettings: '邮箱账号设置',
                 systemSettings: '系统设置',
                 aiSettings: 'AI 设置',
+                keywordRules: '关键词规则',
+                keywordGroups: '关键词分组',
+                keywordRuleForm: '规则配置',
+                ruleName: '规则名称',
+                ruleNamePlaceholder: '例如：Walmart 退款',
+                keywords: '关键词',
+                keywordsPlaceholder: '每行一个关键词，也可用逗号分隔',
+                matchMode: '匹配方式',
+                matchAny: '任意关键词',
+                matchAll: '全部关键词',
+                monitorScope: '监控范围',
+                scopeAll: '全部账号',
+                scopeGroup: '指定分组',
+                scopeAccounts: '指定邮箱',
+                matchFields: '匹配字段',
+                fieldSubject: '主题',
+                fieldFrom: '发件人',
+                fieldTo: '收件人',
+                fieldIntro: '摘要',
+                fieldBody: '正文缓存',
+                enabled: '启用',
+                disabled: '停用',
+                saveRule: '保存规则',
+                reset: '重置',
+                keywordRuleSaved: '关键词规则已保存',
+                keywordRuleLoadFailed: '关键词规则加载失败',
+                keywordRuleSaveFailed: '关键词规则保存失败',
+                noKeywordRules: '暂无关键词规则',
+                noKeywordMatches: '暂无命中邮件',
+                selectAccounts: '选择邮箱',
+                selectGroup: '选择分组',
+                keywordMatchHint: '命中后只显示在关键词分组，不发送通知。',
                 securitySettings: '安全设置',
                 twoFactorAuth: '两步验证',
                 setupTotp: '生成 TOTP',
@@ -2052,6 +2146,38 @@
                 accountSettings: 'Mailbox Settings',
                 systemSettings: 'System Settings',
                 aiSettings: 'AI Settings',
+                keywordRules: 'Keyword Rules',
+                keywordGroups: 'Keyword Groups',
+                keywordRuleForm: 'Rule Config',
+                ruleName: 'Rule Name',
+                ruleNamePlaceholder: 'e.g. Walmart refund',
+                keywords: 'Keywords',
+                keywordsPlaceholder: 'One keyword per line, or comma separated',
+                matchMode: 'Match Mode',
+                matchAny: 'Any keyword',
+                matchAll: 'All keywords',
+                monitorScope: 'Scope',
+                scopeAll: 'All accounts',
+                scopeGroup: 'Account group',
+                scopeAccounts: 'Selected accounts',
+                matchFields: 'Fields',
+                fieldSubject: 'Subject',
+                fieldFrom: 'From',
+                fieldTo: 'To',
+                fieldIntro: 'Preview',
+                fieldBody: 'Cached body',
+                enabled: 'Enabled',
+                disabled: 'Disabled',
+                saveRule: 'Save Rule',
+                reset: 'Reset',
+                keywordRuleSaved: 'Keyword rule saved',
+                keywordRuleLoadFailed: 'Failed to load keyword rules',
+                keywordRuleSaveFailed: 'Failed to save keyword rule',
+                noKeywordRules: 'No keyword rules',
+                noKeywordMatches: 'No matched mail',
+                selectAccounts: 'Select accounts',
+                selectGroup: 'Select group',
+                keywordMatchHint: 'Matches are shown in keyword groups only; no notification is sent.',
                 securitySettings: 'Security',
                 twoFactorAuth: 'Two-factor auth',
                 setupTotp: 'Generate TOTP',
@@ -2307,6 +2433,7 @@
             if (currentAccountType === 'external' && currentExternalMessages.length > 0) renderExternalMessages(currentExternalMessages);
             if (currentAccountType === 'global' && currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
             if (currentAccountType === 'group' && currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
+            if (currentAccountType === 'keyword' && currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
             if (currentAccountType === 'local' && currentMessages.length > 0 && [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER, 'inbox'].includes(currentTab)) renderMessages(currentMessages);
             if (currentAccountType === 'local' && currentSentMessages.length > 0 && currentTab === 'sent') renderSentMessages(currentSentMessages);
             if (currentAccountType === 'local' && currentTrashMessages.length > 0 && currentTab === 'trash') renderTrashMessages(currentTrashMessages);
@@ -2322,6 +2449,7 @@
         let currentGlobalFolder = 'all';
         let currentGroupName = '';
         let currentGroupFolder = 'all';
+        let currentKeywordRuleId = '';
         let currentExternalAccountId = null;
         let currentExternalAccount = null;
         let currentExternalFolder = 'INBOX';
@@ -2355,6 +2483,7 @@
         let translationAbortController = null;
         let aiChannels = [];
         let aiDefaultModel = {};
+        let keywordRules = [];
         let suppressAccountClick = false;
         let currentComposeSender = null;
         let currentComposeDraftId = '';
@@ -2614,6 +2743,9 @@
             if (currentAccountType === 'group') {
                 return currentGroupFolder === GROUP_UNREAD_FOLDER ? t('groupUnreadMail') : t('groupAllMail');
             }
+            if (currentAccountType === 'keyword') {
+                return keywordRules.find(item => item.id === currentKeywordRuleId)?.name || t('keywordRules');
+            }
             if (currentAccountType === 'external') {
                 if (currentExternalFolder === EXTERNAL_ALL_FOLDER) return t('allMail');
                 if (currentExternalFolder === EXTERNAL_UNREAD_FOLDER) return t('unreadMail');
@@ -2636,6 +2768,8 @@
                     ? currentGlobalFolder
                     : currentAccountType === 'group'
                         ? currentGroupFolder
+                        : currentAccountType === 'keyword'
+                            ? currentKeywordRuleId
                     : currentAccountType === 'external' ? currentExternalFolder : currentTab;
                 btn.classList.toggle('active', btn.dataset.folder === activeKey);
             });
@@ -2646,6 +2780,8 @@
                 ? t('globalMailboxHint')
                 : currentAccountType === 'group'
                     ? t('groupMailboxHint', {group: currentGroupName})
+                : currentAccountType === 'keyword'
+                    ? t('keywordGroups')
                 : currentAccountType === 'external'
                     ? _accountDisplayName(currentExternalAccount, currentExternalAccount?.email || '')
                     : _accountDisplayName(mailboxes.find(item => item.address === currentMailbox), currentMailbox);
@@ -3163,6 +3299,25 @@
             return _groupAccounts(group).local;
         }
 
+        function _keywordRuleAccounts(rule) {
+            if (!rule) return { local: [], external: [] };
+            if (rule.scope_type === 'group') {
+                return _groupAccounts(rule.scope_group || t('defaultAccountGroup'));
+            }
+            if (rule.scope_type === 'accounts') {
+                const keys = new Set(rule.scope_accounts || []);
+                return {
+                    local: mailboxes.filter(item => keys.has(`local:${item.address}`)),
+                    external: externalAccounts.filter(item => keys.has(`external:${item.id}`)),
+                };
+            }
+            return { local: mailboxes, external: externalAccounts };
+        }
+
+        function _keywordRuleById(ruleId) {
+            return keywordRules.find(item => String(item.id) === String(ruleId)) || null;
+        }
+
         function _isExternalVirtualFolder(folderPath) {
             return [
                 EXTERNAL_ALL_FOLDER,
@@ -3266,6 +3421,7 @@
                 _updateFolderChrome();
                 if (currentAccountType === 'global') queryGlobalMessages(true);
                 if (currentAccountType === 'group') queryGroupMessages(true);
+                if (currentAccountType === 'keyword') queryKeywordRuleMessages(true);
             } catch (e) {
                 // Status refresh is opportunistic; normal account loading still reports errors.
             }
@@ -3294,6 +3450,19 @@
                             <span class="mail-account-subtitle">${_escapeHtml(t('globalMailboxHint'))}</span>
                         </span>
                     </button>`);
+            }
+            if (keywordRules.some(rule => rule.enabled !== false)) {
+                rows.push(`<div class="mail-account-group">${_escapeHtml(t('keywordGroups'))}</div>`);
+                keywordRules.filter(rule => rule.enabled !== false).forEach(rule => {
+                    rows.push(`
+                        <button class="mail-account-item ${currentAccountType === 'keyword' && currentKeywordRuleId === rule.id ? 'active' : ''}" draggable="false" data-account-type="keyword" data-account-id="${_escapeAttr(rule.id)}" onclick="selectKeywordRule('${_escapeAttr(rule.id)}')">
+                            <span class="mail-account-provider-icon"><i class="bi bi-funnel"></i></span>
+                            <span class="mail-account-main">
+                                <span class="mail-account-title">${_escapeHtml(rule.name)}</span>
+                                <span class="mail-account-subtitle">${_escapeHtml((rule.keywords || []).slice(0, 3).join(', '))}</span>
+                            </span>
+                        </button>`);
+                });
             }
             _groupedAccountEntries().forEach(([group, entries]) => {
                 const encodedGroup = encodeURIComponent(group);
@@ -3479,6 +3648,17 @@
                     </button>`;
                 return;
             }
+            if (currentAccountType === 'keyword') {
+                const rule = keywordRules.find(item => item.id === currentKeywordRuleId);
+                list.innerHTML = `
+                    <button class="mail-folder-item active" data-folder="${_escapeAttr(currentKeywordRuleId)}" onclick="queryKeywordRuleMessages(false)">
+                        <i class="bi bi-funnel"></i><span class="text-truncate">${_escapeHtml(rule?.name || t('keywordRules'))}</span>${_folderBadge(currentFolderCounts.keywordMatches)}
+                    </button>
+                    <button class="mail-folder-item" onclick="openSettings('keywords')">
+                        <i class="bi bi-sliders"></i><span>${t('keywordRules')}</span>
+                    </button>`;
+                return;
+            }
             if (currentAccountType === 'external') {
                 if (!currentExternalAccountId) {
                     list.innerHTML = `${composeButton}<div class="text-muted small px-2">${t('queryHint')}</div>`;
@@ -3632,6 +3812,7 @@
             const address = decodeURIComponent(encodedAddress);
             currentAccountType = 'local';
             currentGroupName = '';
+            currentKeywordRuleId = '';
             if (autoRefreshTimer) {
                 clearInterval(autoRefreshTimer);
                 autoRefreshTimer = null;
@@ -3654,6 +3835,7 @@
             currentAccountType = 'global';
             currentGroupName = '';
             currentGroupFolder = GROUP_ALL_FOLDER;
+            currentKeywordRuleId = '';
             currentMailbox = '';
             currentEmail = '';
             currentExternalAccountId = null;
@@ -3679,6 +3861,7 @@
             currentAccountType = 'global';
             currentGroupName = '';
             currentGroupFolder = GROUP_ALL_FOLDER;
+            currentKeywordRuleId = '';
             currentGlobalFolder = folder === GLOBAL_UNREAD_FOLDER ? GLOBAL_UNREAD_FOLDER : GLOBAL_ALL_FOLDER;
             _resetGlobalMessageState();
             renderFolderList();
@@ -3692,6 +3875,7 @@
             currentAccountType = 'group';
             currentGroupName = group;
             currentGroupFolder = folder === GROUP_UNREAD_FOLDER ? GROUP_UNREAD_FOLDER : GROUP_ALL_FOLDER;
+            currentKeywordRuleId = '';
             currentMailbox = '';
             currentEmail = '';
             currentExternalAccountId = null;
@@ -3711,6 +3895,33 @@
             document.getElementById('btn-refresh-mail').disabled = false;
             resetMailDetail();
             await queryGroupMessages(false);
+        }
+
+        async function selectKeywordRule(ruleId) {
+            const rule = keywordRules.find(item => item.id === ruleId);
+            if (!rule) return;
+            currentAccountType = 'keyword';
+            currentKeywordRuleId = rule.id;
+            currentGroupName = '';
+            currentMailbox = '';
+            currentEmail = '';
+            currentExternalAccountId = null;
+            currentExternalAccount = null;
+            currentExternalFolders = [];
+            _resetLocalMessageState();
+            _resetExternalMessageState();
+            _resetGlobalMessageState();
+            if (autoRefreshTimer) {
+                clearInterval(autoRefreshTimer);
+                autoRefreshTimer = null;
+                document.getElementById('auto-refresh-toggle').checked = false;
+            }
+            renderMailboxes();
+            renderFolderList();
+            _updateFolderChrome();
+            document.getElementById('btn-refresh-mail').disabled = false;
+            resetMailDetail();
+            await queryKeywordRuleMessages(false);
         }
 
         async function selectFolder(folder) {
@@ -3766,6 +3977,7 @@
             const switchSeq = ++externalAccountSwitchSeq;
             currentAccountType = 'external';
             currentGroupName = '';
+            currentKeywordRuleId = '';
             currentExternalAccountId = account.id;
             currentExternalAccount = account;
             currentEmail = account.email || '';
@@ -4366,14 +4578,31 @@
             alert.textContent = '';
         }
 
+        function _showKeywordSettingsAlert(type, message) {
+            const alert = document.getElementById('keyword-settings-alert');
+            if (!alert) return;
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+        }
+
+        function _clearKeywordSettingsAlert() {
+            const alert = document.getElementById('keyword-settings-alert');
+            if (!alert) return;
+            alert.style.display = 'none';
+            alert.textContent = '';
+        }
+
         function _switchSettingsTab(name = 'system') {
             const tabId = name === 'ai'
                 ? 'settings-ai-tab'
                 : name === 'accounts'
                     ? 'settings-accounts-tab'
-                    : name === 'security'
-                        ? 'settings-security-tab'
-                        : 'settings-system-tab';
+                    : name === 'keywords'
+                        ? 'settings-keywords-tab'
+                        : name === 'security'
+                            ? 'settings-security-tab'
+                            : 'settings-system-tab';
             const tab = document.getElementById(tabId);
             if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
             _syncSettingsFooter();
@@ -4536,6 +4765,204 @@
                 _showAiSettingsAlert('success', t('aiDefaultSaved'));
             } catch (e) {
                 _showAiSettingsAlert('danger', `${t('aiDefaultSaveFailed')}: ${e.message}`);
+            }
+        }
+
+        function _allAccountOptions() {
+            return [
+                ...mailboxes.map(item => ({
+                    key: `local:${item.address}`,
+                    label: _accountDisplayName(item, item.address),
+                    subtitle: item.address,
+                    group: _accountGroupName(item),
+                })),
+                ...externalAccounts.map(item => ({
+                    key: `external:${item.id}`,
+                    label: _accountDisplayName(item, item.email || ''),
+                    subtitle: item.email || '',
+                    group: _accountGroupName(item),
+                })),
+            ];
+        }
+
+        function _accountGroups() {
+            return Array.from(new Set([
+                ...mailboxes.map(item => _accountGroupName(item)),
+                ...externalAccounts.map(item => _accountGroupName(item)),
+            ])).sort((a, b) => a.localeCompare(b));
+        }
+
+        function renderKeywordScopeControls() {
+            const holder = document.getElementById('keyword-rule-scope-controls');
+            if (!holder) return;
+            const type = document.getElementById('keyword-rule-scope-type')?.value || 'all';
+            const currentRule = _keywordRuleById(document.getElementById('keyword-rule-id')?.value || '');
+            if (type === 'group') {
+                const groups = _accountGroups();
+                const selectedGroup = currentRule?.scope_group || groups[0] || '';
+                holder.innerHTML = `
+                    <label class="form-label" for="keyword-rule-scope-group">${t('selectGroup')}</label>
+                    <select class="form-select form-select-sm" id="keyword-rule-scope-group">
+                        ${groups.map(group => `<option value="${_escapeAttr(group)}" ${group === selectedGroup ? 'selected' : ''}>${_escapeHtml(group)}</option>`).join('')}
+                    </select>`;
+                return;
+            }
+            if (type === 'accounts') {
+                const accounts = _allAccountOptions();
+                const selectedKeys = new Set(currentRule?.scope_accounts || []);
+                holder.innerHTML = `
+                    <label class="form-label">${t('selectAccounts')}</label>
+                    <div class="account-settings-list" style="max-height:150px;">
+                        ${accounts.map(account => `
+                            <label class="account-settings-row mb-0">
+                                <input class="form-check-input keyword-scope-account" type="checkbox" value="${_escapeAttr(account.key)}" ${selectedKeys.has(account.key) ? 'checked' : ''}>
+                                <span class="flex-grow-1 min-w-0">
+                                    <span class="mail-account-title">${_escapeHtml(account.label)}</span>
+                                    <span class="mail-account-subtitle">${_escapeHtml(account.subtitle)} · ${_escapeHtml(account.group)}</span>
+                                </span>
+                            </label>`).join('') || `<div class="account-settings-empty">${t('queryHint')}</div>`}
+                    </div>`;
+                return;
+            }
+            holder.innerHTML = `<div class="small text-muted">${t('keywordMatchHint')}</div>`;
+        }
+
+        function _parseKeywordInput(value) {
+            return String(value || '')
+                .split(/[\n,，]+/)
+                .map(item => item.trim())
+                .filter(Boolean)
+                .filter((item, index, arr) => arr.findIndex(x => x.toLowerCase() === item.toLowerCase()) === index);
+        }
+
+        function resetKeywordRuleForm() {
+            document.getElementById('keyword-rule-id').value = '';
+            document.getElementById('keyword-rule-name').value = '';
+            document.getElementById('keyword-rule-keywords').value = '';
+            document.getElementById('keyword-rule-match-mode').value = 'any';
+            document.getElementById('keyword-rule-scope-type').value = 'all';
+            document.getElementById('keyword-rule-enabled').checked = true;
+            document.querySelectorAll('.keyword-field').forEach(cb => {
+                cb.checked = ['subject', 'from', 'intro'].includes(cb.value);
+            });
+            renderKeywordScopeControls();
+        }
+
+        function editKeywordRule(ruleId) {
+            const rule = keywordRules.find(item => item.id === ruleId);
+            if (!rule) return;
+            document.getElementById('keyword-rule-id').value = rule.id;
+            document.getElementById('keyword-rule-name').value = rule.name || '';
+            document.getElementById('keyword-rule-keywords').value = (rule.keywords || []).join('\n');
+            document.getElementById('keyword-rule-match-mode').value = rule.match_mode || 'any';
+            document.getElementById('keyword-rule-scope-type').value = rule.scope_type || 'all';
+            document.getElementById('keyword-rule-enabled').checked = rule.enabled !== false;
+            document.querySelectorAll('.keyword-field').forEach(cb => {
+                cb.checked = (rule.fields || []).includes(cb.value);
+            });
+            renderKeywordScopeControls();
+            if (rule.scope_type === 'group') {
+                const select = document.getElementById('keyword-rule-scope-group');
+                if (select) select.value = rule.scope_group || '';
+            }
+            if (rule.scope_type === 'accounts') {
+                document.querySelectorAll('.keyword-scope-account').forEach(cb => {
+                    cb.checked = (rule.scope_accounts || []).includes(cb.value);
+                });
+            }
+        }
+
+        function renderKeywordRules() {
+            const list = document.getElementById('keyword-rule-list');
+            if (!list) return;
+            list.innerHTML = keywordRules.length ? keywordRules.map(rule => {
+                const scopeText = rule.scope_type === 'group'
+                    ? `${t('scopeGroup')}: ${rule.scope_group || t('defaultAccountGroup')}`
+                    : rule.scope_type === 'accounts'
+                        ? `${t('scopeAccounts')}: ${(rule.scope_accounts || []).length}`
+                        : t('scopeAll');
+                return `
+                    <div class="account-settings-row">
+                        <span class="mail-account-provider-icon"><i class="bi bi-funnel"></i></span>
+                        <span class="flex-grow-1 min-w-0">
+                            <span class="mail-account-title">${_escapeHtml(rule.name)}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(scopeText)} · ${rule.match_mode === 'all' ? t('matchAll') : t('matchAny')}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml((rule.keywords || []).join(', '))}</span>
+                        </span>
+                        <span class="account-settings-row-actions">
+                            <span class="mail-account-kind">${rule.enabled === false ? t('disabled') : t('enabled')}</span>
+                            <button class="btn btn-sm p-0 text-secondary" onclick="editKeywordRule('${_escapeAttr(rule.id)}')" title="${t('editAccount')}">
+                                <i class="bi bi-pencil-square"></i>
+                            </button>
+                            <button class="btn btn-sm p-0 text-danger" onclick="deleteKeywordRule('${_escapeAttr(rule.id)}')" title="${t('delete')}">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </span>
+                    </div>`;
+            }).join('') : `<div class="account-settings-empty">${t('noKeywordRules')}</div>`;
+        }
+
+        async function loadKeywordRules() {
+            _clearKeywordSettingsAlert();
+            try {
+                const resp = await fetch('/api/keyword-rules');
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('keywordRuleLoadFailed'));
+                keywordRules = data.rules || [];
+                renderKeywordScopeControls();
+                renderKeywordRules();
+                renderMailboxes();
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('keywordRuleLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        async function saveKeywordRule() {
+            _clearKeywordSettingsAlert();
+            const scopeType = document.getElementById('keyword-rule-scope-type').value || 'all';
+            const payload = {
+                id: document.getElementById('keyword-rule-id').value || undefined,
+                name: document.getElementById('keyword-rule-name').value.trim(),
+                keywords: _parseKeywordInput(document.getElementById('keyword-rule-keywords').value),
+                match_mode: document.getElementById('keyword-rule-match-mode').value,
+                scope_type: scopeType,
+                scope_group: document.getElementById('keyword-rule-scope-group')?.value || '',
+                scope_accounts: Array.from(document.querySelectorAll('.keyword-scope-account:checked')).map(cb => cb.value),
+                fields: Array.from(document.querySelectorAll('.keyword-field:checked')).map(cb => cb.value),
+                enabled: document.getElementById('keyword-rule-enabled').checked,
+            };
+            try {
+                const resp = await fetch('/api/keyword-rules', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('keywordRuleSaveFailed'));
+                keywordRules = data.rules || [];
+                resetKeywordRuleForm();
+                renderKeywordRules();
+                renderMailboxes();
+                _showKeywordSettingsAlert('success', t('keywordRuleSaved'));
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('keywordRuleSaveFailed')}: ${e.message}`);
+            }
+        }
+
+        async function deleteKeywordRule(ruleId) {
+            try {
+                const resp = await fetch(`/api/keyword-rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('deleteFailed'));
+                keywordRules = data.rules || [];
+                if (currentAccountType === 'keyword' && currentKeywordRuleId === ruleId) {
+                    currentKeywordRuleId = '';
+                    await selectGlobalMailbox();
+                }
+                renderKeywordRules();
+                renderMailboxes();
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('deleteFailed')}: ${e.message}`);
             }
         }
 
@@ -4772,7 +5199,7 @@
         async function openSettings(tab = 'system') {
             _getSettingsModal().show();
             _switchSettingsTab(tab);
-            await Promise.all([loadSettings(), loadAiSettings(), loadSecuritySettings()]);
+            await Promise.all([loadSettings(), loadAiSettings(), loadSecuritySettings(), loadKeywordRules()]);
             renderAccountSettingsLists();
             handleAiProviderChange();
         }
@@ -4836,6 +5263,7 @@
             });
             await loadDomains();
             await loadMailboxes();
+            await loadKeywordRules();
             _updateFolderChrome();
             externalStatusTimer = window.setInterval(refreshExternalAccountStatuses, 60000);
         });
@@ -4861,12 +5289,14 @@
         const AUTO_REFRESH_INTERVAL = 15000; // 15秒
 
         function toggleAutoRefresh(enabled) {
-            if (enabled && (currentAccountType === 'global' || currentAccountType === 'group' || currentEmail)) {
+            if (enabled && (currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword' || currentEmail)) {
                 autoRefreshTimer = setInterval(() => {
                     if (currentAccountType === 'global') {
                         queryGlobalMessages(true);
                     } else if (currentAccountType === 'group') {
                         queryGroupMessages(true);
+                    } else if (currentAccountType === 'keyword') {
+                        queryKeywordRuleMessages(true);
                     } else if (currentAccountType === 'external') {
                         queryExternalMails(true, false);
                     } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
@@ -4925,6 +5355,18 @@
                 if (searchBar) searchBar.style.display = 'flex';
                 if (currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
                 else queryGroupMessages(false);
+                resetMailDetail();
+                return;
+            }
+
+            if (currentAccountType === 'keyword') {
+                if (tabInbox) tabInbox.className = 'btn btn-outline-secondary';
+                if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
+                if (batchBar) batchBar.style.cssText = 'display:none !important;';
+                if (searchBar) searchBar.style.display = 'flex';
+                if (currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
+                else queryKeywordRuleMessages(false);
                 resetMailDetail();
                 return;
             }
@@ -5060,6 +5502,33 @@
                     if (btn) btn.disabled = false;
                 }
                 queryGroupMessages(false);
+                return;
+            }
+            if (currentAccountType === 'keyword') {
+                const btn = document.getElementById('btn-refresh-mail');
+                const rule = _keywordRuleById(currentKeywordRuleId);
+                const externalIds = _keywordRuleAccounts(rule).external.map(account => account.id).filter(id => id !== undefined && id !== null);
+                if (btn) btn.disabled = true;
+                try {
+                    if (externalIds.length) {
+                        const sync = await _imapApi('/accounts/sync', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ force: true, background: true, accountIds: externalIds.join(',') }),
+                        });
+                        if (Array.isArray(sync.accounts)) {
+                            externalAccounts = sync.accounts;
+                            renderMailboxes();
+                            renderFolderList();
+                            _updateFolderChrome();
+                        }
+                    }
+                } catch (e) {
+                    _showMailboxError(`${t('syncFailed')}: ${e.message}`);
+                } finally {
+                    if (btn) btn.disabled = false;
+                }
+                queryKeywordRuleMessages(false);
                 return;
             }
             if (currentAccountType === 'external') {
@@ -5271,6 +5740,101 @@
             return results.flat();
         }
 
+        function _keywordSearchTerms(rule, extraQuery = '') {
+            const terms = [...(rule?.keywords || []), extraQuery]
+                .map(item => String(item || '').trim())
+                .filter(Boolean);
+            return terms.filter((item, index) => terms.findIndex(other => other.toLowerCase() === item.toLowerCase()) === index);
+        }
+
+        function _addKeywordHit(msg, term) {
+            const hit = String(term || '').trim().toLowerCase();
+            if (!hit) return msg;
+            const hits = new Set((msg._keywordHits || []).map(item => String(item).toLowerCase()));
+            hits.add(hit);
+            return { ...msg, _keywordHits: Array.from(hits) };
+        }
+
+        function _keywordMessageKey(msg) {
+            const ref = _messageRefFromMessage(msg);
+            return _messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId);
+        }
+
+        function _mergeKeywordMessages(messages) {
+            const byKey = new Map();
+            (messages || []).forEach(msg => {
+                const key = _keywordMessageKey(msg);
+                if (!key || key.endsWith('|')) return;
+                const existing = byKey.get(key);
+                if (!existing) {
+                    byKey.set(key, msg);
+                    return;
+                }
+                const hits = new Set([...(existing._keywordHits || []), ...(msg._keywordHits || [])]);
+                byKey.set(key, { ...existing, ...msg, _keywordHits: Array.from(hits) });
+            });
+            return Array.from(byKey.values());
+        }
+
+        async function _searchLocalKeywordRule(rule, sourceMailboxes = mailboxes, extraQuery = '') {
+            const terms = _keywordSearchTerms(rule, extraQuery);
+            if (!terms.length || !sourceMailboxes.length) return [];
+            const parts = await Promise.all(terms.map(async term => {
+                const messages = await _searchLocalAggregate(term, false, sourceMailboxes);
+                return messages.map(msg => _addKeywordHit(msg, term));
+            }));
+            return _mergeKeywordMessages(parts.flat())
+                .filter(msg => _messageMatchesKeywordRule(msg, rule, extraQuery));
+        }
+
+        async function _searchExternalKeywordRule(rule, sourceAccounts = externalAccounts, extraQuery = '') {
+            const terms = _keywordSearchTerms(rule, extraQuery);
+            const accountIds = sourceAccounts.map(account => account.id).filter(id => id !== undefined && id !== null);
+            if (!terms.length || !accountIds.length) return [];
+            const parts = await Promise.all(terms.map(async term => {
+                const params = new URLSearchParams({
+                    q: term,
+                    count: String(PAGE_SIZE),
+                    accountIds: accountIds.join(','),
+                });
+                const data = await _imapApi(`/search?${params.toString()}`).catch(() => ({ mails: [] }));
+                return (data.mails || [])
+                    .map(_normalizeGlobalExternalMessage)
+                    .map(msg => _addKeywordHit(msg, term));
+            }));
+            return _mergeKeywordMessages(parts.flat())
+                .filter(msg => _messageMatchesKeywordRule(msg, rule, extraQuery));
+        }
+
+        function _messageTextForKeywordRule(msg, rule) {
+            const fields = rule?.fields || ['subject', 'from', 'intro'];
+            const chunks = [];
+            if (fields.includes('subject')) chunks.push(msg.subject || '');
+            if (fields.includes('from')) chunks.push(_formatAddress(msg.from) || msg.from?.address || msg.from?.name || '');
+            if (fields.includes('to')) {
+                const to = Array.isArray(msg.to) ? msg.to.map(item => _formatAddress(item)).join(' ') : (msg.to || '');
+                chunks.push(to);
+            }
+            if (fields.includes('intro')) chunks.push(msg.intro || '');
+            if (fields.includes('body')) chunks.push(msg.text || '', msg.html || '');
+            return chunks.join(' ').toLowerCase();
+        }
+
+        function _messageMatchesKeywordRule(msg, rule, extraQuery = '') {
+            const text = _messageTextForKeywordRule(msg, rule);
+            const fields = rule?.fields || ['subject', 'from', 'intro'];
+            const hits = new Set((msg._keywordHits || []).map(item => String(item).toLowerCase()));
+            const keywords = (rule?.keywords || []).map(item => String(item).trim().toLowerCase()).filter(Boolean);
+            if (!keywords.length) return false;
+            const matchesTerm = keyword => text.includes(keyword) || (fields.includes('body') && hits.has(keyword));
+            const ruleMatched = (rule.match_mode || 'any') === 'all'
+                ? keywords.every(matchesTerm)
+                : keywords.some(matchesTerm);
+            if (!ruleMatched) return false;
+            const extra = String(extraQuery || '').trim().toLowerCase();
+            return !extra || _messageTextForKeywordRule(msg, { fields: ['subject', 'from', 'to', 'intro', 'body'] }).includes(extra) || hits.has(extra);
+        }
+
         function _normalizeGlobalExternalMessage(msg) {
             const account = externalAccounts.find(item => String(item.id) === String(msg.accountId))
                 || externalAccounts.find(item => String(item.email || '').toLowerCase() === String(msg.accountEmail || '').toLowerCase());
@@ -5366,13 +5930,61 @@
             }
         }
 
+        async function queryKeywordRuleMessages(silent = false, extraQuery = '') {
+            if (currentAccountType !== 'keyword' || !currentKeywordRuleId) return;
+            const rule = _keywordRuleById(currentKeywordRuleId);
+            const mailList = document.getElementById('mail-list');
+            if (!rule || rule.enabled === false) {
+                currentGlobalMessages = [];
+                currentGlobalTotal = 0;
+                currentGlobalHasMore = false;
+                _updateFolderCounts({ keywordMatches: 0 });
+                if (!silent) {
+                    mailList.innerHTML = `<div class="empty-state"><i class="bi bi-funnel d-block"></i><p>${t('noKeywordMatches')}</p></div>`;
+                }
+                return;
+            }
+            if (!silent) {
+                resetMailDetail();
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            }
+            try {
+                const scoped = _keywordRuleAccounts(rule);
+                const [localMessages, externalMessages] = await Promise.all([
+                    _searchLocalKeywordRule(rule, scoped.local, extraQuery),
+                    _searchExternalKeywordRule(rule, scoped.external, extraQuery),
+                ]);
+                const merged = _mergeKeywordMessages(localMessages.concat(externalMessages))
+                    .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
+                    .slice(0, PAGE_SIZE);
+                currentGlobalMessages = merged;
+                currentGlobalTotal = merged.length;
+                currentGlobalHasMore = false;
+                _updateFolderCounts({ keywordMatches: merged.length });
+                await loadMessageMetaFor(merged);
+                renderGlobalMessages(merged);
+                if (merged.length === 0) {
+                    mailList.innerHTML = `<div class="empty-state"><i class="bi bi-funnel d-block"></i><p>${extraQuery ? t('noMatch') : t('noKeywordMatches')}</p></div>`;
+                }
+            } catch (e) {
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
+            }
+        }
+
         function renderGlobalMessages(messages) {
             const mailList = document.getElementById('mail-list');
             const batchBar = document.getElementById('batch-bar');
             if (batchBar) batchBar.style.cssText = 'display:none !important;';
             if (!messages.length) {
-                const emptyText = currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? t('noGlobalUnread') : t('noGlobalMail');
-                mailList.innerHTML = `<div class="empty-state"><i class="bi bi-collection d-block"></i><p>${emptyText}</p></div>`;
+                const emptyText = currentAccountType === 'keyword'
+                    ? t('noKeywordMatches')
+                    : currentGlobalFolder === GLOBAL_UNREAD_FOLDER
+                        ? t('noGlobalUnread')
+                        : t('noGlobalMail');
+                const emptyIcon = currentAccountType === 'keyword' ? 'bi-funnel' : 'bi-collection';
+                mailList.innerHTML = `<div class="empty-state"><i class="bi ${emptyIcon} d-block"></i><p>${emptyText}</p></div>`;
                 return;
             }
             mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
@@ -5451,7 +6063,7 @@
                 if (currentExternalFolder === EXTERNAL_DRAFTS_FOLDER) renderDraftMessages(currentDraftMessages);
                 else if (currentExternalFolder === EXTERNAL_OUTBOX_FOLDER) renderOutboxMessages(currentOutboxMessages);
                 else renderExternalMessages(currentExternalMessages);
-            } else if (currentAccountType === 'global' || currentAccountType === 'group') {
+            } else if (currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword') {
                 renderGlobalMessages(currentGlobalMessages);
             } else if (currentTab === 'trash') {
                 renderTrashMessages(currentTrashMessages);
@@ -6365,6 +6977,7 @@
             if (currentAccountType === 'external' && !currentExternalAccountId) return;
             if (currentAccountType === 'global' && !mailboxes.length && !externalAccounts.length) return;
             if (currentAccountType === 'group' && !currentGroupName) return;
+            if (currentAccountType === 'keyword' && !currentKeywordRuleId) return;
             const query = document.getElementById('search-input').value.trim();
             if (!query) { clearSearch(); return; }
 
@@ -6420,6 +7033,13 @@
                     await loadMessageMetaFor(merged);
                     renderGlobalMessages(merged);
                     if (merged.length === 0) {
+                        mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
+                    }
+                    return;
+                }
+                if (currentAccountType === 'keyword') {
+                    await queryKeywordRuleMessages(false, query);
+                    if (currentGlobalMessages.length === 0) {
                         mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
                     }
                     return;
@@ -6481,6 +7101,8 @@
                 queryGlobalMessages(false);
             } else if (currentAccountType === 'group') {
                 queryGroupMessages(false);
+            } else if (currentAccountType === 'keyword') {
+                queryKeywordRuleMessages(false);
             } else if (currentMessages.length > 0) {
                 renderMessages(currentMessages);
             } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
@@ -6490,8 +7112,8 @@
 
         async function viewMailDetail(messageId, element, isTrash = false) {
             cancelActiveTranslation();
-            const isGlobalContext = currentAccountType === 'global' || currentAccountType === 'group';
-            if (!['local', 'global', 'group'].includes(currentAccountType) || !currentEmail) return;
+            const isGlobalContext = currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword';
+            if (!['local', 'global', 'group', 'keyword'].includes(currentAccountType) || !currentEmail) return;
             
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
             if (element) element.classList.add('active');
@@ -6905,7 +7527,7 @@
             const senderStillSelected = sender && (
                 (sender.type === 'local' && currentAccountType === 'local' && sender.email === (currentMailbox || currentEmail)) ||
                 (sender.type === 'external' && currentAccountType === 'external' && String(sender.id) === String(currentExternalAccountId)) ||
-                ((currentAccountType === 'global' || currentAccountType === 'group') && (
+                ((currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword') && (
                     (sender.type === 'local' && sender.email === currentEmail) ||
                     (sender.type === 'external' && String(sender.id) === String(currentExternalAccountId))
                 ))
