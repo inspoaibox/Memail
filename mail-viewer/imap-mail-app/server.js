@@ -495,6 +495,43 @@ function isSelectableFolder(folder) {
   return folder && !folder.flags?.has('\\Noselect') && !folder.flags?.has('\\NonExistent');
 }
 
+function imapApiError(err, context = {}) {
+  const raw = err?.message || String(err || 'IMAP 操作失败');
+  const response = String(err?.response || '').trim();
+  const folder = context.folder ? String(context.folder) : '';
+  const command = context.command ? String(context.command) : '';
+  const parts = [];
+  if (folder) parts.push(`文件夹: ${folder}`);
+  if (command) parts.push(`操作: ${command}`);
+  if (response && !raw.includes(response)) parts.push(`服务器返回: ${response}`);
+
+  let message = raw;
+  if (/Command failed/i.test(raw)) {
+    if (/STATUS/i.test(command)) {
+      message = '服务器拒绝读取该文件夹状态，已避免使用不兼容的 STATUS 流程，请刷新后重试';
+    } else if (/SELECT|EXAMINE|getMailboxLock/i.test(command)) {
+      message = '服务器拒绝打开该文件夹，可能是文件夹已被删除、不可选或缓存已过期';
+    } else {
+      message = 'IMAP 服务器拒绝当前操作';
+    }
+  } else if (/Mailbox doesn't exist|No such mailbox|not found|不存在|not selectable|NonExistent/i.test(raw + response)) {
+    message = '该文件夹不存在或不可选择，请刷新文件夹列表后重试';
+  } else if (/Connection not available|Socket closed|Timed out|timeout|closed/i.test(raw + response)) {
+    message = '邮箱连接已断开或超时，请稍后重试';
+  }
+
+  return [message, ...parts].join('。');
+}
+
+function selectedMailboxStatus(client, fallbackFolder) {
+  const mailbox = client.client.mailbox || {};
+  return {
+    messages: Number.isFinite(Number(mailbox.exists)) ? Number(mailbox.exists) : 0,
+    unseen: Number.isFinite(Number(mailbox.unseen)) ? Number(mailbox.unseen) : 0,
+    path: mailbox.path || fallbackFolder,
+  };
+}
+
 function isVirtualFolder(folderPath) {
   return folderPath === VIRTUAL_ALL_FOLDER || folderPath === VIRTUAL_UNREAD_FOLDER;
 }
@@ -531,7 +568,7 @@ function mapEnvelopeMessage(msg, folder) {
 async function fetchFolderSlice(client, folder, count, unreadOnly = false) {
   const lock = await client.client.getMailboxLock(folder.path);
   try {
-    const status = await client.client.status(folder.path, { messages: true, unseen: true });
+    const status = selectedMailboxStatus(client, folder.path);
     const total = unreadOnly ? (status.unseen || 0) : (status.messages || 0);
     if (!total) {
       return { messages: [], total, unseen: status.unseen || 0, hasMore: false };
@@ -584,7 +621,7 @@ async function fetchVirtualFolderMessages(client, folderPath, count) {
       hasMore = hasMore || result.hasMore;
       allMessages.push(...result.messages);
     } catch (err) {
-      console.warn(`Failed to aggregate folder ${folder.path}: ${err.message}`);
+      console.warn(`Failed to aggregate folder ${folder.path}: ${imapApiError(err, { folder: folder.path, command: 'SELECT/FETCH' })}`);
     }
   }
 
@@ -1241,7 +1278,7 @@ app.get('/api/accounts/:id/folders', async (req, res) => {
       specialUse: f.specialUse || '',
     })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: imapApiError(err, { command: 'LIST' }) });
   }
 });
 
@@ -1261,7 +1298,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
     }
     const lock = await client.client.getMailboxLock(folder);
     try {
-      const status = await client.client.status(folder, { messages: true, unseen: true });
+      const status = selectedMailboxStatus(client, folder);
       const total = status.messages;
       if (total === 0) {
         return res.json({ total: 0, unseen: status.unseen, mails: [], hasMore: false });
@@ -1295,7 +1332,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
       lock.release();
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: imapApiError(err, { folder, command: 'SELECT/FETCH' }) });
   }
 });
 
@@ -1335,7 +1372,7 @@ app.get('/api/accounts/:id/mails/:uid', async (req, res) => {
       lock.release();
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: imapApiError(err, { folder, command: 'SELECT/DOWNLOAD' }) });
   }
 });
 
@@ -1366,7 +1403,7 @@ app.get('/api/accounts/:id/mails/:uid/attachments/:index', async (req, res) => {
       lock.release();
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: imapApiError(err, { folder, command: 'SELECT/DOWNLOAD_ATTACHMENT' }) });
   }
 });
 
@@ -1417,7 +1454,7 @@ app.get('/api/accounts/:id/search', async (req, res) => {
       lock.release();
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: imapApiError(err, { folder, command: 'SEARCH' }) });
   }
 });
 

@@ -3056,8 +3056,8 @@
             currentComposeSender = null;
             quillEditor = null;
             resetMailDetail();
-            queryExternalMails(false, false, switchSeq);
-            if (cachedFolders) return;
+                queryExternalMails(false, false, switchSeq);
+                if (cachedFolders) return;
 
             try {
                 const folders = await _imapApi(`/accounts/${encodeURIComponent(id)}/folders`);
@@ -3065,8 +3065,10 @@
                 currentExternalFolders = _normalizeExternalFolders(folders);
                 currentExternalFolder = _pickExternalFolder(currentExternalFolders);
                 _writeExternalFolderCache(id, currentExternalFolders);
+                _resetExternalMessageState();
                 renderFolderList();
                 _updateFolderChrome();
+                queryExternalMails(false, false, switchSeq);
             } catch (e) {
                 if (switchSeq !== externalAccountSwitchSeq || String(currentExternalAccountId) !== String(id)) return;
                 currentExternalFolders = [];
