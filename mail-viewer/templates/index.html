@@ -542,12 +542,22 @@
             display: inline-flex;
             gap: 4px;
             flex-wrap: wrap;
+            justify-content: flex-end;
+            align-items: center;
         }
-        .mail-color-picker {
+        .mail-detail-actions-wrap {
+            flex: 0 1 auto;
+            max-width: min(100%, 620px);
+        }
+        .mail-color-dropdown {
             display: inline-flex;
-            gap: 5px;
-            flex-wrap: wrap;
-            vertical-align: middle;
+            align-items: center;
+            gap: 4px;
+        }
+        .mail-color-menu {
+            min-width: 180px;
+            padding: 8px;
+            border-radius: var(--radius-sm);
         }
         .mail-color-btn {
             width: 20px;
@@ -564,6 +574,17 @@
         .mail-color-btn.blue { background: #4d82d8; }
         .mail-color-btn.purple { background: #8b6ad8; }
         .mail-color-btn.gray { background: #8c98a3; }
+        .mail-color-option {
+            border: 0;
+            background: transparent;
+            padding: 4px;
+            border-radius: 999px;
+            line-height: 0;
+        }
+        .mail-color-option:hover,
+        .mail-color-option.active {
+            background: rgba(19, 52, 59, 0.08);
+        }
         
         /* Quill 编辑器样式 */
         .ql-container {
@@ -691,6 +712,12 @@
         .mail-folder-item {
             border: 1px solid var(--border-color);
             background: #ffffff;
+        }
+        .mail-folder-item .mail-folder-label {
+            min-width: 0;
+            flex: 1 1 auto;
+            overflow-wrap: anywhere;
+            line-height: 1.25;
         }
         .mail-account-item:hover,
         .mail-folder-item:hover {
@@ -956,6 +983,13 @@
         .mail-list-toolbar {
             flex: 0 0 auto;
         }
+        #batch-bar {
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        #batch-bar .btn {
+            min-height: 30px;
+        }
         .mail-folder-count {
             margin-left: auto;
             color: var(--muted-text);
@@ -1199,6 +1233,19 @@
         .badge {
             font-weight: 700;
         }
+        .mail-folder-item .badge,
+        #unread-badge {
+            background: var(--navy) !important;
+            color: #fff !important;
+            border: 1px solid rgba(19, 52, 59, 0.18);
+            min-width: 1.7em;
+            text-align: center;
+        }
+        .mail-folder-item.active .badge {
+            background: var(--navy) !important;
+            color: #fff !important;
+            border-color: rgba(19, 52, 59, 0.18);
+        }
 
         hr {
             border-color: var(--border-color);
@@ -1389,6 +1436,9 @@
                                 </button>
                                 <button class="btn btn-sm btn-outline-secondary" onclick="batchMarkUnread()" id="btn-batch-unread" disabled>
                                     <i class="bi bi-envelope me-1"></i><span data-i18n="markUnread">未读</span>
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="markCurrentFolderRead()" id="btn-mark-all-read">
+                                    <i class="bi bi-envelope-open me-1"></i><span data-i18n="markAllRead">全部已读</span>
                                 </button>
                             </div>
                         </div>
@@ -2024,6 +2074,9 @@
                 unpin: '取消置顶',
                 markUnread: '未读',
                 markReadUnread: '标记已读/未读',
+                markAllRead: '全部已读',
+                markAllReadLocalOnly: '当前列表不支持批量标记已读',
+                noUnreadToMark: '当前列表没有未读邮件',
                 replyAll: '回复全部',
                 forward: '转发',
                 colorLabel: '颜色标注',
@@ -2309,6 +2362,9 @@
                 unpin: 'Unpin',
                 markUnread: 'Unread',
                 markReadUnread: 'Mark read/unread',
+                markAllRead: 'Mark all read',
+                markAllReadLocalOnly: 'This list does not support bulk mark read',
+                noUnreadToMark: 'No unread messages in this list',
                 replyAll: 'Reply All',
                 forward: 'Forward',
                 colorLabel: 'Color label',
@@ -2577,7 +2633,7 @@
 
         function _folderBadge(value) {
             const n = Number(value) || 0;
-            return n > 0 ? `<span class="badge ms-auto">${n > 99 ? '99+' : n}</span>` : '';
+            return n > 0 ? `<span class="badge mail-count-badge ms-auto">${n > 99 ? '99+' : n}</span>` : '';
         }
 
         function _updateFolderCounts(counts = {}) {
@@ -2602,6 +2658,20 @@
             if (!data.success) throw new Error(data.message || t('settingsSaveFailed'));
             messageMetaCache[_messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId)] = data.meta || {};
             return data.meta || {};
+        }
+
+        function _messageDetailRefsMatch(a, b) {
+            if (!a || !b) return false;
+            return String(a.accountType || '') === String(b.accountType || '') &&
+                String(a.accountId || '') === String(b.accountId || '') &&
+                String(a.folder || '') === String(b.folder || '') &&
+                String(a.messageId || '') === String(b.messageId || '');
+        }
+
+        function _detailMsgForRef(ref) {
+            return _messageDetailRefsMatch(ref, _currentDetailRef())
+                ? window._currentDetailMsg
+                : null;
         }
 
         async function loadMessageMetaFor(messages, fallback = {}) {
@@ -3013,6 +3083,70 @@
                 return matched ? (matched[1] || matched[0]).trim() : from.trim();
             }
             return (from.address || from.email || '').trim();
+        }
+
+        function _messageDateValue(msg) {
+            return msg?.createdAt || msg?.created_at || msg?.date || '';
+        }
+
+        function _messageTextValue(msg) {
+            const html = String(msg?.html || '');
+            return msg?.text || html.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+
+        function _batchContext() {
+            if (currentAccountType === 'local' && ['inbox', LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
+                return {
+                    type: 'local',
+                    messages: currentMessages.filter(msg => (msg._source || 'inbox') === 'inbox'),
+                    delete: currentTab === 'inbox',
+                };
+            }
+            if (currentAccountType === 'external' && currentExternalAccountId && currentExternalFolder !== EXTERNAL_DRAFTS_FOLDER && currentExternalFolder !== EXTERNAL_OUTBOX_FOLDER) {
+                return {
+                    type: 'external',
+                    messages: currentExternalMessages,
+                    delete: !_isExternalVirtualFolder(currentExternalFolder),
+                };
+            }
+            if (['global', 'group', 'keyword'].includes(currentAccountType) && currentGlobalMessages.length > 0) {
+                return {
+                    type: 'mixed',
+                    messages: currentGlobalMessages,
+                    delete: false,
+                };
+            }
+            return { type: '', messages: [], delete: false };
+        }
+
+        function _batchRefForMessage(msg) {
+            if (!msg) return null;
+            const accountType = msg._accountType || (currentAccountType === 'external' ? 'external' : 'local');
+            const isMixed = ['global', 'group', 'keyword'].includes(currentAccountType);
+            if (accountType === 'external') {
+                let folder = msg.folder || msg.sourceFolder || currentExternalFolder || 'INBOX';
+                let uid = String(msg.uid || msg.id || '');
+                if (!msg.uid && typeof msg.id === 'string' && msg.id.includes('::')) {
+                    const parsed = _parseExternalMessageRef(msg.id);
+                    folder = parsed.folder || folder;
+                    uid = parsed.uid || uid;
+                }
+                if (!uid) return null;
+                const accountId = String(msg._accountId || currentExternalAccountId || '');
+                const key = isMixed ? `external::${accountId}::${folder}::${uid}` : `${folder}::${uid}`;
+                return { key, id: uid, folder, accountType: 'external', accountId };
+            }
+            const id = String(msg.id || msg.msgid || '');
+            if (!id) return null;
+            const accountId = String(msg._accountId || currentEmail || currentMailbox || '');
+            return { key: isMixed ? `local::${accountId}::${id}` : id, id, folder: 'inbox', accountType: 'local', accountId };
+        }
+
+        function _batchSelectedRefs() {
+            const checked = new Set(Array.from(document.querySelectorAll('.mail-checkbox:checked')).map(cb => String(cb.value)));
+            return _batchContext().messages
+                .map(msg => ({ msg, ref: _batchRefForMessage(msg) }))
+                .filter(item => item.ref && checked.has(item.ref.key));
         }
 
         function _formatAddress(value) {
@@ -3662,25 +3796,25 @@
             const list = document.getElementById('mail-folder-list');
             const composeButton = `
                 <button class="mail-folder-item mail-compose-item" onclick="openCompose()">
-                    <i class="bi bi-pencil-square"></i><span>${t('compose')}</span>
+                    <i class="bi bi-pencil-square"></i><span class="mail-folder-label">${t('compose')}</span>
                 </button>`;
             if (currentAccountType === 'global') {
                 list.innerHTML = `
                     <button class="mail-folder-item ${currentGlobalFolder === GLOBAL_ALL_FOLDER ? 'active' : ''}" data-folder="${GLOBAL_ALL_FOLDER}" onclick="selectGlobalFolder('${GLOBAL_ALL_FOLDER}')">
-                        <i class="bi bi-collection"></i><span>${t('allMail')}</span>${_folderBadge(currentFolderCounts.globalAll)}
+                        <i class="bi bi-collection"></i><span class="mail-folder-label">${t('allMail')}</span>${_folderBadge(currentFolderCounts.globalAll)}
                     </button>
                     <button class="mail-folder-item ${currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? 'active' : ''}" data-folder="${GLOBAL_UNREAD_FOLDER}" onclick="selectGlobalFolder('${GLOBAL_UNREAD_FOLDER}')">
-                        <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.globalUnread)}
+                        <i class="bi bi-envelope-exclamation"></i><span class="mail-folder-label">${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.globalUnread)}
                     </button>`;
                 return;
             }
             if (currentAccountType === 'group') {
                 list.innerHTML = `
                     <button class="mail-folder-item ${currentGroupFolder === GROUP_ALL_FOLDER ? 'active' : ''}" data-folder="${GROUP_ALL_FOLDER}" onclick="selectGroupMailbox('${encodeURIComponent(currentGroupName)}', '${GROUP_ALL_FOLDER}')">
-                        <i class="bi bi-collection"></i><span>${t('allMail')}</span>${_folderBadge(currentFolderCounts.groupAll)}
+                        <i class="bi bi-collection"></i><span class="mail-folder-label">${t('allMail')}</span>${_folderBadge(currentFolderCounts.groupAll)}
                     </button>
                     <button class="mail-folder-item ${currentGroupFolder === GROUP_UNREAD_FOLDER ? 'active' : ''}" data-folder="${GROUP_UNREAD_FOLDER}" onclick="selectGroupMailbox('${encodeURIComponent(currentGroupName)}', '${GROUP_UNREAD_FOLDER}')">
-                        <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.groupUnread)}
+                        <i class="bi bi-envelope-exclamation"></i><span class="mail-folder-label">${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.groupUnread)}
                     </button>`;
                 return;
             }
@@ -3688,10 +3822,10 @@
                 const rule = keywordRules.find(item => item.id === currentKeywordRuleId);
                 list.innerHTML = `
                     <button class="mail-folder-item active" data-folder="${_escapeAttr(currentKeywordRuleId)}" onclick="queryKeywordRuleMessages(false)">
-                        <i class="bi bi-funnel"></i><span class="text-truncate">${_escapeHtml(rule?.name || t('keywordRules'))}</span>${_folderBadge(currentFolderCounts.keywordMatches)}
+                        <i class="bi bi-funnel"></i><span class="mail-folder-label">${_escapeHtml(rule?.name || t('keywordRules'))}</span>${_folderBadge(currentFolderCounts.keywordMatches)}
                     </button>
                     <button class="mail-folder-item" onclick="openSettings('keywords')">
-                        <i class="bi bi-sliders"></i><span>${t('keywordRules')}</span>
+                        <i class="bi bi-sliders"></i><span class="mail-folder-label">${t('keywordRules')}</span>
                     </button>`;
                 return;
             }
@@ -3707,11 +3841,11 @@
                     const fallbackFolder = _isExternalVirtualFolder(currentExternalFolder) ? 'INBOX' : (currentExternalFolder || 'INBOX');
                     const virtualFolders = _externalVirtualFolders().map(folder => `
                         <button class="mail-folder-item ${folder.path === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(folder.path)}" onclick="selectFolder(${_jsString(encodeURIComponent(folder.path))})">
-                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(folder.name)}</span>${_folderBadge(folder.path === EXTERNAL_UNREAD_FOLDER ? currentFolderCounts.externalUnread : folder.path === EXTERNAL_ALL_FOLDER ? currentFolderCounts.externalAll : folder.path === EXTERNAL_DRAFTS_FOLDER ? currentFolderCounts.externalDrafts : folder.path === EXTERNAL_OUTBOX_FOLDER ? currentFolderCounts.externalOutbox : 0)}
+                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="mail-folder-label">${_escapeHtml(folder.name)}</span>${_folderBadge(folder.path === EXTERNAL_UNREAD_FOLDER ? currentFolderCounts.externalUnread : folder.path === EXTERNAL_ALL_FOLDER ? currentFolderCounts.externalAll : folder.path === EXTERNAL_DRAFTS_FOLDER ? currentFolderCounts.externalDrafts : folder.path === EXTERNAL_OUTBOX_FOLDER ? currentFolderCounts.externalOutbox : 0)}
                         </button>`).join('');
                     list.innerHTML = syncPrefix + virtualFolders + `
                         <button class="mail-folder-item ${fallbackFolder === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(fallbackFolder)}" onclick="selectFolder(${_jsString(encodeURIComponent(fallbackFolder))})">
-                            <i class="bi bi-inbox"></i><span class="text-truncate">${_escapeHtml(fallbackFolder)}</span>
+                            <i class="bi bi-inbox"></i><span class="mail-folder-label">${_escapeHtml(fallbackFolder)}</span>
                         </button>`;
                     return;
                 }
@@ -3725,7 +3859,7 @@
                     const label = folder.name || folder.path || 'INBOX';
                     return `
                         <button class="mail-folder-item ${path === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(path)}" onclick="selectFolder(${_jsString(encodeURIComponent(path))})">
-                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(label)}</span>${_folderBadge(path === EXTERNAL_UNREAD_FOLDER ? currentFolderCounts.externalUnread : path === EXTERNAL_ALL_FOLDER ? currentFolderCounts.externalAll : path === EXTERNAL_DRAFTS_FOLDER ? currentFolderCounts.externalDrafts : path === EXTERNAL_OUTBOX_FOLDER ? currentFolderCounts.externalOutbox : (path === currentExternalFolder ? currentExternalTotal : 0))}
+                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="mail-folder-label">${_escapeHtml(label)}</span>${_folderBadge(path === EXTERNAL_UNREAD_FOLDER ? currentFolderCounts.externalUnread : path === EXTERNAL_ALL_FOLDER ? currentFolderCounts.externalAll : path === EXTERNAL_DRAFTS_FOLDER ? currentFolderCounts.externalDrafts : path === EXTERNAL_OUTBOX_FOLDER ? currentFolderCounts.externalOutbox : (path === currentExternalFolder ? currentExternalTotal : 0))}
                         </button>`;
                 }).join('');
                 return;
@@ -3733,25 +3867,25 @@
 
             list.innerHTML = composeButton + `
                 <button class="mail-folder-item ${currentTab === LOCAL_ALL_FOLDER ? 'active' : ''}" data-folder="${LOCAL_ALL_FOLDER}" onclick="selectFolder('${LOCAL_ALL_FOLDER}')">
-                    <i class="bi bi-collection"></i><span>${t('allMail')}</span>${_folderBadge(currentFolderCounts.localAll)}
+                    <i class="bi bi-collection"></i><span class="mail-folder-label">${t('allMail')}</span>${_folderBadge(currentFolderCounts.localAll)}
                 </button>
                 <button class="mail-folder-item ${currentTab === LOCAL_UNREAD_FOLDER ? 'active' : ''}" data-folder="${LOCAL_UNREAD_FOLDER}" onclick="selectFolder('${LOCAL_UNREAD_FOLDER}')">
-                    <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.localUnread || currentInboxUnreadCount)}
+                    <i class="bi bi-envelope-exclamation"></i><span class="mail-folder-label">${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.localUnread || currentInboxUnreadCount)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'inbox' ? 'active' : ''}" data-folder="inbox" onclick="selectFolder('inbox')">
-                    <i class="bi bi-inbox"></i><span>${t('inbox')}</span>${_folderBadge(currentFolderCounts.localInbox || currentInboxUnreadCount)}
+                    <i class="bi bi-inbox"></i><span class="mail-folder-label">${t('inbox')}</span>${_folderBadge(currentFolderCounts.localInbox || currentInboxUnreadCount)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'sent' ? 'active' : ''}" data-folder="sent" onclick="selectFolder('sent')">
-                    <i class="bi bi-send"></i><span>${t('sent')}</span>${_folderBadge(currentFolderCounts.localSent)}
+                    <i class="bi bi-send"></i><span class="mail-folder-label">${t('sent')}</span>${_folderBadge(currentFolderCounts.localSent)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'drafts' ? 'active' : ''}" data-folder="drafts" onclick="selectFolder('drafts')">
-                    <i class="bi bi-file-earmark-text"></i><span>${t('drafts')}</span>${_folderBadge(currentDraftTotal)}
+                    <i class="bi bi-file-earmark-text"></i><span class="mail-folder-label">${t('drafts')}</span>${_folderBadge(currentDraftTotal)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'outbox' ? 'active' : ''}" data-folder="outbox" onclick="selectFolder('outbox')">
-                    <i class="bi bi-exclamation-diamond"></i><span>${t('outbox')}</span>${_folderBadge(currentOutboxTotal)}
+                    <i class="bi bi-exclamation-diamond"></i><span class="mail-folder-label">${t('outbox')}</span>${_folderBadge(currentOutboxTotal)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'trash' ? 'active' : ''}" data-folder="trash" onclick="selectFolder('trash')">
-                    <i class="bi bi-trash"></i><span>${t('trash')}</span>${_folderBadge(currentTrashTotal)}
+                    <i class="bi bi-trash"></i><span class="mail-folder-label">${t('trash')}</span>${_folderBadge(currentTrashTotal)}
                 </button>`;
             _updateUnreadBadge();
         }
@@ -6012,7 +6146,12 @@
         function renderGlobalMessages(messages) {
             const mailList = document.getElementById('mail-list');
             const batchBar = document.getElementById('batch-bar');
-            if (batchBar) batchBar.style.cssText = 'display:none !important;';
+            const batchContext = _batchContext();
+            const supportsBatch = batchContext.type === 'mixed' && batchContext.messages.length > 0;
+            if (batchBar) batchBar.style.cssText = supportsBatch ? 'display:flex !important;' : 'display:none !important;';
+            const selectAll = document.getElementById('select-all-checkbox');
+            if (selectAll) selectAll.checked = false;
+            updateBatchButtons();
             if (!messages.length) {
                 const emptyText = currentAccountType === 'keyword'
                     ? t('noKeywordMatches')
@@ -6031,17 +6170,25 @@
                 const subject = msg.subject || t('noSubject');
                 const date = msg.date || msg.createdAt || msg.created_at;
                 const metaFallback = { accountType: isExternal ? 'external' : 'local', accountId: msg._accountId || '', folder: sourceFolder, messageId: isExternal ? msg.uid : msgId };
+                const batchRef = _batchRefForMessage(msg);
                 const accountBadge = msg._accountLabel ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg._accountLabel)}</span>` : '';
-                const folderBadge = isExternal ? `<span class="badge text-bg-light me-1">${_escapeHtml(sourceFolder)}</span>` : '';
+                const folderBadge = isExternal ? `<span class="badge text-bg-light me-1">${_escapeHtml(batchRef?.folder || sourceFolder)}</span>` : '';
                 return `
                     <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="${isExternal ? `viewGlobalExternalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(msgId))}, this)` : `viewGlobalLocalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(String(msgId)))}, this)`}">
                         <div class="card-body py-2">
-                            <div class="d-flex justify-content-between align-items-start">
-                                <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
-                                <small class="text-muted text-nowrap">${date ? new Date(date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
+                            <div class="d-flex align-items-start">
+                                ${supportsBatch && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
+                                    <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
+                                </div>` : ''}
+                                <div class="flex-grow-1 min-w-0">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
+                                        <small class="text-muted text-nowrap">${date ? new Date(date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
+                                    </div>
+                                    <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(subject)}</span></div>
+                                    <small class="mail-intro text-muted text-truncate d-block">${accountBadge}${folderBadge}<span class="mail-copy">${_escapeHtml(msg.intro || '')}</span></small>
+                                </div>
                             </div>
-                            <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(subject)}</span></div>
-                            <small class="mail-intro text-muted text-truncate d-block">${accountBadge}${folderBadge}<span class="mail-copy">${_escapeHtml(msg.intro || '')}</span></small>
                         </div>
                     </div>`;
             }).join('');
@@ -6117,10 +6264,15 @@
         function renderMessageActions(ref, msg = {}) {
             const meta = _metaForMessage(msg, ref);
             const isUnread = !msg.seen;
-            const canReply = ref.accountType !== 'global' && ref.folder !== 'trash' && ref.folder !== 'sent';
-            const canForward = ref.accountType !== 'global' && ref.folder !== 'trash';
+            const isSent = ref.folder === 'sent';
+            const isTrash = ref.folder === 'trash';
+            const canReply = !isTrash && !isSent;
+            const canForward = !isTrash;
             const canToggleRead = ref.folder !== 'sent';
-            const colorButtons = MESSAGE_COLORS.map(color => `<button type="button" class="mail-color-btn ${color}" onclick="setCurrentMailColor('${color}')" title="${color}"></button>`).join('');
+            const colorButtons = MESSAGE_COLORS.map(color => `
+                <button type="button" class="mail-color-option ${meta.color === color ? 'active' : ''}" onclick="setCurrentMailColor('${color}')" title="${color}">
+                    <span class="mail-color-btn ${color}"></span>
+                </button>`).join('');
             return `
                 <div class="mail-action-menu">
                     ${_detailTranslateButton()}
@@ -6136,60 +6288,87 @@
                     ${canReply ? `<button class="btn btn-sm btn-outline-primary" onclick="openReply()"><i class="bi bi-reply me-1"></i>${t('reply')}</button>` : ''}
                     ${canReply ? `<button class="btn btn-sm btn-outline-primary" onclick="openReplyAll()"><i class="bi bi-reply-all me-1"></i>${t('replyAll')}</button>` : ''}
                     ${canForward ? `<button class="btn btn-sm btn-outline-primary" onclick="openForward()"><i class="bi bi-forward me-1"></i>${t('forward')}</button>` : ''}
-                    <span class="mail-color-picker" title="${t('colorLabel')}">
-                        ${colorButtons}
-                        <button class="btn btn-sm btn-outline-secondary" onclick="setCurrentMailColor('')" title="${t('clearColor')}"><i class="bi bi-x-lg"></i></button>
-                    </span>
+                    <div class="dropdown mail-color-dropdown">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" title="${t('colorLabel')}">
+                            ${meta.color ? `<span class="mail-color-dot ${_escapeAttr(meta.color)}"></span>` : '<i class="bi bi-palette"></i>'}
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end mail-color-menu">
+                            <div class="d-flex flex-wrap gap-1">${colorButtons}</div>
+                            <button type="button" class="dropdown-item small mt-1" onclick="setCurrentMailColor('')"><i class="bi bi-x-lg me-1"></i>${t('clearColor')}</button>
+                        </div>
+                    </div>
                 </div>`;
         }
 
         async function toggleFavoriteCurrentMail() {
             const ref = _currentDetailRef();
-            const msg = _findMessageByRef(ref);
+            if (!ref) return;
+            const detailMsg = _detailMsgForRef(ref);
+            const msg = _findMessageByRef(ref) || detailMsg;
             const meta = _metaForMessage(msg || {}, ref || {});
-            if (ref?.accountType === 'external') {
-                const key = _messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId);
-                messageMetaCache[key] = { ...(messageMetaCache[key] || {}), favorite: !meta.favorite };
-                if (msg) msg.flagged = !meta.favorite;
-                _imapApi(`/accounts/${encodeURIComponent(ref.accountId)}/mails/${encodeURIComponent(ref.messageId)}/flags?folder=${encodeURIComponent(ref.folder || 'INBOX')}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: meta.favorite ? 'remove' : 'add', flags: ['\\Flagged'] }),
-                }).catch(() => {});
+            try {
+                if (ref.accountType === 'external') {
+                    await _imapApi(`/accounts/${encodeURIComponent(ref.accountId)}/mails/${encodeURIComponent(ref.messageId)}/flags?folder=${encodeURIComponent(ref.folder || 'INBOX')}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: meta.favorite ? 'remove' : 'add', flags: ['\\Flagged'] }),
+                    });
+                    if (msg) msg.flagged = !meta.favorite;
+                }
+                const saved = await updateMessageMeta(ref, { favorite: !meta.favorite });
+                if (msg) _applyMetaToMessage(msg, saved, ref);
+                if (_messageDetailRefsMatch(ref, _currentDetailRef())) {
+                    window._currentDetailMsg = { ...(window._currentDetailMsg || {}), meta: saved, flagged: !meta.favorite };
+                }
+                rerenderCurrentList();
+                refreshDetailActionBar();
+            } catch (e) {
+                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
             }
-            const saved = await updateMessageMeta(ref, { favorite: !meta.favorite });
-            if (msg) _applyMetaToMessage(msg, saved, ref);
-            if (window._currentDetailMsg) window._currentDetailMsg.meta = saved;
-            rerenderCurrentList();
-            refreshDetailActionBar();
         }
 
         async function togglePinCurrentMail() {
             const ref = _currentDetailRef();
-            const msg = _findMessageByRef(ref);
+            if (!ref) return;
+            const detailMsg = _detailMsgForRef(ref);
+            const msg = _findMessageByRef(ref) || detailMsg;
             const meta = _metaForMessage(msg || {}, ref || {});
-            const saved = await updateMessageMeta(ref, { pinned: !meta.pinned });
-            if (msg) _applyMetaToMessage(msg, saved, ref);
-            if (window._currentDetailMsg) window._currentDetailMsg.meta = saved;
-            rerenderCurrentList();
-            refreshDetailActionBar();
+            try {
+                const saved = await updateMessageMeta(ref, { pinned: !meta.pinned });
+                if (msg) _applyMetaToMessage(msg, saved, ref);
+                if (_messageDetailRefsMatch(ref, _currentDetailRef())) {
+                    window._currentDetailMsg = { ...(window._currentDetailMsg || {}), meta: saved };
+                }
+                rerenderCurrentList();
+                refreshDetailActionBar();
+            } catch (e) {
+                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
+            }
         }
 
         async function setCurrentMailColor(color) {
             const ref = _currentDetailRef();
-            const msg = _findMessageByRef(ref);
-            const saved = await updateMessageMeta(ref, { color });
-            if (msg) _applyMetaToMessage(msg, saved, ref);
-            if (window._currentDetailMsg) window._currentDetailMsg.meta = saved;
-            rerenderCurrentList();
-            refreshDetailActionBar();
+            if (!ref) return;
+            const detailMsg = _detailMsgForRef(ref);
+            const msg = _findMessageByRef(ref) || detailMsg;
+            try {
+                const saved = await updateMessageMeta(ref, { color });
+                if (msg) _applyMetaToMessage(msg, saved, ref);
+                if (_messageDetailRefsMatch(ref, _currentDetailRef())) {
+                    window._currentDetailMsg = { ...(window._currentDetailMsg || {}), meta: saved };
+                }
+                rerenderCurrentList();
+                refreshDetailActionBar();
+            } catch (e) {
+                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
+            }
         }
 
         function refreshDetailActionBar() {
             const bar = document.getElementById('mail-detail-actions');
             const ref = _currentDetailRef();
             if (!bar || !ref) return;
-            bar.innerHTML = renderMessageActions(ref, window._currentDetailMsg || _findMessageByRef(ref) || {});
+            bar.innerHTML = renderMessageActions(ref, _detailMsgForRef(ref) || _findMessageByRef(ref) || {});
         }
 
         async function setMessageReadState(ref, seen) {
@@ -6212,29 +6391,77 @@
             const msg = _findMessageByRef(ref);
             const wasUnread = msg ? !msg.seen : false;
             if (msg) msg.seen = seen;
-            if (window._currentDetailMsg) window._currentDetailMsg.seen = seen;
+            if (_messageDetailRefsMatch(ref, _currentDetailRef())) window._currentDetailMsg.seen = seen;
+            const inMixedContext = ['global', 'group', 'keyword'].includes(currentAccountType);
             if (ref.accountType === 'local' && msg && wasUnread === seen) {
                 const delta = seen ? -1 : 1;
-                currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount + delta);
-                _updateFolderCounts({
-                    localInbox: currentInboxUnreadCount,
-                    localUnread: currentInboxUnreadCount,
-                });
-                if (currentTab === LOCAL_UNREAD_FOLDER && seen) {
+                if (inMixedContext) {
+                    const patchCounts = {};
+                    if (currentAccountType === 'global') {
+                        patchCounts.globalUnread = Math.max(0, (currentFolderCounts.globalUnread || 0) + delta);
+                    } else if (currentAccountType === 'group') {
+                        patchCounts.groupUnread = Math.max(0, (currentFolderCounts.groupUnread || 0) + delta);
+                    }
+                    if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
+                    if (seen && (
+                        (currentAccountType === 'global' && currentGlobalFolder === GLOBAL_UNREAD_FOLDER) ||
+                        (currentAccountType === 'group' && currentGroupFolder === GROUP_UNREAD_FOLDER)
+                    )) {
+                        currentGlobalMessages = currentGlobalMessages.filter(item => String(item.id || item.msgid) !== String(ref.messageId));
+                        currentGlobalTotal = Math.max(0, currentGlobalTotal + delta);
+                    }
+                } else {
+                    currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount + delta);
+                    _updateFolderCounts({
+                        localInbox: currentInboxUnreadCount,
+                        localUnread: currentInboxUnreadCount,
+                    });
+                }
+                if (!inMixedContext && currentTab === LOCAL_UNREAD_FOLDER && seen) {
                     currentMessages = currentMessages.filter(item => String(item.id || item.msgid) !== String(ref.messageId));
                     currentTotal = Math.max(0, currentTotal + delta);
                 }
             } else if (ref.accountType === 'external' && msg && wasUnread === seen) {
                 const delta = seen ? -1 : 1;
-                _updateFolderCounts({
-                    externalUnread: Math.max(0, (currentFolderCounts.externalUnread || 0) + delta),
-                });
+                if (inMixedContext) {
+                    const patchCounts = {};
+                    if (currentAccountType === 'global') {
+                        patchCounts.globalUnread = Math.max(0, (currentFolderCounts.globalUnread || 0) + delta);
+                    } else if (currentAccountType === 'group') {
+                        patchCounts.groupUnread = Math.max(0, (currentFolderCounts.groupUnread || 0) + delta);
+                    }
+                    if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
+                    if (seen && (
+                        (currentAccountType === 'global' && currentGlobalFolder === GLOBAL_UNREAD_FOLDER) ||
+                        (currentAccountType === 'group' && currentGroupFolder === GROUP_UNREAD_FOLDER)
+                    )) {
+                        currentGlobalMessages = currentGlobalMessages.filter(item => {
+                            const itemRef = _batchRefForMessage(item);
+                            return !(String(itemRef?.accountId || '') === String(ref.accountId || '') &&
+                                String(itemRef?.folder || '') === String(ref.folder || '') &&
+                                String(itemRef?.id || '') === String(ref.messageId || ''));
+                        });
+                        currentGlobalTotal = Math.max(0, currentGlobalTotal + delta);
+                    }
+                } else {
+                    _updateFolderCounts({
+                        externalUnread: Math.max(0, (currentFolderCounts.externalUnread || 0) + delta),
+                    });
+                    if (currentExternalFolder === EXTERNAL_UNREAD_FOLDER && seen) {
+                        currentExternalMessages = currentExternalMessages.filter(item => {
+                            const itemRef = _batchRefForMessage(item);
+                            return !(String(itemRef?.folder || '') === String(ref.folder || '') &&
+                                String(itemRef?.id || '') === String(ref.messageId || ''));
+                        });
+                        currentExternalTotal = Math.max(0, currentExternalTotal + delta);
+                    }
+                }
             }
         }
 
         async function toggleReadCurrentMail() {
             const ref = _currentDetailRef();
-            const msg = window._currentDetailMsg || _findMessageByRef(ref);
+            const msg = _detailMsgForRef(ref) || _findMessageByRef(ref);
             if (!ref || !msg) return;
             try {
                 await setMessageReadState(ref, !msg.seen);
@@ -6461,7 +6688,7 @@
             detailContent.innerHTML = `
                 <div class="d-flex justify-content-between align-items-start mb-3 gap-2">
                     <div><strong>${t('from')}:</strong> ${_escapeHtml(msg.from_address || currentEmail)}</div>
-                    <div class="text-nowrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
+                    <div class="mail-detail-actions-wrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
                 </div>
                 <div class="mb-3"><strong>${t('to')}:</strong> ${toStr}</div>
                 <div class="mb-3"><strong>${t('subject')}:</strong> ${_escapeHtml(msg.subject || t('noSubject'))}</div>
@@ -6665,10 +6892,11 @@
             const batchBar = document.getElementById('batch-bar');
             const isInboxTab = currentTab === 'inbox';
             const isVirtualTab = [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab);
-            const supportsBatch = isInboxTab || currentTab === LOCAL_UNREAD_FOLDER;
+            const batchContext = _batchContext();
+            const supportsBatch = batchContext.type === 'local' && batchContext.messages.length > 0;
 
             // 显示/隐藏批量操作栏
-            if (messages.length > 0 && supportsBatch) {
+            if (supportsBatch) {
                 if (batchBar) {
                     batchBar.style.display = 'flex';
                     batchBar.style.cssText = 'display:flex !important;';
@@ -6702,6 +6930,7 @@
                 const source = msg._source || 'inbox';
                 const sourceLabel = source === 'sent' ? t('sent') : source === 'trash' ? t('trash') : t('inbox');
                 const msgKey = `${source}:${msg.id}`;
+                const batchRef = _batchRefForMessage(msg);
                 const metaFallback = { accountType: 'local', accountId: msg._accountId || currentEmail, folder: source, messageId: msg.id };
                 const clickHandler = source === 'sent'
                     ? `viewSentDetailById(${_jsString(msg.id)}, this.closest('.mail-item'))`
@@ -6710,8 +6939,8 @@
                 <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgKey)}">
                     <div class="card-body py-2">
                         <div class="d-flex align-items-start">
-                            ${supportsBatch && source === 'inbox' ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
-                                <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(msg.id)}" onchange="updateBatchButtons()">
+                            ${supportsBatch && source === 'inbox' && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
+                                <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
                             </div>` : ''}
                             <div class="flex-grow-1 mail-item-body" onclick="${clickHandler}">
                                 <div class="d-flex justify-content-between align-items-start">
@@ -6841,7 +7070,9 @@
         function renderExternalMessages(messages) {
             const mailList = document.getElementById('mail-list');
             const batchBar = document.getElementById('batch-bar');
-            if (batchBar) batchBar.style.cssText = 'display:none !important;';
+            const batchContext = _batchContext();
+            const supportsBatch = batchContext.type === 'external' && batchContext.messages.length > 0;
+            if (batchBar) batchBar.style.cssText = supportsBatch ? 'display:flex !important;' : 'display:none !important;';
             const selectAll = document.getElementById('select-all-checkbox');
             if (selectAll) selectAll.checked = false;
             updateBatchButtons();
@@ -6862,6 +7093,7 @@
                 const msgId = _isExternalVirtualFolder(currentExternalFolder) || hasExplicitFolder
                     ? `${sourceFolder}::${msg.uid}`
                     : String(msg.uid);
+                const batchRef = _batchRefForMessage(msg);
                 const metaFallback = { accountType: 'external', accountId: currentExternalAccountId, folder: sourceFolder, messageId: msg.uid };
                 const sender = msg.from?.name || msg.from?.address || t('unknownSender');
                 const intro = msg.to?.length ? msg.to.map(item => item.address || item.name).filter(Boolean).join(', ') : '';
@@ -6871,15 +7103,22 @@
                 return `
                     <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
                         <div class="card-body py-2">
-                            <div class="d-flex justify-content-between align-items-start">
-                                <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
-                                <div class="mail-item-meta text-end ms-2">
-                                    ${msg.flagged ? `<i class="bi bi-star-fill text-warning me-1"></i>` : ''}
-                                    <small class="text-muted">${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
+                            <div class="d-flex align-items-start">
+                                ${supportsBatch && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
+                                    <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
+                                </div>` : ''}
+                                <div class="flex-grow-1 min-w-0">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
+                                        <div class="mail-item-meta text-end ms-2">
+                                            ${msg.flagged ? `<i class="bi bi-star-fill text-warning me-1"></i>` : ''}
+                                            <small class="text-muted">${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
+                                        </div>
+                                    </div>
+                                    <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
+                                    <small class="mail-intro text-muted text-truncate d-block">${folderBadge}<span class="mail-copy">${_escapeHtml(intro)}</span></small>
                                 </div>
                             </div>
-                            <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                            <small class="mail-intro text-muted text-truncate d-block">${folderBadge}<span class="mail-copy">${_escapeHtml(intro)}</span></small>
                         </div>
                     </div>`;
             }).join('');
@@ -6988,7 +7227,7 @@
                 detailContent.innerHTML = `
                     <div class="d-flex justify-content-between align-items-start mb-3 gap-2">
                         <div><strong>${t('from')}:</strong> ${from}</div>
-                        <div class="text-nowrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
+                        <div class="mail-detail-actions-wrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
                     </div>
                     <div class="mb-3"><strong>${t('to')}:</strong> ${to}</div>
                     ${cc ? `<div class="mb-3"><strong>CC:</strong> ${cc}</div>` : ''}
@@ -7230,7 +7469,7 @@
                         <div>
                             <strong>${t('from')}:</strong> ${escapedFromName} &lt;${escapedFromAddr}&gt;
                         </div>
-                        <div id="mail-detail-actions">${actionButtons}</div>
+                        <div class="mail-detail-actions-wrap" id="mail-detail-actions">${actionButtons}</div>
                     </div>
                     <div class="mb-3">
                         <strong>${t('subject')}:</strong> ${escapedSubject}
@@ -7453,9 +7692,10 @@
 
             const origSubject = msg.subject || '';
             const replySubject = /^Re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`;
-            const origDate = msg.createdAt ? new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
+            const dateValue = _messageDateValue(msg);
+            const origDate = dateValue ? new Date(dateValue).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
             const origFrom = _messageFromAddress(msg);
-            const origText = msg.text || '';
+            const origText = _messageTextValue(msg);
             const quoteText = `--- Original Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${origText}`;
             _renderComposePage('reply', {
                 to: origFrom,
@@ -7481,11 +7721,12 @@
                 .filter((addr, idx, arr) => arr.findIndex(x => String(x).toLowerCase() === String(addr).toLowerCase()) === idx)
                 .filter(addr => String(addr).toLowerCase() !== self);
             const origSubject = msg.subject || '';
-            const origDate = msg.createdAt ? new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
+            const dateValue = _messageDateValue(msg);
+            const origDate = dateValue ? new Date(dateValue).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
             _renderComposePage('replyAll', {
                 to: recipients.join(', '),
                 subject: /^Re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`,
-                quoteText: `--- Original Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${msg.text || ''}`,
+                quoteText: `--- Original Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${_messageTextValue(msg)}`,
             });
         }
 
@@ -7494,11 +7735,12 @@
             if (!msg) return;
             const origSubject = msg.subject || '';
             const origFrom = _messageFromAddress(msg);
-            const origDate = msg.createdAt ? new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
+            const dateValue = _messageDateValue(msg);
+            const origDate = dateValue ? new Date(dateValue).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
             _renderComposePage('forward', {
                 to: '',
                 subject: /^Fwd:/i.test(origSubject) ? origSubject : `Fwd: ${origSubject}`,
-                quoteText: `--- Forwarded Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${msg.text || ''}`,
+                quoteText: `--- Forwarded Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${_messageTextValue(msg)}`,
             });
         }
 
@@ -7686,19 +7928,33 @@
         // ---- 批量操作 ----
 
         function getSelectedIds() {
-            return Array.from(document.querySelectorAll('.mail-checkbox:checked')).map(cb => cb.value);
+            return _batchSelectedRefs().map(item => item.ref.id);
+        }
+
+        function _visibleUnreadIds() {
+            return _batchContext().messages
+                .filter(msg => !msg.seen)
+                .map(_batchRefForMessage)
+                .filter(Boolean)
+                .map(ref => ref.key);
         }
 
         function updateBatchButtons() {
-            const ids = getSelectedIds();
-            const count = ids.length;
+            const selected = _batchSelectedRefs();
+            const count = selected.length;
+            const context = _batchContext();
             const deleteBtn = document.getElementById('btn-batch-delete');
             const readBtn = document.getElementById('btn-batch-read');
             const unreadBtn = document.getElementById('btn-batch-unread');
+            const allReadBtn = document.getElementById('btn-mark-all-read');
             const selectedCount = document.getElementById('selected-count');
-            if (deleteBtn) deleteBtn.disabled = count === 0;
+            if (deleteBtn) {
+                deleteBtn.disabled = count === 0 || !context.delete;
+                deleteBtn.style.display = context.delete ? '' : 'none';
+            }
             if (readBtn) readBtn.disabled = count === 0;
             if (unreadBtn) unreadBtn.disabled = count === 0;
+            if (allReadBtn) allReadBtn.disabled = _visibleUnreadIds().length === 0;
             if (selectedCount) selectedCount.textContent = count > 0 ? t('selected', {n: count}) : '';
         }
 
@@ -7707,29 +7963,81 @@
             updateBatchButtons();
         }
 
-        async function batchAction(action) {
-            if (currentAccountType !== 'local') return;
-            const ids = getSelectedIds();
-            if (ids.length === 0) return;
+        async function batchAction(action, options = {}) {
+            const context = _batchContext();
+            const selected = _batchSelectedRefs();
+            const ids = selected.map(item => item.ref.id);
+            if (!context.type || ids.length === 0) return;
 
             const label = action === 'delete' ? t('delete') : action === 'mark_unread' ? t('markUnread') : t('markRead');
-            if (action === 'delete' && !confirm(t('confirmDeleteN', {n: ids.length}))) return;
+            if (action === 'delete' && !options.skipConfirm && !confirm(t('confirmDeleteN', {n: ids.length}))) return;
 
             try {
-                const resp = await fetch('/api/inbox/batch', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        email: currentEmail,
-                        action: action,
-                        message_ids: ids,
-                    })
-                });
-                const data = await resp.json();
-                if (data.success) {
+                let data = { success: true };
+                if (context.type === 'local') {
+                    const resp = await fetch('/api/inbox/batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: currentEmail || currentMailbox,
+                            action: action,
+                            message_ids: ids,
+                        })
+                    });
+                    data = await resp.json();
+                    if (!data.success) throw new Error(data.message || `${label}失败`);
+                } else if (context.type === 'external' || context.type === 'mixed') {
+                    if (action === 'delete' && (context.type === 'mixed' || _isExternalVirtualFolder(currentExternalFolder))) {
+                        throw new Error(t('markAllReadLocalOnly'));
+                    }
                     if (action === 'delete') {
-                        const removedUnread = currentMessages.filter(m => ids.includes(m.id) && !m.seen).length;
-                        currentMessages = currentMessages.filter(m => !ids.includes(m.id));
+                        await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/batch?folder=${encodeURIComponent(currentExternalFolder || 'INBOX')}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ uids: ids, action: 'delete' }),
+                        });
+                    } else if (action === 'mark_read' || action === 'mark_unread') {
+                        const localByAccount = selected
+                            .filter(item => item.ref.accountType === 'local')
+                            .reduce((acc, item) => {
+                                const accountId = item.ref.accountId || currentEmail || currentMailbox || '';
+                                if (!acc[accountId]) acc[accountId] = [];
+                                acc[accountId].push(item.ref.id);
+                                return acc;
+                            }, {});
+                        await Promise.all(Object.entries(localByAccount).map(([accountId, localIds]) => fetch('/api/inbox/batch', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                email: accountId,
+                                action,
+                                message_ids: localIds,
+                            }),
+                        }).then(async resp => {
+                            const data = await resp.json();
+                            if (!data.success) throw new Error(data.message || `${label}失败`);
+                        })));
+
+                        const grouped = selected.filter(item => item.ref.accountType === 'external').reduce((acc, item) => {
+                            const accountId = item.ref.accountId || currentExternalAccountId;
+                            const folder = item.ref.folder || currentExternalFolder || 'INBOX';
+                            const key = `${accountId}|||${folder}`;
+                            if (!acc[key]) acc[key] = { accountId, folder, ids: [] };
+                            acc[key].ids.push(item.ref.id);
+                            return acc;
+                        }, {});
+                        await Promise.all(Object.values(grouped).map(group => _imapApi(`/accounts/${encodeURIComponent(group.accountId)}/batch?folder=${encodeURIComponent(group.folder)}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ uids: group.ids, action: action === 'mark_read' ? 'read' : 'unread' }),
+                        })));
+                    }
+                }
+
+                if (context.type === 'local') {
+                    if (action === 'delete') {
+                        const removedUnread = currentMessages.filter(m => ids.includes(String(m.id || m.msgid)) && !m.seen).length;
+                        currentMessages = currentMessages.filter(m => !ids.includes(String(m.id || m.msgid)));
                         if (removedUnread) {
                             currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount - removedUnread);
                             _updateFolderCounts({
@@ -7741,14 +8049,11 @@
                         resetMailDetail();
                     } else if (action === 'mark_read' || action === 'mark_unread') {
                         const seen = action === 'mark_read';
-                        // 本地更新已读状态，避免不必要的网络请求
                         let delta = 0;
-                        ids.forEach(id => {
-                            const m = currentMessages.find(msg => msg.id === id);
-                            if (!m) return;
-                            const wasUnread = !m.seen;
+                        selected.forEach(({ msg }) => {
+                            const wasUnread = !msg.seen;
                             if (wasUnread === seen) delta += seen ? -1 : 1;
-                            m.seen = seen;
+                            msg.seen = seen;
                         });
                         currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount + delta);
                         _updateFolderCounts({
@@ -7762,8 +8067,41 @@
                         renderMessages(currentMessages);
                         _updateUnreadBadge();
                     }
-                } else {
-                    alert(data.message || `${label}失败`);
+                } else if (context.type === 'external' || context.type === 'mixed') {
+                    if (action === 'delete') {
+                        currentExternalMessages = currentExternalMessages.filter(m => !ids.includes(String(m.uid || m.id || '')));
+                        renderExternalMessages(currentExternalMessages);
+                        resetMailDetail();
+                    } else if (action === 'mark_read' || action === 'mark_unread') {
+                        const seen = action === 'mark_read';
+                        let delta = 0;
+                        selected.forEach(({ msg }) => {
+                            const wasUnread = !msg.seen;
+                            if (wasUnread === seen) delta += seen ? -1 : 1;
+                            msg.seen = seen;
+                        });
+                        const patchCounts = {};
+                        if (context.type === 'external') {
+                            patchCounts.externalUnread = Math.max(0, (currentFolderCounts.externalUnread || 0) + delta);
+                        } else if (currentAccountType === 'global') {
+                            patchCounts.globalUnread = Math.max(0, (currentFolderCounts.globalUnread || 0) + delta);
+                        } else if (currentAccountType === 'group') {
+                            patchCounts.groupUnread = Math.max(0, (currentFolderCounts.groupUnread || 0) + delta);
+                        }
+                        if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
+                        if (context.type === 'external' && currentExternalFolder === EXTERNAL_UNREAD_FOLDER && seen) {
+                            currentExternalMessages = currentExternalMessages.filter(m => !m.seen);
+                            currentExternalTotal = Math.max(0, currentExternalTotal + delta);
+                        } else if (context.type === 'mixed' && seen && (
+                            (currentAccountType === 'global' && currentGlobalFolder === GLOBAL_UNREAD_FOLDER) ||
+                            (currentAccountType === 'group' && currentGroupFolder === GROUP_UNREAD_FOLDER)
+                        )) {
+                            currentGlobalMessages = currentGlobalMessages.filter(m => !m.seen);
+                            currentGlobalTotal = Math.max(0, currentGlobalTotal + delta);
+                        }
+                        if (context.type === 'external') renderExternalMessages(currentExternalMessages);
+                        else renderGlobalMessages(currentGlobalMessages);
+                    }
                 }
             } catch (e) {
                 alert(t('networkError') + ': ' + e.message);
@@ -7773,6 +8111,24 @@
         function batchDelete() { batchAction('delete'); }
         function batchMarkRead() { batchAction('mark_read'); }
         function batchMarkUnread() { batchAction('mark_unread'); }
+
+        async function markCurrentFolderRead() {
+            const context = _batchContext();
+            if (!context.type) {
+                _showMailboxError(t('markAllReadLocalOnly'), 'secondary');
+                return;
+            }
+            const keys = _visibleUnreadIds();
+            if (!keys.length) {
+                _showMailboxError(t('noUnreadToMark'), 'secondary');
+                return;
+            }
+            document.querySelectorAll('.mail-checkbox').forEach(cb => {
+                cb.checked = keys.includes(String(cb.value));
+            });
+            updateBatchButtons();
+            await batchAction('mark_read', { skipConfirm: true });
+        }
 
         // ---- 删除邮件 ----
 
@@ -7834,7 +8190,12 @@
                 }
                 if (data.success) {
                     currentTrashMessages = currentTrashMessages.filter(m => m.id !== messageId);
-                    renderTrashMessages(currentTrashMessages);
+                    if (currentTab === 'trash') {
+                        renderTrashMessages(currentTrashMessages);
+                    } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER, 'inbox'].includes(currentTab)) {
+                        currentMessages = currentMessages.filter(m => String(m.id || m.msgid) !== String(messageId));
+                        renderMessages(currentMessages);
+                    }
                     resetMailDetail();
                 } else {
                     alert(data.message || `${label}失败`);
