@@ -1230,7 +1230,8 @@ async function syncAccountToCache(client, options = {}) {
   }
   const job = (async () => {
     const accountState = await readAccountSyncStatus(client);
-    if (!options.force && accountState && !accountState.stale && accountState.synced) {
+    const periodicSync = options.periodic === true;
+    if (!options.force && !periodicSync && accountState && !accountState.stale && accountState.synced) {
       return { synced: false, reason: 'fresh', syncStatus: accountState };
     }
 
@@ -1328,7 +1329,7 @@ async function runScheduledSync({ force = false } = {}) {
   syncSchedulerRunning = true;
   try {
     for (const client of clients.values()) {
-      backgroundSyncAccount(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
+      backgroundSyncAccount(client, { force, periodic: true, window: IMAP_CACHE_SYNC_WINDOW });
     }
   } finally {
     syncSchedulerRunning = false;

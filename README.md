@@ -80,13 +80,14 @@ Edit only the required values first:
 
 ```env
 APP_SECRET=your-long-random-bootstrap-secret
+ADMIN_USERNAME=admin
 ACCESS_PASSWORD=your-viewer-password
 
 SMTP_HOSTNAME=mail.yourdomain.com
 DOMAINS=yourdomain.com
 ```
 
-Most other values in `.env.example` are optional. `APP_SECRET` is used as the default JWT/API/session/encryption secret unless you override the advanced keys. Gmail OAuth2, Resend, the unified mailbox password, and the admin login password are configured later from the Web UI gear icon.
+Most other values in `.env.example` are optional. `APP_SECRET` is used as the default JWT/API/session/encryption secret unless you override the advanced keys. `ADMIN_USERNAME` is the Web UI admin login name; you can start with `admin` and change it later from Web UI Settings > System Settings. Runtime settings take precedence over `.env`. Gmail OAuth2, Resend, the unified mailbox password, and the admin login password are configured later from the Web UI gear icon.
 
 For production, prefer a hashed admin password instead of relying only on plain `ACCESS_PASSWORD`:
 
@@ -107,7 +108,7 @@ LOGIN_MAX_ATTEMPTS=5
 LOGIN_LOCK_MINUTES=15
 ```
 
-When `ADMIN_PASSWORD_HASH` is configured, it takes precedence; the legacy `ACCESS_PASSWORD` is only a bootstrap fallback and is not accepted as a second login password.
+When `ADMIN_PASSWORD_HASH` is configured, it takes precedence; the legacy `ACCESS_PASSWORD` is only a bootstrap fallback and is not accepted as a second login password. The admin username is required on the login page: if it has not been changed in Web UI settings, use `ADMIN_USERNAME`; if that is not set, the default is `admin`.
 
 ### 2. Start With Local Builds
 

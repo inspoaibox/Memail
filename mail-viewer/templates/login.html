@@ -81,14 +81,14 @@
                 <label class="form-label" data-i18n="username">管理员账号</label>
                 <div class="input-group">
                     <span class="input-group-text"><i class="bi bi-person"></i></span>
-                    <input type="text" class="form-control" name="username" value="{{ username or '' }}" data-i18n-ph="enterUsername" placeholder="可留空" autocomplete="username">
+                    <input type="text" class="form-control" name="username" value="{{ username or '' }}" data-i18n-ph="enterUsername" placeholder="请输入管理员账号" autocomplete="username" required autofocus>
                 </div>
             </div>
             <div class="mb-4">
                 <label class="form-label" data-i18n="password">访问密码</label>
                 <div class="input-group">
                     <span class="input-group-text"><i class="bi bi-key"></i></span>
-                    <input type="password" class="form-control" name="password" data-i18n-ph="enterPassword" placeholder="请输入密码" autocomplete="current-password" autofocus required>
+                    <input type="password" class="form-control" name="password" data-i18n-ph="enterPassword" placeholder="请输入密码" autocomplete="current-password" required>
                 </div>
             </div>
             {% if totp_required %}
@@ -111,7 +111,7 @@
         const LANGS = {
             zh: {
                 username: '管理员账号',
-                enterUsername: '可留空',
+                enterUsername: '请输入管理员账号',
                 password: '访问密码',
                 enterPassword: '请输入密码',
                 totpCode: '二次验证码',
@@ -121,7 +121,7 @@
             },
             en: {
                 username: 'Admin Username',
-                enterUsername: 'Optional',
+                enterUsername: 'Enter admin username',
                 password: 'Password',
                 enterPassword: 'Enter password',
                 totpCode: '2FA Code',

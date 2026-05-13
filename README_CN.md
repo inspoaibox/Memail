@@ -80,13 +80,14 @@ cp .env.example .env
 
 ```env
 APP_SECRET=你的长随机启动密钥
+ADMIN_USERNAME=admin
 ACCESS_PASSWORD=查看器登录密码
 
 SMTP_HOSTNAME=mail.yourdomain.com
 DOMAINS=yourdomain.com
 ```
 
-`.env.example` 里的其他项目大多是可选项。`APP_SECRET` 会默认作为 JWT/API/Session/加密密钥使用，除非你在高级配置里分别覆盖。Gmail OAuth2、Resend API Key、邮箱统一密码、后台登录密码启动后在 Web UI 右上角齿轮里配置。
+`.env.example` 里的其他项目大多是可选项。`APP_SECRET` 会默认作为 JWT/API/Session/加密密钥使用，除非你在高级配置里分别覆盖。`ADMIN_USERNAME` 是后台登录账号，默认可以先用 `admin`，启动后可在 Web UI 右上角齿轮的“系统设置”里修改；后台保存的账号优先于 `.env`。Gmail OAuth2、Resend API Key、邮箱统一密码、后台登录密码启动后也在 Web UI 右上角齿轮里配置。
 
 生产环境建议使用哈希密码，而不是只用明文 `ACCESS_PASSWORD`。可在本机生成：
 
@@ -107,7 +108,7 @@ LOGIN_MAX_ATTEMPTS=5
 LOGIN_LOCK_MINUTES=15
 ```
 
-如果已经配置 `ADMIN_PASSWORD_HASH`，系统会优先使用哈希密码，旧的 `ACCESS_PASSWORD` 只作为首次启动兜底，不再同时作为第二把可登录密码。
+如果已经配置 `ADMIN_PASSWORD_HASH`，系统会优先使用哈希密码，旧的 `ACCESS_PASSWORD` 只作为首次启动兜底，不再同时作为第二把可登录密码。登录页的管理员账号现在是必填项：如果没有在后台改过账号，就使用 `.env` 里的 `ADMIN_USERNAME`；如果 `.env` 也没写，则默认是 `admin`。
 
 ### 2. 使用服务器本地源码构建启动
 

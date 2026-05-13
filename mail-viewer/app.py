@@ -62,7 +62,9 @@ CONFIG_ENCRYPTION_KEY = (
     or ""
 )
 MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 1024)))
-AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "45"))
+IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS", "3"))
+IMAGE_PROXY_READ_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_READ_TIMEOUT_SECONDS", "8"))
+AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "20"))
 AI_TRANSLATION_MAX_CHARS = int(os.getenv("AI_TRANSLATION_MAX_CHARS", "12000"))
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
@@ -174,15 +176,25 @@ def _get_admin_password_hash() -> str:
     return _decrypt_setting(_read_viewer_settings().get("admin_password_hash")) or ADMIN_PASSWORD_HASH
 
 
+def _get_configured_admin_username() -> str:
+    settings_username = (_read_viewer_settings().get("admin_username") or "").strip()
+    return settings_username or ADMIN_USERNAME
+
+
+def _get_admin_username() -> str:
+    return _get_configured_admin_username() or "admin"
+
+
 def _admin_auth_enabled() -> bool:
     return bool(_get_admin_password_hash() or ACCESS_PASSWORD)
 
 
 def _verify_admin_credentials(username: str, password: str) -> bool:
+    expected_username = _get_admin_username()
+    if username.strip() != expected_username:
+        return False
     password_hash = _get_admin_password_hash()
     if password_hash:
-        if ADMIN_USERNAME and username.strip() != ADMIN_USERNAME:
-            return False
         return check_password_hash(password_hash, password)
     return bool(ACCESS_PASSWORD and hmac.compare_digest(password, ACCESS_PASSWORD))
 
@@ -193,6 +205,8 @@ def _get_unified_password() -> str:
 
 def _update_viewer_runtime_settings(data: dict) -> dict:
     settings = _read_viewer_settings()
+    if "admin_username" in data:
+        settings["admin_username"] = (data.get("admin_username") or "").strip()
     if data.get("admin_password"):
         settings["admin_password_hash"] = _encrypt_setting(generate_password_hash(data["admin_password"].strip()))
     if data.get("clear_unified_password"):
@@ -357,7 +371,7 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wan
         if wants_html else
         "你是专业邮件翻译助手。请只输出中文译文，保留原邮件结构、链接文本和关键信息，不要添加解释。"
     )
-    resp = http_session.post(
+    resp = fast_http_session.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={
@@ -391,7 +405,7 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_ht
         if wants_html else
         "请把下面邮件翻译为中文。只输出中文译文，保留结构、链接文本和关键信息，不要添加解释。\n\n"
     )
-    resp = http_session.post(
+    resp = fast_http_session.post(
         f"{base_url}/{model_name}:generateContent",
         params={"key": api_key},
         json={
@@ -468,6 +482,8 @@ def _normalize_account_order(order: list) -> list[str]:
 _require_production_value("SECRET_KEY", app.secret_key, {"mail-viewer-secret-key-change-me"})
 if IS_PRODUCTION and not _get_admin_password_hash() and not ACCESS_PASSWORD:
     raise RuntimeError("ADMIN_PASSWORD_HASH or ACCESS_PASSWORD must be configured for production")
+if IS_PRODUCTION and not _get_configured_admin_username():
+    raise RuntimeError("ADMIN_USERNAME must be configured for production")
 _require_production_value("DUCKMAIL_BASE_URL", DUCKMAIL_BASE_URL, {"http://161.33.195.3:8080"})
 _require_production_value("DUCKMAIL_API_KEY", DUCKMAIL_API_KEY)
 _require_production_value("IMAP_MAIL_BASE_URL", IMAP_MAIL_BASE_URL)
@@ -1017,6 +1033,10 @@ http_session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(max_retries=3)
 http_session.mount("http://", adapter)
 http_session.mount("https://", adapter)
+fast_http_session = requests.Session()
+fast_http_adapter = requests.adapters.HTTPAdapter(max_retries=0)
+fast_http_session.mount("http://", fast_http_adapter)
+fast_http_session.mount("https://", fast_http_adapter)
 
 
 def _normalize_remote_url(url: str) -> str:
@@ -1256,7 +1276,7 @@ def login_page():
                 return render_template("login.html", error="二次验证码错误", username=username, totp_required=True)
             session.clear()
             session["authenticated"] = True
-            session["username"] = username.strip() or ADMIN_USERNAME or "admin"
+            session["username"] = _get_admin_username()
             session["session_id"] = secrets.token_urlsafe(18)
             session["login_at"] = time.time()
             session["last_seen"] = time.time()
@@ -1332,9 +1352,9 @@ def image_proxy():
         return jsonify({"success": False, "message": "非法图片地址"}), 400
 
     try:
-        resp = http_session.get(
+        resp = fast_http_session.get(
             source_url,
-            timeout=30,
+            timeout=(IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS, IMAGE_PROXY_READ_TIMEOUT_SECONDS),
             stream=True,
             allow_redirects=True,
             headers={
@@ -1343,8 +1363,8 @@ def image_proxy():
             },
         )
     except requests.RequestException as e:
-        app.logger.error(f"图片代理请求失败: {e}", exc_info=True)
-        return jsonify({"success": False, "message": "图片加载失败"}), 502
+        app.logger.warning("图片代理请求失败: url=%s error=%s", source_url, e)
+        return jsonify({"success": False, "message": "图片加载超时或远程不可用"}), 504
 
     final_url = _normalize_remote_url(resp.url)
     if not resp.ok or not _is_proxyable_image_url(final_url):
@@ -1630,6 +1650,8 @@ def get_runtime_settings():
     return jsonify({
         "success": True,
         "settings": {
+            "admin_username": _get_admin_username(),
+            "admin_username_source": "runtime" if (local_settings.get("admin_username") or "").strip() else ("env" if ADMIN_USERNAME else "default"),
             "admin_password_configured": bool(_get_admin_password_hash()),
             "legacy_access_password_enabled": bool(ACCESS_PASSWORD),
             "unified_password_configured": bool(_get_unified_password()),
@@ -1651,6 +1673,11 @@ def save_runtime_settings():
     if confirm:
         return confirm
     data = request.json or {}
+    admin_username = (data.get("admin_username") or "").strip()
+    if not admin_username:
+        return jsonify({"success": False, "message": "管理员账号不能为空"}), 400
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{3,64}", admin_username):
+        return jsonify({"success": False, "message": "管理员账号需为 3-64 位，可包含字母、数字、点、下划线、@ 或 -"}), 400
     if data.get("admin_password") and len(data.get("admin_password", "")) < 10:
         return jsonify({"success": False, "message": "后台登录密码至少需要 10 位"}), 400
     try:
@@ -1683,10 +1710,14 @@ def save_runtime_settings():
         "resend": bool(data.get("resend_api_key") or data.get("clear_resend_api_key")),
         "oauth": bool(imap_payload),
     })
+    session["username"] = (local_settings.get("admin_username") or _get_admin_username()).strip()
+    _update_session_seen(local_settings)
     _write_viewer_settings(local_settings)
     return jsonify({
         "success": True,
         "settings": {
+            "admin_username": _get_admin_username(),
+            "admin_username_source": "runtime" if (local_settings.get("admin_username") or "").strip() else ("env" if ADMIN_USERNAME else "default"),
             "admin_password_configured": bool(_get_admin_password_hash()),
             "legacy_access_password_enabled": bool(ACCESS_PASSWORD),
             "unified_password_configured": bool(unified_runtime or UNIFIED_PASSWORD),
@@ -1859,14 +1890,15 @@ def translate_mail_to_chinese():
             translated = _call_gemini(channel, api_key, model, content, wants_html)
         else:
             translated = _call_openai_chat(channel, api_key, model, content, wants_html)
-    except requests.Timeout:
+    except (requests.Timeout, requests.ConnectionError) as e:
         app.logger.warning(
-            "邮件翻译超时: provider=%s model=%s chars=%s wants_html=%s timeout=%s",
-            channel.get("provider"),
-            model,
-            len(content),
-            wants_html,
+            "邮件翻译网络超时/连接失败: provider=%s model=%s chars=%s wants_html=%s timeout=%s error=%s",
+            channel.get("provider") if "channel" in locals() and isinstance(channel, dict) else "",
+            model if "model" in locals() else "",
+            len(content) if "content" in locals() else 0,
+            wants_html if "wants_html" in locals() else False,
             AI_TRANSLATION_TIMEOUT_SECONDS,
+            e,
         )
         return jsonify({
             "success": False,
