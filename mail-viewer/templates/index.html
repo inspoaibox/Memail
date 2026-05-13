@@ -1243,6 +1243,9 @@
                 <button class="btn btn-sm btn-outline-secondary" onclick="openSettings()" data-i18n-title="settings" title="设置">
                     <i class="bi bi-gear"></i>
                 </button>
+                <button class="btn btn-sm btn-outline-secondary" type="button" onclick="window.location.href='/logout'" data-i18n-title="logout" title="退出登录">
+                    <i class="bi bi-box-arrow-right"></i>
+                </button>
             </div>
         </div>
     </nav>
@@ -1267,9 +1270,6 @@
                         <div class="mail-account-footer">
                             <button class="btn btn-sm btn-outline-secondary w-100" onclick="openSettings('accounts')">
                                 <i class="bi bi-sliders me-1"></i><span data-i18n="settings">设置</span>
-                            </button>
-                            <button class="btn btn-sm btn-outline-secondary w-100 mt-2" type="button" onclick="window.location.href='/logout'">
-                                <i class="bi bi-box-arrow-right me-1"></i><span data-i18n="logout">退出登录</span>
                             </button>
                         </div>
                     </div>
