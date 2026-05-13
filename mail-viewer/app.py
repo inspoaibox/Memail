@@ -331,13 +331,23 @@ def _extract_plain_text(value: str) -> str:
 
 
 def _html_needs_structured_translation(html: str) -> bool:
-    """Only ask the model to preserve HTML when the message actually has structure."""
+    """Only preserve HTML when the message contains real data structure, not layout tables."""
     if not html:
         return False
-    return bool(re.search(
-        r"(?i)<\s*(table|thead|tbody|tfoot|tr|td|th|ul|ol|li|img|button)\b",
-        html,
-    ))
+    if re.search(r"(?i)<\s*(ul|ol|li)\b", html):
+        return True
+    tables = re.findall(r"(?is)<table\b[^>]*>.*?</table>", html)
+    for table_html in tables[:8]:
+        role = re.search(r'(?i)\brole=["\']([^"\']+)["\']', table_html)
+        if role and role.group(1).strip().lower() in {"presentation", "none"}:
+            continue
+        rows = len(re.findall(r"(?i)<tr\b", table_html))
+        cells = len(re.findall(r"(?i)<t[dh]\b", table_html))
+        headers = len(re.findall(r"(?i)<th\b", table_html))
+        border = re.search(r'(?i)\bborder=["\']([^"\']+)["\']', table_html)
+        if headers > 0 or (rows >= 3 and cells >= 8) or (border and border.group(1).strip() not in {"", "0"} and rows >= 2):
+            return True
+    return False
 
 
 def _prepare_translation_payload(html_content: str, text_content: str) -> tuple[str, bool, int, bool]:
@@ -346,10 +356,7 @@ def _prepare_translation_payload(html_content: str, text_content: str) -> tuple[
     text_content = (text_content or "").strip()
     wants_html = bool(html_content and _html_needs_structured_translation(html_content))
     if wants_html:
-        content = _prepare_html_for_render(html_content)
-        # Drop base64 inline images and oversized style/script remnants before sending to the LLM.
-        content = re.sub(r"(?is)<img([^>]+?)src=[\"']data:image/[^\"']+[\"']([^>]*)>", r"<img\1\2>", content)
-        content = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", content)
+        content = _strip_layout_html_for_translation(html_content)
     else:
         content = _extract_plain_text(text_content or html_content)
     original_length = len(content)
@@ -1101,6 +1108,16 @@ def _sanitize_email_html(html: str) -> str:
         css_sanitizer=_EMAIL_CSS_SANITIZER,
     )
     return cleaned.strip()
+
+
+def _strip_layout_html_for_translation(html: str) -> str:
+    html = _sanitize_email_html(html)
+    if not html:
+        return ""
+    html = re.sub(r"(?is)<img\b[^>]*>", " ", html)
+    html = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+    html = re.sub(r"(?i)</?(html|head|body|meta|title)\b[^>]*>", " ", html)
+    return html.strip()
 
 
 def _prepare_html_for_render(html: str) -> str:

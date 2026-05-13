@@ -2741,8 +2741,15 @@
                 const rows = table.querySelectorAll('tr').length;
                 const cells = table.querySelectorAll('td,th').length;
                 const hasHeader = Boolean(table.querySelector('th'));
+                const width = String(table.getAttribute('width') || '').trim().toLowerCase();
+                const hasColgroup = Boolean(table.querySelector('col, colgroup'));
+                const firstRowCells = table.querySelectorAll('tr:first-child td, tr:first-child th').length;
                 const isPresentation = role === 'presentation' || role === 'none';
-                const looksLikeData = !isPresentation && (hasHeader || (border && border !== '0') || (rows >= 2 && cells >= 4));
+                const looksLikeData = !isPresentation && (
+                    hasHeader ||
+                    (rows >= 3 && cells >= 8 && firstRowCells >= 2) ||
+                    (border && border !== '0' && rows >= 2 && cells >= 6 && !width.includes('100%') && !hasColgroup)
+                );
                 if (looksLikeData) table.classList.add('memail-data-table');
             });
 
