@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import socket
+import struct
 import time
 import uuid
 import requests
@@ -457,6 +458,368 @@ _require_production_value("CONFIG_ENCRYPTION_KEY", CONFIG_ENCRYPTION_KEY, {"mail
 
 _LOGIN_BUCKETS: dict[str, dict] = {}
 CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+SENSITIVE_ACTIONS = {
+    "save_settings",
+    "delete_mailbox",
+    "delete_external_account",
+    "permanent_delete",
+    "create_device_token",
+    "revoke_device_token",
+    "revoke_session",
+}
+SENSITIVE_CONFIRM_TTL_SECONDS = 10 * 60
+DEVICE_TOKEN_PREFIX = "memail_dev_"
+SYNC_EVENT_LIMIT = 200
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso_now() -> str:
+    return _utc_now().isoformat()
+
+
+def _request_user_agent() -> str:
+    return (request.headers.get("User-Agent", "") or "")[:240]
+
+
+def _current_session_id() -> str:
+    sid = session.get("session_id")
+    if not sid:
+        sid = secrets.token_urlsafe(18)
+        session["session_id"] = sid
+    return sid
+
+
+def _new_id(prefix: str = "") -> str:
+    return f"{prefix}{secrets.token_urlsafe(18)}"
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _settings_list(settings: dict, key: str) -> list:
+    value = settings.get(key, [])
+    return value if isinstance(value, list) else []
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _touch_sync_event(settings: dict, event_type: str, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    seq = _safe_int(settings.get("sync_seq"), 0) + 1
+    settings["sync_seq"] = seq
+    event = {
+        "seq": seq,
+        "id": _new_id("evt_"),
+        "type": event_type,
+        "payload": payload,
+        "created_at": _iso_now(),
+    }
+    events = _settings_list(settings, "sync_events")
+    events.append(event)
+    settings["sync_events"] = events[-1000:]
+    return event
+
+
+def _append_audit(settings: dict, action: str, detail: dict | None = None, success: bool = True):
+    entry = {
+        "id": _new_id("aud_"),
+        "action": action,
+        "detail": detail or {},
+        "success": bool(success),
+        "ip": _client_ip(),
+        "user_agent": _request_user_agent(),
+        "session_id": session.get("session_id", ""),
+        "username": session.get("username", ""),
+        "created_at": _iso_now(),
+    }
+    audit = _settings_list(settings, "audit_logs")
+    audit.append(entry)
+    settings["audit_logs"] = audit[-1000:]
+    _touch_sync_event(settings, "audit.created", {"id": entry["id"], "action": action})
+
+
+def _register_session(settings: dict):
+    sid = _current_session_id()
+    sessions = _settings_list(settings, "sessions")
+    now = _iso_now()
+    existing = next((item for item in sessions if item.get("id") == sid), None)
+    if existing:
+        existing.update({
+            "last_seen": now,
+            "ip": _client_ip(),
+            "user_agent": _request_user_agent(),
+            "revoked": False,
+        })
+    else:
+        sessions.append({
+            "id": sid,
+            "username": session.get("username", ""),
+            "ip": _client_ip(),
+            "user_agent": _request_user_agent(),
+            "created_at": now,
+            "last_seen": now,
+            "revoked": False,
+        })
+    settings["sessions"] = sessions[-200:]
+    _append_audit(settings, "login.success", {"session_id": sid})
+    _touch_sync_event(settings, "security.session.created", {"session_id": sid})
+
+
+def _update_session_seen(settings: dict):
+    sid = session.get("session_id")
+    if not sid:
+        return
+    sessions = _settings_list(settings, "sessions")
+    existing = next((item for item in sessions if item.get("id") == sid), None)
+    if existing:
+        existing["last_seen"] = _iso_now()
+        existing["ip"] = _client_ip()
+        settings["sessions"] = sessions
+
+
+def _session_revoked(settings: dict) -> bool:
+    sid = session.get("session_id")
+    if not sid:
+        return False
+    return any(item.get("id") == sid and item.get("revoked") for item in _settings_list(settings, "sessions"))
+
+
+def _totp_secret() -> str:
+    return _get_viewer_secret("totp_secret")
+
+
+def _totp_enabled(settings: dict | None = None) -> bool:
+    settings = settings or _read_viewer_settings()
+    return bool(settings.get("totp_enabled") and _decrypt_setting(settings.get("totp_secret")))
+
+
+def _hotp(secret: str, counter: int, digits: int = 6) -> str:
+    key = base64.b32decode(secret.upper() + "=" * ((8 - len(secret) % 8) % 8))
+    msg = struct.pack(">Q", counter)
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(code % (10 ** digits)).zfill(digits)
+
+
+def _verify_totp_code(secret: str, code: str, window: int = 1) -> bool:
+    normalized = re.sub(r"\s+", "", code or "")
+    if not re.fullmatch(r"\d{6}", normalized):
+        return False
+    counter = int(time.time() // 30)
+    return any(hmac.compare_digest(_hotp(secret, counter + delta), normalized) for delta in range(-window, window + 1))
+
+
+def _require_sensitive_confirmation(action: str):
+    if action not in SENSITIVE_ACTIONS:
+        return None
+    confirmed = session.get("sensitive_confirmed", {})
+    if not isinstance(confirmed, dict):
+        confirmed = {}
+    last = float(confirmed.get(action, 0) or confirmed.get("*", 0) or 0)
+    if time.time() - last <= SENSITIVE_CONFIRM_TTL_SECONDS:
+        return None
+    return jsonify({"success": False, "message": "需要二次确认", "require_confirmation": True, "action": action}), 403
+
+
+def _confirm_sensitive_action(action: str):
+    confirmed = session.get("sensitive_confirmed", {})
+    if not isinstance(confirmed, dict):
+        confirmed = {}
+    now = time.time()
+    confirmed[action] = now
+    confirmed["*"] = now
+    session["sensitive_confirmed"] = confirmed
+
+
+def _extract_device_token() -> str:
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:].strip()
+    return request.headers.get("X-Device-Token", "").strip()
+
+
+def _public_draft(item: dict) -> dict:
+    return {
+        "id": item.get("id", ""),
+        "account_type": item.get("account_type", "local"),
+        "account_id": item.get("account_id", ""),
+        "from_email": item.get("from_email", ""),
+        "from_name": item.get("from_name", ""),
+        "to": item.get("to", ""),
+        "subject": item.get("subject", ""),
+        "text": item.get("text", ""),
+        "html": item.get("html", ""),
+        "created_at": item.get("created_at", ""),
+        "updated_at": item.get("updated_at", ""),
+        "version": item.get("version", 1),
+    }
+
+
+def _public_outbox(item: dict) -> dict:
+    return {
+        "id": item.get("id", ""),
+        "account_type": item.get("account_type", "local"),
+        "account_id": item.get("account_id", ""),
+        "from_email": item.get("from_email", ""),
+        "from_name": item.get("from_name", ""),
+        "to": item.get("to", ""),
+        "subject": item.get("subject", ""),
+        "text": item.get("text", ""),
+        "html": item.get("html", ""),
+        "status": item.get("status", "failed"),
+        "error": item.get("error", ""),
+        "attempts": item.get("attempts", 0),
+        "last_attempt_at": item.get("last_attempt_at", ""),
+        "created_at": item.get("created_at", ""),
+        "updated_at": item.get("updated_at", ""),
+    }
+
+
+def _store_outbox_failure(settings: dict, data: dict, message: str, account_type: str = "local") -> dict:
+    now = _iso_now()
+    item = {
+        "id": _new_id("out_"),
+        "account_type": account_type,
+        "account_id": data.get("account_id") or data.get("from_email") or "",
+        "from_email": data.get("from_email", ""),
+        "from_name": data.get("from_name", ""),
+        "to": data.get("to", ""),
+        "subject": data.get("subject", ""),
+        "text": data.get("text", ""),
+        "html": data.get("html", ""),
+        "reply_to": data.get("reply_to", ""),
+        "status": "failed",
+        "error": message,
+        "attempts": 1,
+        "last_attempt_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    outbox = _settings_list(settings, "outbox")
+    outbox.append(item)
+    settings["outbox"] = outbox[-500:]
+    _touch_sync_event(settings, "outbox.failed", {"id": item["id"]})
+    return item
+
+
+def _update_outbox_item(settings: dict, item_id: str, status: str, error: str = ""):
+    if not item_id:
+        return
+    outbox = _settings_list(settings, "outbox")
+    for item in outbox:
+        if item.get("id") == item_id:
+            item["status"] = status
+            item["error"] = error
+            item["updated_at"] = _iso_now()
+            if status == "failed":
+                item["last_attempt_at"] = item["updated_at"]
+            break
+    settings["outbox"] = outbox
+
+
+def _message_meta_key(account_type: str, account_id: str, folder: str, message_id: str) -> str:
+    return "|".join([
+        account_type.strip().lower() or "local",
+        account_id.strip().lower(),
+        folder.strip() or "INBOX",
+        str(message_id).strip(),
+    ])
+
+
+def _public_message_meta(item: dict) -> dict:
+    return {
+        "favorite": bool(item.get("favorite")),
+        "pinned": bool(item.get("pinned")),
+        "color": item.get("color", ""),
+        "updated_at": item.get("updated_at", ""),
+    }
+
+
+def _get_message_meta(settings: dict, account_type: str, account_id: str, folder: str, message_id: str) -> dict:
+    key = _message_meta_key(account_type, account_id, folder, message_id)
+    meta = settings.get("message_meta", {})
+    if not isinstance(meta, dict):
+        return {}
+    item = meta.get(key, {})
+    return item if isinstance(item, dict) else {}
+
+
+def _merge_message_meta(settings: dict, account_type: str, account_id: str, folder: str, message_id: str, patch: dict) -> dict:
+    key = _message_meta_key(account_type, account_id, folder, message_id)
+    meta = settings.get("message_meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    item = meta.get(key, {})
+    if not isinstance(item, dict):
+        item = {}
+    item.update({
+        "account_type": account_type,
+        "account_id": account_id,
+        "folder": folder,
+        "message_id": str(message_id),
+        "updated_at": _iso_now(),
+    })
+    for name in ("favorite", "pinned"):
+        if name in patch:
+            item[name] = bool(patch.get(name))
+    if "color" in patch:
+        color = str(patch.get("color") or "").strip().lower()
+        item["color"] = color if re.fullmatch(r"(red|orange|yellow|green|blue|purple|gray)", color) else ""
+    if not item.get("favorite") and not item.get("pinned") and not item.get("color"):
+        meta.pop(key, None)
+        item = {}
+    else:
+        meta[key] = item
+    settings["message_meta"] = dict(list(meta.items())[-5000:])
+    return item
+
+
+def _attach_message_meta(settings: dict, messages: list, account_type: str, account_id: str, folder: str):
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        message_id = str(msg.get("id") or msg.get("msgid") or msg.get("uid") or "")
+        if not message_id:
+            continue
+        msg["meta"] = _public_message_meta(_get_message_meta(settings, account_type, account_id, folder, message_id))
+    return messages
+
+
+def _device_auth() -> dict | None:
+    token = _extract_device_token()
+    if not token:
+        return None
+    settings = _read_viewer_settings()
+    token_hash = _hash_token(token)
+    now = _iso_now()
+    for item in _settings_list(settings, "device_tokens"):
+        if item.get("token_hash") == token_hash and not item.get("revoked"):
+            item["last_seen"] = now
+            item["last_ip"] = _client_ip()
+            _write_viewer_settings(settings)
+            return {"id": item.get("id"), "name": item.get("name", ""), "scopes": item.get("scopes", [])}
+    return None
+
+
+def device_or_login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth = _device_auth()
+        if auth:
+            request.device_auth = auth
+            return f(*args, **kwargs)
+        return login_required(f)(*args, **kwargs)
+    return decorated_function
 
 
 def _client_ip() -> str:
@@ -513,6 +876,12 @@ def enforce_session_security():
     if not _admin_auth_enabled():
         return None
     if session.get("authenticated"):
+        settings = _read_viewer_settings()
+        if _session_revoked(settings):
+            session.clear()
+            if _wants_json_response():
+                return jsonify({"success": False, "message": "当前会话已被管理员踢出"}), 401
+            return redirect(url_for("login_page"))
         now = time.time()
         last_seen = float(session.get("last_seen", now))
         if SESSION_TIMEOUT_MINUTES > 0 and now - last_seen > SESSION_TIMEOUT_MINUTES * 60:
@@ -522,6 +891,10 @@ def enforce_session_security():
             return redirect(url_for("login_page"))
         session["last_seen"] = now
         session.permanent = True
+        if now - float(session.get("session_seen_saved_at", 0) or 0) > 60:
+            _update_session_seen(settings)
+            _write_viewer_settings(settings)
+            session["session_seen_saved_at"] = now
     if request.method in CSRF_METHODS and session.get("authenticated"):
         sent_token = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
         if not sent_token or not hmac.compare_digest(str(sent_token), str(session.get("csrf_token", ""))):
@@ -783,26 +1156,42 @@ def login_page():
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
+        totp_code = request.form.get("totp_code", "")
         if _is_login_locked(username):
             return render_template("login.html", error="登录失败次数过多，请稍后再试", username=username)
         if _verify_admin_credentials(username, password):
+            settings = _read_viewer_settings()
+            if _totp_enabled(settings) and not _verify_totp_code(_decrypt_setting(settings.get("totp_secret")), totp_code):
+                _register_login_failure(username)
+                _append_audit(settings, "login.totp_failed", {"username": username.strip()}, success=False)
+                _write_viewer_settings(settings)
+                return render_template("login.html", error="二次验证码错误", username=username, totp_required=True)
             session.clear()
             session["authenticated"] = True
             session["username"] = username.strip() or ADMIN_USERNAME or "admin"
+            session["session_id"] = secrets.token_urlsafe(18)
             session["login_at"] = time.time()
             session["last_seen"] = time.time()
             session["csrf_token"] = secrets.token_urlsafe(32)
             session.permanent = True
             _clear_login_failures(username)
+            _register_session(settings)
+            _write_viewer_settings(settings)
             return redirect(url_for("index"))
         _register_login_failure(username)
+        settings = _read_viewer_settings()
+        _append_audit(settings, "login.failed", {"username": username.strip()}, success=False)
+        _write_viewer_settings(settings)
         return render_template("login.html", error="用户名或密码错误", username=username)
 
-    return render_template("login.html", error=None, username="")
+    return render_template("login.html", error=None, username="", totp_required=_totp_enabled())
 
 
 @app.route("/logout")
 def logout():
+    settings = _read_viewer_settings()
+    _append_audit(settings, "logout", {"session_id": session.get("session_id", "")})
+    _write_viewer_settings(settings)
     session.clear()
     return redirect(url_for("login_page"))
 
@@ -823,6 +1212,10 @@ def imap_root():
 @app.route("/imap/<path:subpath>", methods=["GET", "POST", "DELETE", "PUT", "PATCH"])
 @login_required
 def imap_proxy(subpath: str):
+    if request.method == "DELETE" and re.fullmatch(r"api/accounts/[^/]+", subpath.strip("/")):
+        confirm = _require_sensitive_confirmation("delete_external_account")
+        if confirm:
+            return confirm
     return _proxy_imap_response(subpath)
 
 
@@ -994,6 +1387,8 @@ def inbox_query():
             text = f"{subject} {intro}"
             code_match = re.search(r"\b(\d{6})\b", text)
             msg["extracted_code"] = code_match.group(1) if code_match else None
+        settings = _read_viewer_settings()
+        _attach_message_meta(settings, messages, "local", email, "inbox")
 
         return jsonify({
             "success": True,
@@ -1158,6 +1553,9 @@ def get_runtime_settings():
 @login_required
 def save_runtime_settings():
     """保存后台运行配置。空白敏感字段表示保留原值。"""
+    confirm = _require_sensitive_confirmation("save_settings")
+    if confirm:
+        return confirm
     data = request.json or {}
     if data.get("admin_password") and len(data.get("admin_password", "")) < 10:
         return jsonify({"success": False, "message": "后台登录密码至少需要 10 位"}), 400
@@ -1185,6 +1583,13 @@ def save_runtime_settings():
 
     resend_runtime = _decrypt_setting(local_settings.get("resend_api_key"))
     unified_runtime = _decrypt_setting(local_settings.get("unified_password"))
+    _append_audit(local_settings, "settings.updated", {
+        "admin_password": bool(data.get("admin_password")),
+        "unified_password": bool(data.get("unified_password") or data.get("clear_unified_password")),
+        "resend": bool(data.get("resend_api_key") or data.get("clear_resend_api_key")),
+        "oauth": bool(imap_payload),
+    })
+    _write_viewer_settings(local_settings)
     return jsonify({
         "success": True,
         "settings": {
@@ -1467,6 +1872,7 @@ def add_mailbox():
     if key not in order:
         order.append(key)
     settings["account_order"] = order
+    _touch_sync_event(settings, "mailbox.upserted", {"address": address})
     _write_viewer_settings(settings)
     return jsonify({
         "success": True,
@@ -1495,6 +1901,7 @@ def update_mailbox(address):
     existing["group"] = _normalize_account_group(data.get("group", ""))
     existing["updated_at"] = datetime.now(timezone.utc).isoformat()
     settings["mailboxes"] = mailboxes
+    _touch_sync_event(settings, "mailbox.upserted", {"address": normalized})
     _write_viewer_settings(settings)
     return jsonify({
         "success": True,
@@ -1507,6 +1914,9 @@ def update_mailbox(address):
 @app.route("/api/mailboxes/<path:address>", methods=["DELETE"])
 @login_required
 def delete_mailbox(address):
+    confirm = _require_sensitive_confirmation("delete_mailbox")
+    if confirm:
+        return confirm
     normalized = _normalize_mailbox_address(address)
     settings = _read_viewer_settings()
     mailboxes = settings.get("mailboxes", [])
@@ -1517,6 +1927,8 @@ def delete_mailbox(address):
         item for item in _normalize_account_order(settings.get("account_order", []))
         if item != f"local:{normalized}"
     ]
+    _append_audit(settings, "mailbox.deleted", {"address": normalized})
+    _touch_sync_event(settings, "mailbox.deleted", {"address": normalized})
     _write_viewer_settings(settings)
     return jsonify({
         "success": True,
@@ -1546,6 +1958,7 @@ def reorder_mailboxes():
     reordered.extend(item for address, item in by_address.items() if address not in local_order)
     settings["mailboxes"] = reordered
     settings["account_order"] = order
+    _touch_sync_event(settings, "mailbox.reordered", {"order": order})
     _write_viewer_settings(settings)
     return jsonify({"success": True, "mailboxes": reordered, "account_order": order})
 
@@ -1582,6 +1995,8 @@ def inbox_detail():
         if isinstance(detail, dict):
             detail["html"] = _prepare_html_for_render(detail.get("html", ""))
             detail["attachments"] = _format_attachments(detail)
+            settings = _read_viewer_settings()
+            detail["meta"] = _public_message_meta(_get_message_meta(settings, "local", email, "inbox", message_id))
         return jsonify({"success": True, "detail": detail})
 
     except Exception as e:
@@ -1666,6 +2081,101 @@ def inbox_batch():
     except Exception as e:
         app.logger.error(f"批量操作失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": "服务内部错误，请稍后重试"})
+
+
+@app.route("/api/inbox/mark", methods=["POST"])
+@login_required
+def inbox_mark():
+    """单封本地邮件标记已读 / 未读。"""
+    data = request.json or {}
+    email = data.get("email", "").strip()
+    password = data.get("password", "").strip() or _get_unified_password()
+    message_id = data.get("message_id", "").strip()
+    seen = bool(data.get("seen"))
+
+    if not email or not message_id:
+        return jsonify({"success": False, "message": "缺少必要参数"})
+
+    base_url = DUCKMAIL_BASE_URL.rstrip("/")
+    try:
+        token, err = _get_mail_token(email, password)
+        if err:
+            return jsonify({"success": False, "message": err[0]})
+        action = "mark_read" if seen else "mark_unread"
+        batch_resp = http_session.post(
+            f"{base_url}/messages/batch",
+            json={"action": action, "message_ids": [message_id]},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        if batch_resp.status_code == 200:
+            return jsonify({"success": True, **batch_resp.json()})
+        return jsonify({"success": False, "message": _extract_api_error(batch_resp, "标记失败")})
+    except Exception as e:
+        app.logger.error(f"标记邮件失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": "服务内部错误，请稍后重试"})
+
+
+@app.route("/api/message-meta", methods=["GET"])
+@login_required
+def get_message_meta():
+    account_type = request.args.get("account_type", "local")
+    account_id = request.args.get("account_id", "")
+    folder = request.args.get("folder", "inbox")
+    message_id = request.args.get("message_id", "")
+    settings = _read_viewer_settings()
+    return jsonify({
+        "success": True,
+        "meta": _public_message_meta(_get_message_meta(settings, account_type, account_id, folder, message_id)),
+    })
+
+
+@app.route("/api/message-meta/batch", methods=["POST"])
+@login_required
+def get_message_meta_batch():
+    data = request.json or {}
+    refs = data.get("refs", [])
+    if not isinstance(refs, list):
+        return jsonify({"success": False, "message": "refs 必须是数组"}), 400
+    settings = _read_viewer_settings()
+    result = {}
+    for ref in refs[:500]:
+        if not isinstance(ref, dict):
+            continue
+        account_type = ref.get("account_type", "local")
+        account_id = ref.get("account_id", "")
+        folder = ref.get("folder", "inbox")
+        message_id = str(ref.get("message_id", "")).strip()
+        if not account_id or not message_id:
+            continue
+        key = _message_meta_key(account_type, account_id, folder, message_id)
+        result[key] = _public_message_meta(_get_message_meta(settings, account_type, account_id, folder, message_id))
+    return jsonify({"success": True, "meta": result})
+
+
+@app.route("/api/message-meta", methods=["POST"])
+@login_required
+def save_message_meta():
+    data = request.json or {}
+    account_type = data.get("account_type", "local")
+    account_id = data.get("account_id", "")
+    folder = data.get("folder", "inbox")
+    message_id = str(data.get("message_id", "")).strip()
+    if not account_id or not message_id:
+        return jsonify({"success": False, "message": "缺少必要参数"}), 400
+    settings = _read_viewer_settings()
+    item = _merge_message_meta(settings, account_type, account_id, folder, message_id, data.get("meta") or {})
+    _touch_sync_event(settings, "message.meta.updated", {
+        "account_type": account_type,
+        "account_id": account_id,
+        "folder": folder,
+        "message_id": message_id,
+    })
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "meta": _public_message_meta(item)})
 
 
 # ---- 搜索邮件 API ----
@@ -1794,6 +2304,8 @@ def trash_query():
         resp_data = trash_resp.json()
         messages = resp_data.get("hydra:member", []) if isinstance(resp_data, dict) else resp_data
         total = resp_data.get("hydra:totalItems", len(messages)) if isinstance(resp_data, dict) else len(messages)
+        settings = _read_viewer_settings()
+        _attach_message_meta(settings, messages, "local", email, "trash")
         return jsonify({"success": True, "messages": messages, "total": total, "offset": offset, "limit": limit})
 
     except Exception as e:
@@ -1823,6 +2335,10 @@ def _message_action(actions: list[str], ok_message: str):
 
     if not email or not message_id:
         return jsonify({"success": False, "message": "缺少必要参数"})
+    if any(action in {"permanent-delete", "permanent_delete", "purge"} for action in actions):
+        confirm = _require_sensitive_confirmation("permanent_delete")
+        if confirm:
+            return confirm
 
     base_url = DUCKMAIL_BASE_URL.rstrip("/")
     try:
@@ -1891,6 +2407,8 @@ def sent_detail():
         detail = detail_resp.json()
         if isinstance(detail, dict):
             detail["html"] = _prepare_html_for_render(detail.get("html", ""))
+            settings = _read_viewer_settings()
+            detail["meta"] = _public_message_meta(_get_message_meta(settings, "local", email, "sent", message_id))
         return jsonify({"success": True, "detail": detail})
 
     except Exception as e:
@@ -1939,6 +2457,8 @@ def sent_query():
         for msg in messages:
             if isinstance(msg, dict):
                 msg["html"] = _prepare_html_for_render(msg.get("html", ""))
+        settings = _read_viewer_settings()
+        _attach_message_meta(settings, messages, "local", email, "sent")
 
         return jsonify({"success": True, "messages": messages, "total": total, "offset": offset, "limit": limit})
 
@@ -1947,17 +2467,458 @@ def sent_query():
         return jsonify({"success": False, "message": "服务内部错误，请稍后重试", "messages": []})
 
 
+# ---- 草稿 / 发送失败重试 API ----
+
+@app.route("/api/drafts", methods=["GET"])
+@login_required
+def list_drafts():
+    account_id = request.args.get("account_id", "").strip()
+    account_type = request.args.get("account_type", "").strip()
+    settings = _read_viewer_settings()
+    drafts = [
+        _public_draft(item)
+        for item in _settings_list(settings, "drafts")
+        if (not account_id or item.get("account_id") == account_id or item.get("from_email") == account_id)
+        and (not account_type or item.get("account_type") == account_type)
+    ]
+    drafts.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+    return jsonify({"success": True, "drafts": drafts})
+
+
+@app.route("/api/drafts", methods=["POST"])
+@login_required
+def save_draft():
+    data = request.json or {}
+    settings = _read_viewer_settings()
+    drafts = _settings_list(settings, "drafts")
+    draft_id = str(data.get("id") or "").strip()
+    now = _iso_now()
+    existing = next((item for item in drafts if item.get("id") == draft_id), None) if draft_id else None
+    if not existing:
+        existing = {"id": _new_id("drf_"), "created_at": now, "version": 0}
+        drafts.append(existing)
+    existing.update({
+        "account_type": data.get("account_type", "local"),
+        "account_id": data.get("account_id") or data.get("from_email") or "",
+        "from_email": data.get("from_email", ""),
+        "from_name": data.get("from_name", ""),
+        "to": data.get("to", ""),
+        "subject": data.get("subject", ""),
+        "text": data.get("text", ""),
+        "html": data.get("html", ""),
+        "updated_at": now,
+        "version": _safe_int(existing.get("version"), 0) + 1,
+    })
+    settings["drafts"] = drafts[-500:]
+    _touch_sync_event(settings, "draft.upserted", {"id": existing["id"]})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "draft": _public_draft(existing)})
+
+
+@app.route("/api/drafts/<draft_id>", methods=["DELETE"])
+@login_required
+def delete_draft(draft_id):
+    settings = _read_viewer_settings()
+    drafts = _settings_list(settings, "drafts")
+    settings["drafts"] = [item for item in drafts if item.get("id") != draft_id]
+    _touch_sync_event(settings, "draft.deleted", {"id": draft_id})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True})
+
+
+@app.route("/api/outbox", methods=["POST"])
+@login_required
+def create_outbox_failure():
+    data = request.json or {}
+    settings = _read_viewer_settings()
+    item = _store_outbox_failure(settings, data, data.get("error") or "发送失败", data.get("account_type") or "external")
+    _append_audit(settings, "mail.send.failed", {
+        "from": data.get("from_email", ""),
+        "to": data.get("to", ""),
+        "reason": item.get("error", ""),
+        "account_type": item.get("account_type", ""),
+    }, success=False)
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "message": _public_outbox(item)})
+
+
+@app.route("/api/outbox", methods=["GET"])
+@login_required
+def list_outbox():
+    account_id = request.args.get("account_id", "").strip()
+    account_type = request.args.get("account_type", "").strip()
+    include_sent = request.args.get("include_sent") == "1"
+    settings = _read_viewer_settings()
+    outbox = [
+        _public_outbox(item)
+        for item in _settings_list(settings, "outbox")
+        if (not account_id or item.get("account_id") == account_id or item.get("from_email") == account_id)
+        and (not account_type or item.get("account_type") == account_type)
+        and (include_sent or item.get("status") != "sent")
+    ]
+    outbox.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+    return jsonify({"success": True, "messages": outbox})
+
+
+@app.route("/api/outbox/<message_id>/retry", methods=["POST"])
+@login_required
+def retry_outbox(message_id):
+    settings = _read_viewer_settings()
+    outbox = _settings_list(settings, "outbox")
+    item = next((entry for entry in outbox if entry.get("id") == message_id), None)
+    if not item:
+        return jsonify({"success": False, "message": "重试记录不存在"}), 404
+    item["attempts"] = _safe_int(item.get("attempts"), 0) + 1
+    item["last_attempt_at"] = _iso_now()
+    item["updated_at"] = item["last_attempt_at"]
+    _write_viewer_settings(settings)
+    if item.get("account_type") == "external":
+        account_id = str(item.get("account_id") or "").strip()
+        if not account_id:
+            item["status"] = "failed"
+            item["error"] = "缺少外部账号 ID"
+            _touch_sync_event(settings, "outbox.failed", {"id": item.get("id")})
+            _write_viewer_settings(settings)
+            return jsonify({"success": False, "message": item["error"]}), 400
+        try:
+            target = urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{quote(account_id, safe='')}/send")
+            resp = http_session.post(
+                target,
+                json={
+                    "to": item.get("to", ""),
+                    "subject": item.get("subject", ""),
+                    "text": item.get("text", ""),
+                    "html": item.get("html", ""),
+                    "fromName": item.get("from_name", ""),
+                },
+                timeout=45,
+            )
+            if resp.status_code == 200:
+                _update_outbox_item(settings, message_id, "sent")
+                _append_audit(settings, "mail.retry.success", {
+                    "id": message_id,
+                    "account_type": "external",
+                    "to": item.get("to", ""),
+                })
+                _touch_sync_event(settings, "outbox.sent", {"id": message_id})
+                _write_viewer_settings(settings)
+                return jsonify({"success": True, "message": "重试发送成功"})
+            error_msg = _response_error(resp, f"重试发送失败 (HTTP {resp.status_code})")
+        except Exception as e:
+            app.logger.error(f"外部账号重试发送失败: {e}", exc_info=True)
+            error_msg = "外部账号重试发送失败，请稍后再试"
+        _update_outbox_item(settings, message_id, "failed", error_msg)
+        _append_audit(settings, "mail.retry.failed", {
+            "id": message_id,
+            "account_type": "external",
+            "reason": error_msg,
+        }, success=False)
+        _touch_sync_event(settings, "outbox.failed", {"id": message_id})
+        _write_viewer_settings(settings)
+        return jsonify({"success": False, "message": error_msg}), 502
+    payload = {
+        "from_email": item.get("from_email", ""),
+        "from_name": item.get("from_name", ""),
+        "to": item.get("to", ""),
+        "subject": item.get("subject", ""),
+        "text": item.get("text", ""),
+        "html": item.get("html", ""),
+        "reply_to": item.get("reply_to", ""),
+        "outbox_id": message_id,
+    }
+    return _send_local_email(payload, retry_item=item)
+
+
+# ---- 安全管理 / 多端同步 API ----
+
+@app.route("/api/security/confirm", methods=["POST"])
+@login_required
+def confirm_sensitive_action():
+    data = request.json or {}
+    password = data.get("password", "")
+    code = data.get("totp_code", "")
+    action = data.get("action", "*") or "*"
+    username = session.get("username", "")
+    if not _verify_admin_credentials(username, password):
+        settings = _read_viewer_settings()
+        _append_audit(settings, "security.confirm.failed", {"action": action}, success=False)
+        _write_viewer_settings(settings)
+        return jsonify({"success": False, "message": "密码错误"}), 403
+    settings = _read_viewer_settings()
+    if _totp_enabled(settings) and not _verify_totp_code(_decrypt_setting(settings.get("totp_secret")), code):
+        _append_audit(settings, "security.confirm.totp_failed", {"action": action}, success=False)
+        _write_viewer_settings(settings)
+        return jsonify({"success": False, "message": "二次验证码错误"}), 403
+    _confirm_sensitive_action(action)
+    _append_audit(settings, "security.confirmed", {"action": action})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True})
+
+
+@app.route("/api/security/totp/setup", methods=["POST"])
+@login_required
+def setup_totp():
+    confirm = _require_sensitive_confirmation("save_settings")
+    if confirm:
+        return confirm
+    settings = _read_viewer_settings()
+    raw = secrets.token_bytes(20)
+    secret = base64.b32encode(raw).decode("ascii").rstrip("=")
+    settings["totp_secret"] = _encrypt_setting(secret)
+    settings["totp_enabled"] = False
+    _append_audit(settings, "totp.setup")
+    _write_viewer_settings(settings)
+    issuer = "Memail"
+    account = session.get("username", "admin")
+    uri = f"otpauth://totp/{quote(issuer)}:{quote(account)}?secret={secret}&issuer={quote(issuer)}&digits=6&period=30"
+    return jsonify({"success": True, "secret": secret, "otpauth_uri": uri})
+
+
+@app.route("/api/security/totp/enable", methods=["POST"])
+@login_required
+def enable_totp():
+    data = request.json or {}
+    settings = _read_viewer_settings()
+    secret = _decrypt_setting(settings.get("totp_secret"))
+    if not secret:
+        return jsonify({"success": False, "message": "请先生成 TOTP 密钥"}), 400
+    if not _verify_totp_code(secret, data.get("code", "")):
+        return jsonify({"success": False, "message": "验证码错误"}), 400
+    settings["totp_enabled"] = True
+    _append_audit(settings, "totp.enabled")
+    _touch_sync_event(settings, "security.totp.enabled", {})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True})
+
+
+@app.route("/api/security/totp/disable", methods=["POST"])
+@login_required
+def disable_totp():
+    confirm = _require_sensitive_confirmation("save_settings")
+    if confirm:
+        return confirm
+    settings = _read_viewer_settings()
+    settings["totp_enabled"] = False
+    settings.pop("totp_secret", None)
+    _append_audit(settings, "totp.disabled")
+    _touch_sync_event(settings, "security.totp.disabled", {})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True})
+
+
+@app.route("/api/security/sessions", methods=["GET"])
+@login_required
+def list_sessions():
+    settings = _read_viewer_settings()
+    current = session.get("session_id", "")
+    return jsonify({
+        "success": True,
+        "current_session_id": current,
+        "sessions": _settings_list(settings, "sessions"),
+        "totp_enabled": _totp_enabled(settings),
+    })
+
+
+@app.route("/api/security/sessions/<session_id>/revoke", methods=["POST"])
+@login_required
+def revoke_session(session_id):
+    confirm = _require_sensitive_confirmation("revoke_session")
+    if confirm:
+        return confirm
+    settings = _read_viewer_settings()
+    for item in _settings_list(settings, "sessions"):
+        if item.get("id") == session_id:
+            item["revoked"] = True
+            item["revoked_at"] = _iso_now()
+    _append_audit(settings, "session.revoked", {"session_id": session_id})
+    _touch_sync_event(settings, "security.session.revoked", {"session_id": session_id})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True})
+
+
+@app.route("/api/security/audit", methods=["GET"])
+@login_required
+def list_audit_logs():
+    settings = _read_viewer_settings()
+    limit = min(max(_safe_int(request.args.get("limit"), 100), 1), 300)
+    logs = list(reversed(_settings_list(settings, "audit_logs")[-limit:]))
+    return jsonify({"success": True, "logs": logs})
+
+
+@app.route("/api/devices/tokens", methods=["GET"])
+@login_required
+def list_device_tokens():
+    settings = _read_viewer_settings()
+    tokens = []
+    for item in _settings_list(settings, "device_tokens"):
+        tokens.append({k: v for k, v in item.items() if k != "token_hash"})
+    return jsonify({"success": True, "tokens": tokens})
+
+
+@app.route("/api/devices/tokens", methods=["POST"])
+@login_required
+def create_device_token():
+    confirm = _require_sensitive_confirmation("create_device_token")
+    if confirm:
+        return confirm
+    data = request.json or {}
+    token = DEVICE_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    now = _iso_now()
+    item = {
+        "id": _new_id("dev_"),
+        "name": (data.get("name") or "Device").strip()[:80],
+        "token_hash": _hash_token(token),
+        "scopes": data.get("scopes") if isinstance(data.get("scopes"), list) else ["sync:read"],
+        "created_at": now,
+        "last_seen": "",
+        "last_ip": "",
+        "revoked": False,
+    }
+    settings = _read_viewer_settings()
+    tokens = _settings_list(settings, "device_tokens")
+    tokens.append(item)
+    settings["device_tokens"] = tokens[-100:]
+    _append_audit(settings, "device_token.created", {"id": item["id"], "name": item["name"]})
+    _touch_sync_event(settings, "device.token.created", {"id": item["id"]})
+    _write_viewer_settings(settings)
+    public = {k: v for k, v in item.items() if k != "token_hash"}
+    return jsonify({"success": True, "token": token, "device": public})
+
+
+@app.route("/api/devices/tokens/<token_id>", methods=["DELETE"])
+@login_required
+def revoke_device_token(token_id):
+    confirm = _require_sensitive_confirmation("revoke_device_token")
+    if confirm:
+        return confirm
+    settings = _read_viewer_settings()
+    for item in _settings_list(settings, "device_tokens"):
+        if item.get("id") == token_id:
+            item["revoked"] = True
+            item["revoked_at"] = _iso_now()
+    _append_audit(settings, "device_token.revoked", {"id": token_id})
+    _touch_sync_event(settings, "device.token.revoked", {"id": token_id})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True})
+
+
+@app.route("/api/sync/bootstrap", methods=["GET"])
+@device_or_login_required
+def sync_bootstrap():
+    settings = _read_viewer_settings()
+    mailboxes = settings.get("mailboxes", []) if isinstance(settings.get("mailboxes"), list) else []
+    return jsonify({
+        "success": True,
+        "server_time": _iso_now(),
+        "sync_seq": _safe_int(settings.get("sync_seq"), 0),
+        "protocol": {
+            "version": 1,
+            "conflict": "server-wins",
+            "offline_cache": {
+                "drafts": "client may edit offline; send full draft with latest version",
+                "mail_cache": "client stores immutable message snapshots and asks /api/sync/changes for invalidation events",
+            },
+        },
+        "mailboxes": mailboxes,
+        "drafts": [_public_draft(item) for item in _settings_list(settings, "drafts")],
+        "outbox": [_public_outbox(item) for item in _settings_list(settings, "outbox")],
+        "security": {
+            "totp_enabled": _totp_enabled(settings),
+            "sessions": _settings_list(settings, "sessions"),
+            "device_tokens": [
+                {k: v for k, v in item.items() if k != "token_hash"}
+                for item in _settings_list(settings, "device_tokens")
+            ],
+        },
+    })
+
+
+@app.route("/api/sync/changes", methods=["GET"])
+@device_or_login_required
+def sync_changes():
+    settings = _read_viewer_settings()
+    since = _safe_int(request.args.get("since"), 0)
+    limit = min(max(_safe_int(request.args.get("limit"), SYNC_EVENT_LIMIT), 1), 500)
+    events = [event for event in _settings_list(settings, "sync_events") if _safe_int(event.get("seq"), 0) > since]
+    return jsonify({
+        "success": True,
+        "server_time": _iso_now(),
+        "sync_seq": _safe_int(settings.get("sync_seq"), 0),
+        "events": events[:limit],
+        "has_more": len(events) > limit,
+    })
+
+
+@app.route("/api/sync/push", methods=["POST"])
+@device_or_login_required
+def sync_push():
+    data = request.json or {}
+    changes = data.get("changes", [])
+    if not isinstance(changes, list):
+        return jsonify({"success": False, "message": "changes 必须是数组"}), 400
+    settings = _read_viewer_settings()
+    applied = []
+    conflicts = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        ctype = change.get("type")
+        payload = change.get("payload") or {}
+        if ctype == "draft.upsert":
+            drafts = _settings_list(settings, "drafts")
+            draft_id = payload.get("id") or _new_id("drf_")
+            existing = next((item for item in drafts if item.get("id") == draft_id), None)
+            incoming_version = _safe_int(payload.get("version"), 0)
+            if existing and incoming_version < _safe_int(existing.get("version"), 0):
+                conflicts.append({"id": draft_id, "type": ctype, "reason": "server_has_newer_version"})
+                continue
+            now = _iso_now()
+            if not existing:
+                existing = {"id": draft_id, "created_at": now, "version": 0}
+                drafts.append(existing)
+            existing.update({
+                "account_type": payload.get("account_type", existing.get("account_type", "local")),
+                "account_id": payload.get("account_id", existing.get("account_id", "")),
+                "from_email": payload.get("from_email", existing.get("from_email", "")),
+                "from_name": payload.get("from_name", existing.get("from_name", "")),
+                "to": payload.get("to", existing.get("to", "")),
+                "subject": payload.get("subject", existing.get("subject", "")),
+                "text": payload.get("text", existing.get("text", "")),
+                "html": payload.get("html", existing.get("html", "")),
+                "updated_at": now,
+                "version": max(incoming_version, _safe_int(existing.get("version"), 0)) + 1,
+            })
+            settings["drafts"] = drafts[-500:]
+            _touch_sync_event(settings, "draft.upserted", {"id": draft_id})
+            applied.append({"id": draft_id, "type": ctype})
+        elif ctype == "draft.delete":
+            draft_id = payload.get("id", "")
+            settings["drafts"] = [item for item in _settings_list(settings, "drafts") if item.get("id") != draft_id]
+            _touch_sync_event(settings, "draft.deleted", {"id": draft_id})
+            applied.append({"id": draft_id, "type": ctype})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "applied": applied, "conflicts": conflicts, "sync_seq": _safe_int(settings.get("sync_seq"), 0)})
+
+
 # ---- 发送邮件 API（通过 Resend） ----
 
-@app.route("/api/send", methods=["POST"])
-@login_required
-def send_email():
-    """通过 Resend API 发送邮件"""
+def _send_local_email(data: dict, retry_item: dict | None = None):
     resend_api_key = _get_viewer_secret("resend_api_key") or RESEND_API_KEY
     if not resend_api_key:
+        settings = _read_viewer_settings()
+        message = "未配置 Resend API Key，无法发信"
+        if retry_item:
+            _update_outbox_item(settings, retry_item.get("id", ""), "failed", message)
+            _touch_sync_event(settings, "outbox.failed", {"id": retry_item.get("id")})
+        else:
+            _store_outbox_failure(settings, data, message, "local")
+        _append_audit(settings, "mail.send.failed", {
+            "from": data.get("from_email", ""),
+            "to": data.get("to", ""),
+            "reason": message,
+        }, success=False)
+        _write_viewer_settings(settings)
         return jsonify({"success": False, "message": "未配置 Resend API Key，无法发信"})
-
-    data = request.json or {}
     from_email = data.get("from_email", "").strip()
     from_name = data.get("from_name", "").strip()
     to = data.get("to", "").strip()
@@ -2034,6 +2995,12 @@ def send_email():
                 )
             except Exception:
                 pass  # 存储失败不影响发送结果
+            settings = _read_viewer_settings()
+            if retry_item:
+                _update_outbox_item(settings, retry_item.get("id", ""), "sent")
+                _touch_sync_event(settings, "outbox.sent", {"id": retry_item.get("id")})
+            _append_audit(settings, "mail.send.success", {"from": from_email, "to": to_list})
+            _write_viewer_settings(settings)
 
             return jsonify({
                 "success": True,
@@ -2048,11 +3015,35 @@ def send_email():
                 error_msg = err_data.get("message", "") or err_data.get("name", error_msg)
             except Exception:
                 error_msg = f"发送失败 (HTTP {resp.status_code})"
+            settings = _read_viewer_settings()
+            if retry_item:
+                _update_outbox_item(settings, retry_item.get("id", ""), "failed", error_msg)
+                _touch_sync_event(settings, "outbox.failed", {"id": retry_item.get("id")})
+            else:
+                _store_outbox_failure(settings, data, error_msg, "local")
+            _append_audit(settings, "mail.send.failed", {"from": from_email, "to": to_list, "reason": error_msg}, success=False)
+            _write_viewer_settings(settings)
             return jsonify({"success": False, "message": error_msg})
 
     except Exception as e:
         app.logger.error(f"发送邮件失败: {e}", exc_info=True)
-        return jsonify({"success": False, "message": "服务内部错误，请稍后重试"})
+        settings = _read_viewer_settings()
+        message = "服务内部错误，请稍后重试"
+        if retry_item:
+            _update_outbox_item(settings, retry_item.get("id", ""), "failed", message)
+            _touch_sync_event(settings, "outbox.failed", {"id": retry_item.get("id")})
+        else:
+            _store_outbox_failure(settings, data, message, "local")
+        _append_audit(settings, "mail.send.failed", {"from": from_email, "to": to_list, "reason": str(e)}, success=False)
+        _write_viewer_settings(settings)
+        return jsonify({"success": False, "message": message})
+
+
+@app.route("/api/send", methods=["POST"])
+@login_required
+def send_email():
+    """通过 Resend API 发送邮件"""
+    return _send_local_email(request.json or {})
 
 
 if __name__ == "__main__":

@@ -208,6 +208,35 @@ External IMAP accounts, folders, message lists, cached message bodies, and runti
 
 The background sync scheduler is enabled by default: after startup it waits about 20 seconds, then checks external IMAP accounts every 15 minutes. Fresh accounts are skipped until their TTL expires. The small sync label beside an account name is only a status indicator and does not need to be clicked; refreshing “All Accounts” queues all external accounts for background sync and immediately shows existing cache, while refreshing inside one external account syncs the current folder immediately. Tune or disable it with `IMAP_SYNC_CHECK_INTERVAL_SECONDS`, `IMAP_SYNC_STARTUP_DELAY_SECONDS`, or `IMAP_SYNC_SCHEDULER_ENABLED=0`.
 
+Drafts, failed-send records, and sent records are persisted with the viewer settings. The compose screen opens inline in the right reading pane and uses the currently selected mailbox as the sender. “Save Draft” stores the message in the selected account’s “App Drafts” view, failed sends go to “Failed Send”, and both local accounts and external SMTP accounts can retry from the failed-send record. Remote IMAP Drafts/Sent folders still appear as normal provider folders when available.
+
+### Security And Multi-Device Sync
+
+The Web UI settings page includes security controls:
+
+- TOTP / 2FA setup and enablement.
+- Login session list with IP/User-Agent and revoke support.
+- Device Tokens for future desktop/mobile sync clients. Tokens are shown once.
+- Audit logs for logins, sensitive confirmations, settings changes, device-token actions, and send success/failure.
+
+Sensitive actions require secondary confirmation: saving system settings, deleting local mailboxes, deleting external accounts, permanent deletion, creating/revoking device tokens, and revoking login sessions. Confirmation checks the admin password and, if enabled, the 6-digit TOTP code.
+
+Multi-device sync endpoints are available for desktop/mobile clients:
+
+```http
+GET  /api/sync/bootstrap   # Initial sync: mailbox config, drafts, failed-send records, protocol
+GET  /api/sync/changes     # Incremental pull: ?since=<sync_seq>&limit=200
+POST /api/sync/push        # Offline push: currently draft.upsert / draft.delete
+```
+
+Use a device token:
+
+```http
+Authorization: Bearer memail_dev_xxx
+```
+
+The current conflict policy is `server-wins`: offline draft edits must include the latest `version`; if the server has a newer version, the API returns a conflict and the client should ask whether to overwrite or save a copy. Message-body cache is treated as immutable snapshots; clients watch `/api/sync/changes` for invalidation events and then refetch as needed.
+
 To roll back, change the image tag in `.env` to an older tag, such as a release tag or `sha-...` tag shown in GitHub Actions, then run `docker-compose pull && docker-compose up -d`.
 
 ### Runtime Settings In The Web UI

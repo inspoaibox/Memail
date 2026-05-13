@@ -208,6 +208,35 @@ docker-compose ps
 
 后台同步器默认启用：服务启动约 20 秒后会检查外部 IMAP 账号，之后每 15 分钟检查一次。未过期账号不会重复拉取。左侧账号后的同步标签只是状态提示，不需要手动点击；进入“全部账号”后点刷新会把所有外部账号加入后台同步队列并立即显示已有缓存，单个外部账号内点刷新会立即同步当前文件夹。可通过 `IMAP_SYNC_CHECK_INTERVAL_SECONDS`、`IMAP_SYNC_STARTUP_DELAY_SECONDS`、`IMAP_SYNC_SCHEDULER_ENABLED=0` 调整或关闭。
 
+草稿、发送失败记录和已发送记录会和本地持久化配置一起保存。写邮件页面是右侧内嵌页面，发件账号来自当前选中的邮箱；点击“保存草稿”后会进入当前账号的“应用草稿”，发送失败会进入“发送失败”，本地账号和外部 SMTP 账号都可以在失败记录中重试。外部账号自身的远端 Drafts/Sent 文件夹仍然会作为普通 IMAP 文件夹显示。
+
+### 安全与多端同步
+
+Web UI 的设置页提供安全设置：
+
+- TOTP / 2FA：生成密钥后用认证器 App 验证并启用。
+- 登录设备：查看当前会话、IP、User-Agent，并可踢出指定会话。
+- 设备 Token：为未来桌面端 / 手机端生成同步 Token。Token 只显示一次，请妥善保存。
+- 审计日志：记录登录、敏感确认、设置修改、设备 Token、发信成功 / 失败等操作。
+
+敏感操作会触发二次确认，包括保存系统设置、删除本地邮箱、删除外部账号、彻底删除邮件、创建/撤销设备 Token、踢出登录设备。二次确认通过后台密码校验；如果已启用 TOTP，还需要同时输入 6 位验证码。
+
+多端同步 API 已预留，桌面端和手机端可以使用设备 Token 调用：
+
+```http
+GET  /api/sync/bootstrap   # 初始同步：邮箱配置、草稿、发送失败记录、协议说明
+GET  /api/sync/changes     # 增量拉取：?since=<sync_seq>&limit=200
+POST /api/sync/push        # 离线变更上推：当前支持 draft.upsert / draft.delete
+```
+
+认证方式：
+
+```http
+Authorization: Bearer memail_dev_xxx
+```
+
+同步协议当前采用 `server-wins` 冲突策略：客户端离线编辑草稿时需要携带最新 `version`，如果服务端版本更新，接口会返回 conflict，客户端应提示用户选择覆盖或另存副本。邮件正文缓存按不可变快照处理，客户端通过 `/api/sync/changes` 获取失效事件后再按需重新拉取。
+
 需要回滚时，把 `.env` 中的镜像 tag 改成旧版本，比如 release tag 或 GitHub Actions 里显示的 `sha-...` tag，然后执行：
 
 ```bash

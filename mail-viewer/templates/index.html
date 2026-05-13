@@ -505,6 +505,65 @@
         .mail-item.active .mail-item-meta {
             opacity: 0.88;
         }
+        .mail-item.mail-pinned {
+            order: -1;
+            border-color: rgba(183,130,47,0.42);
+            box-shadow: inset 3px 0 0 var(--accent-color);
+        }
+        .mail-item.mail-color-red { background: #fff5f5; }
+        .mail-item.mail-color-orange { background: #fff7ed; }
+        .mail-item.mail-color-yellow { background: #fffbea; }
+        .mail-item.mail-color-green { background: #f0fdf4; }
+        .mail-item.mail-color-blue { background: #eff6ff; }
+        .mail-item.mail-color-purple { background: #f7f2ff; }
+        .mail-item.mail-color-gray { background: #f5f6f7; }
+        .mail-item-flags {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            flex: 0 0 auto;
+        }
+        .mail-color-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 999px;
+            display: inline-block;
+            border: 1px solid rgba(0,0,0,0.08);
+        }
+        .mail-color-dot.red { background: #e15d5d; }
+        .mail-color-dot.orange { background: #e89a3c; }
+        .mail-color-dot.yellow { background: #e2bd3f; }
+        .mail-color-dot.green { background: #49a66a; }
+        .mail-color-dot.blue { background: #4d82d8; }
+        .mail-color-dot.purple { background: #8b6ad8; }
+        .mail-color-dot.gray { background: #8c98a3; }
+        .mail-action-menu {
+            position: relative;
+            display: inline-flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        .mail-color-picker {
+            display: inline-flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            vertical-align: middle;
+        }
+        .mail-color-btn {
+            width: 20px;
+            height: 20px;
+            padding: 0;
+            border-radius: 999px;
+            border: 1px solid rgba(0,0,0,0.12);
+            background: #fff;
+        }
+        .mail-color-btn.red { background: #e15d5d; }
+        .mail-color-btn.orange { background: #e89a3c; }
+        .mail-color-btn.yellow { background: #e2bd3f; }
+        .mail-color-btn.green { background: #49a66a; }
+        .mail-color-btn.blue { background: #4d82d8; }
+        .mail-color-btn.purple { background: #8b6ad8; }
+        .mail-color-btn.gray { background: #8c98a3; }
         
         /* Quill 编辑器样式 */
         .ql-container {
@@ -587,6 +646,47 @@
             height: 1px;
             flex: 1 1 auto;
             background: var(--border-color);
+        }
+        .mail-account-group-toggle {
+            width: 100%;
+            margin: 8px 2px 4px;
+            padding: 2px 4px;
+            border: 0;
+            background: transparent;
+            color: var(--muted-text);
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            text-align: left;
+        }
+        .mail-account-group-toggle::after {
+            content: "";
+            height: 1px;
+            flex: 1 1 auto;
+            background: var(--border-color);
+        }
+        .mail-account-group-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            min-width: 0;
+        }
+        .mail-account-group-count {
+            flex: 0 0 auto;
+            color: var(--muted-text);
+            font-weight: 700;
+            text-transform: none;
+        }
+        .mail-account-aggregate {
+            min-height: 34px;
+            padding-left: 12px;
+        }
+        .mail-account-aggregate .mail-account-title {
+            font-size: 0.9rem;
         }
         .mail-folder-item {
             border: 1px solid var(--border-color);
@@ -1287,6 +1387,9 @@
                                 <button class="btn btn-sm btn-outline-secondary" onclick="batchMarkRead()" id="btn-batch-read" disabled>
                                     <i class="bi bi-check2-all me-1"></i><span data-i18n="markRead">已读</span>
                                 </button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="batchMarkUnread()" id="btn-batch-unread" disabled>
+                                    <i class="bi bi-envelope me-1"></i><span data-i18n="markUnread">未读</span>
+                                </button>
                             </div>
                         </div>
                         <div id="mail-list" class="mail-list-scroll">
@@ -1341,6 +1444,11 @@
                         <li class="nav-item" role="presentation">
                             <button class="nav-link" id="settings-ai-tab" data-bs-toggle="tab" data-bs-target="#settings-ai-pane" type="button" role="tab">
                                 <i class="bi bi-stars me-1"></i><span data-i18n="aiSettings">AI 设置</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="settings-security-tab" data-bs-toggle="tab" data-bs-target="#settings-security-pane" type="button" role="tab">
+                                <i class="bi bi-shield-lock me-1"></i><span data-i18n="securitySettings">安全设置</span>
                             </button>
                         </li>
                     </ul>
@@ -1524,6 +1632,38 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="tab-pane fade" id="settings-security-pane" role="tabpanel" aria-labelledby="settings-security-tab">
+                            <div id="security-settings-alert" class="alert" style="display:none;" role="alert"></div>
+                            <div class="row g-4">
+                                <div class="col-12 col-lg-5">
+                                    <h6 class="mb-2"><i class="bi bi-shield-check me-1"></i><span data-i18n="twoFactorAuth">两步验证</span></h6>
+                                    <div class="small text-muted mb-2" id="totp-status"></div>
+                                    <div class="d-flex gap-2 mb-3">
+                                        <button class="btn btn-sm btn-outline-primary" onclick="setupTotp()"><i class="bi bi-qr-code me-1"></i><span data-i18n="setupTotp">生成 TOTP</span></button>
+                                        <button class="btn btn-sm btn-outline-danger" onclick="disableTotp()"><i class="bi bi-x-circle me-1"></i><span data-i18n="disableTotp">关闭 2FA</span></button>
+                                    </div>
+                                    <div id="totp-setup-panel" class="small" style="display:none;">
+                                        <div class="mb-2"><span data-i18n="totpSecret">密钥</span>: <code id="totp-secret"></code></div>
+                                        <input type="text" class="form-control form-control-sm mb-2" id="totp-code-input" data-i18n-ph="enterTotp" placeholder="6 位验证码">
+                                        <button class="btn btn-sm btn-primary" onclick="enableTotp()"><i class="bi bi-check2 me-1"></i><span data-i18n="enableTotp">启用 2FA</span></button>
+                                    </div>
+                                    <hr>
+                                    <h6 class="mb-2"><i class="bi bi-phone me-1"></i><span data-i18n="deviceTokens">设备 Token</span></h6>
+                                    <div class="input-group input-group-sm mb-2">
+                                        <input type="text" class="form-control" id="device-token-name" data-i18n-ph="deviceTokenName" placeholder="设备名称">
+                                        <button class="btn btn-outline-primary" onclick="createDeviceToken()"><i class="bi bi-plus-lg"></i></button>
+                                    </div>
+                                    <div class="small text-muted mb-2" id="new-device-token"></div>
+                                    <div id="device-token-list" class="account-settings-list"></div>
+                                </div>
+                                <div class="col-12 col-lg-7">
+                                    <h6 class="mb-2"><i class="bi bi-display me-1"></i><span data-i18n="loginSessions">登录设备</span></h6>
+                                    <div id="session-list" class="account-settings-list mb-3"></div>
+                                    <h6 class="mb-2"><i class="bi bi-journal-text me-1"></i><span data-i18n="auditLogs">审计日志</span></h6>
+                                    <div id="audit-log-list" class="account-settings-list"></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -1660,6 +1800,20 @@
                 accountSettings: '邮箱账号设置',
                 systemSettings: '系统设置',
                 aiSettings: 'AI 设置',
+                securitySettings: '安全设置',
+                twoFactorAuth: '两步验证',
+                setupTotp: '生成 TOTP',
+                enableTotp: '启用 2FA',
+                disableTotp: '关闭 2FA',
+                totpSecret: '密钥',
+                enterTotp: '6 位验证码',
+                deviceTokens: '设备 Token',
+                deviceTokenName: '设备名称',
+                loginSessions: '登录设备',
+                auditLogs: '审计日志',
+                revoke: '踢出',
+                tokenCreated: '设备 Token 已生成，只显示一次',
+                confirmPasswordPrompt: '请输入后台密码以确认敏感操作',
                 channelMgmt: '渠道管理',
                 channelName: '渠道名称',
                 channelProvider: '渠道类型',
@@ -1732,6 +1886,9 @@
                 noUnreadMail: '当前账号暂无未读邮件',
                 noGlobalMail: '暂无已缓存邮件',
                 noGlobalUnread: '暂无已缓存未读邮件',
+                groupAllMail: '分组所有邮件',
+                groupUnreadMail: '分组未读邮件',
+                groupMailboxHint: '{group} 分组',
                 confirmRemoveExternal: '移除外部邮箱 "{email}" 吗？账号配置会从本机持久化存储中删除。',
                 gmailOAuthNotReady: 'Gmail OAuth2 未配置，请先在设置中填写 Google Client ID / Secret / Redirect URI。',
                 gmailOAuthSetupHint: 'Gmail OAuth 使用 https://mail.google.com/ 权限；如果不想申请 OAuth，可直接添加 Gmail 并填写 16 位应用专用密码。',
@@ -1755,6 +1912,7 @@
                 inbox: '收件箱',
                 sent: '已发送',
                 drafts: '草稿箱',
+                outbox: '发送失败',
                 trash: '回收站',
                 attachments: '附件',
                 download: '下载',
@@ -1762,6 +1920,22 @@
                 permanentDelete: '彻底删除',
                 noTrashMail: '回收站为空',
                 noDrafts: '暂无草稿',
+                noOutbox: '暂无发送失败记录',
+                appDrafts: '应用草稿',
+                appOutbox: '发送失败',
+                favorite: '收藏',
+                unfavorite: '取消收藏',
+                pin: '置顶',
+                unpin: '取消置顶',
+                markUnread: '未读',
+                markReadUnread: '标记已读/未读',
+                replyAll: '回复全部',
+                forward: '转发',
+                colorLabel: '颜色标注',
+                clearColor: '清除颜色',
+                saveDraft: '保存草稿',
+                draftSaved: '草稿已保存',
+                retrySend: '重试发送',
                 attachmentUnavailable: '附件下载接口不可用',
                 confirmRestore: '确定要恢复这封邮件吗？',
                 confirmPermanentDelete: '确定要彻底删除这封邮件吗？此操作不可恢复。',
@@ -1878,6 +2052,20 @@
                 accountSettings: 'Mailbox Settings',
                 systemSettings: 'System Settings',
                 aiSettings: 'AI Settings',
+                securitySettings: 'Security',
+                twoFactorAuth: 'Two-factor auth',
+                setupTotp: 'Generate TOTP',
+                enableTotp: 'Enable 2FA',
+                disableTotp: 'Disable 2FA',
+                totpSecret: 'Secret',
+                enterTotp: '6-digit code',
+                deviceTokens: 'Device Tokens',
+                deviceTokenName: 'Device name',
+                loginSessions: 'Login Sessions',
+                auditLogs: 'Audit Logs',
+                revoke: 'Revoke',
+                tokenCreated: 'Device token created. It is shown only once',
+                confirmPasswordPrompt: 'Enter admin password to confirm this sensitive action',
                 channelMgmt: 'Channels',
                 channelName: 'Channel Name',
                 channelProvider: 'Provider',
@@ -1950,6 +2138,9 @@
                 noUnreadMail: 'No unread mail in this account',
                 noGlobalMail: 'No cached mail',
                 noGlobalUnread: 'No cached unread mail',
+                groupAllMail: 'Group All Mail',
+                groupUnreadMail: 'Group Unread',
+                groupMailboxHint: '{group} group',
                 confirmRemoveExternal: 'Remove external mailbox "{email}"? Its saved account config will be deleted locally.',
                 gmailOAuthNotReady: 'Gmail OAuth2 is not configured. Fill Google Client ID / Secret / Redirect URI in settings first.',
                 gmailOAuthSetupHint: 'Gmail OAuth uses the https://mail.google.com/ scope. If you do not want OAuth review, add Gmail manually with a 16-character app password.',
@@ -1973,6 +2164,7 @@
                 inbox: 'Inbox',
                 sent: 'Sent',
                 drafts: 'Drafts',
+                outbox: 'Failed Send',
                 trash: 'Trash',
                 attachments: 'Attachments',
                 download: 'Download',
@@ -1980,6 +2172,22 @@
                 permanentDelete: 'Delete forever',
                 noTrashMail: 'Trash is empty',
                 noDrafts: 'No drafts',
+                noOutbox: 'No failed send records',
+                appDrafts: 'App Drafts',
+                appOutbox: 'Failed Send',
+                favorite: 'Favorite',
+                unfavorite: 'Unfavorite',
+                pin: 'Pin',
+                unpin: 'Unpin',
+                markUnread: 'Unread',
+                markReadUnread: 'Mark read/unread',
+                replyAll: 'Reply All',
+                forward: 'Forward',
+                colorLabel: 'Color label',
+                clearColor: 'Clear color',
+                saveDraft: 'Save Draft',
+                draftSaved: 'Draft saved',
+                retrySend: 'Retry',
                 attachmentUnavailable: 'Attachment download API unavailable',
                 confirmRestore: 'Restore this email?',
                 confirmPermanentDelete: 'Permanently delete this email? This cannot be undone.',
@@ -2098,6 +2306,7 @@
             renderFolderList();
             if (currentAccountType === 'external' && currentExternalMessages.length > 0) renderExternalMessages(currentExternalMessages);
             if (currentAccountType === 'global' && currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
+            if (currentAccountType === 'group' && currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
             if (currentAccountType === 'local' && currentMessages.length > 0 && [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER, 'inbox'].includes(currentTab)) renderMessages(currentMessages);
             if (currentAccountType === 'local' && currentSentMessages.length > 0 && currentTab === 'sent') renderSentMessages(currentSentMessages);
             if (currentAccountType === 'local' && currentTrashMessages.length > 0 && currentTab === 'trash') renderTrashMessages(currentTrashMessages);
@@ -2111,6 +2320,8 @@
         let externalPresets = [];
         let currentAccountType = 'local';
         let currentGlobalFolder = 'all';
+        let currentGroupName = '';
+        let currentGroupFolder = 'all';
         let currentExternalAccountId = null;
         let currentExternalAccount = null;
         let currentExternalFolder = 'INBOX';
@@ -2125,13 +2336,20 @@
         let currentMessages = [];
         let currentSentMessages = [];
         let currentTrashMessages = [];
+        let currentDraftMessages = [];
+        let currentOutboxMessages = [];
         let activeDomains = [];
         let accountOrder = [];
         let currentOffset = 0;
         let currentTotal = 0;
         let currentSentTotal = 0;
         let currentTrashTotal = 0;
+        let currentDraftTotal = 0;
+        let currentOutboxTotal = 0;
         let currentInboxUnreadCount = 0;
+        let currentFolderCounts = {};
+        let groupCollapseState = {};
+        let messageMetaCache = {};
         let settingsModal = null;
         let externalAccountModal = null;
         let translationAbortController = null;
@@ -2139,6 +2357,7 @@
         let aiDefaultModel = {};
         let suppressAccountClick = false;
         let currentComposeSender = null;
+        let currentComposeDraftId = '';
         let quillEditor = null;
         let externalAccountFormMode = 'add';
         let editingExternalAccountId = null;
@@ -2148,10 +2367,15 @@
         const LOCAL_UNREAD_FOLDER = 'unread';
         const GLOBAL_ALL_FOLDER = 'all';
         const GLOBAL_UNREAD_FOLDER = 'unread';
+        const GROUP_ALL_FOLDER = 'all';
+        const GROUP_UNREAD_FOLDER = 'unread';
         const EXTERNAL_ALL_FOLDER = '__memail_all__';
         const EXTERNAL_UNREAD_FOLDER = '__memail_unread__';
+        const EXTERNAL_DRAFTS_FOLDER = '__memail_drafts__';
+        const EXTERNAL_OUTBOX_FOLDER = '__memail_outbox__';
         const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
+        const MESSAGE_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'];
         let externalAccountSwitchSeq = 0;
 
         // HTML 转义工具函数（防 XSS）
@@ -2167,6 +2391,116 @@
 
         function _jsString(str) {
             return _escapeAttr(JSON.stringify(String(str)));
+        }
+
+        function _messageMetaKey(accountType, accountId, folder, messageId) {
+            return [accountType || 'local', String(accountId || '').toLowerCase(), folder || 'inbox', String(messageId || '')].join('|');
+        }
+
+        function _messageRefFromMessage(msg, fallback = {}) {
+            const accountType = fallback.accountType || msg._accountType || currentAccountType || 'local';
+            const accountId = fallback.accountId || msg._accountId || msg.accountId || msg.account_id || currentExternalAccountId || currentEmail || currentMailbox || '';
+            const folder = fallback.folder || msg.folder || msg.sourceFolder || msg._source || (accountType === 'external' ? currentExternalFolder : 'inbox');
+            const messageId = fallback.messageId || msg.uid || msg.id || msg.msgid || '';
+            return { accountType, accountId: String(accountId || ''), folder: String(folder || 'inbox'), messageId: String(messageId || '') };
+        }
+
+        function _metaForMessage(msg, fallback = {}) {
+            const ref = _messageRefFromMessage(msg, fallback);
+            const key = _messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId);
+            return { favorite: Boolean(msg.flagged), pinned: false, color: '', ...(msg.meta || {}), ...(messageMetaCache[key] || {}) };
+        }
+
+        function _applyMetaToMessage(msg, meta, fallback = {}) {
+            if (!msg) return;
+            const ref = _messageRefFromMessage(msg, fallback);
+            msg.meta = { ..._metaForMessage(msg, fallback), ...meta };
+            messageMetaCache[_messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId)] = msg.meta;
+        }
+
+        function _messageClasses(msg, fallback = {}) {
+            const meta = _metaForMessage(msg, fallback);
+            return [
+                meta.pinned ? 'mail-pinned' : '',
+                meta.color ? `mail-color-${meta.color}` : '',
+            ].filter(Boolean).join(' ');
+        }
+
+        function _renderMessageFlags(msg, fallback = {}) {
+            const meta = _metaForMessage(msg, fallback);
+            const parts = [];
+            if (meta.favorite) parts.push(`<i class="bi bi-star-fill text-warning" title="${t('favorite')}"></i>`);
+            if (meta.pinned) parts.push(`<i class="bi bi-pin-angle-fill text-warning" title="${t('pin')}"></i>`);
+            if (meta.color) parts.push(`<span class="mail-color-dot ${_escapeAttr(meta.color)}" title="${t('colorLabel')}"></span>`);
+            return parts.length ? `<span class="mail-item-flags me-1">${parts.join('')}</span>` : '';
+        }
+
+        function _sortMessagesWithMeta(messages) {
+            return [...messages].sort((a, b) => {
+                const am = _metaForMessage(a);
+                const bm = _metaForMessage(b);
+                if (Boolean(am.pinned) !== Boolean(bm.pinned)) return am.pinned ? -1 : 1;
+                return _messageSortTime(b) - _messageSortTime(a);
+            });
+        }
+
+        function _folderBadge(value) {
+            const n = Number(value) || 0;
+            return n > 0 ? `<span class="badge ms-auto">${n > 99 ? '99+' : n}</span>` : '';
+        }
+
+        function _updateFolderCounts(counts = {}) {
+            currentFolderCounts = { ...currentFolderCounts, ...counts };
+            renderFolderList();
+        }
+
+        async function updateMessageMeta(ref, patch) {
+            if (!ref?.accountId || !ref?.messageId) return null;
+            const resp = await fetch('/api/message-meta', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_type: ref.accountType || 'local',
+                    account_id: ref.accountId,
+                    folder: ref.folder || 'inbox',
+                    message_id: ref.messageId,
+                    meta: patch,
+                }),
+            });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.message || t('settingsSaveFailed'));
+            messageMetaCache[_messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId)] = data.meta || {};
+            return data.meta || {};
+        }
+
+        async function loadMessageMetaFor(messages, fallback = {}) {
+            const refs = (messages || []).map(msg => {
+                const ref = _messageRefFromMessage(msg, fallback);
+                return {
+                    account_type: ref.accountType,
+                    account_id: ref.accountId,
+                    folder: ref.folder,
+                    message_id: ref.messageId,
+                };
+            }).filter(ref => ref.account_id && ref.message_id);
+            if (!refs.length) return;
+            try {
+                const resp = await fetch('/api/message-meta/batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ refs }),
+                });
+                const data = await resp.json();
+                if (!data.success) return;
+                Object.assign(messageMetaCache, data.meta || {});
+                messages.forEach(msg => {
+                    const ref = _messageRefFromMessage(msg, fallback);
+                    const key = _messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId);
+                    if (data.meta?.[key]) msg.meta = data.meta[key];
+                });
+            } catch (e) {
+                // Metadata is an enhancement; list rendering should not fail when it is unavailable.
+            }
         }
 
         function _renderMailBodyIframe(iframe, mailContent) {
@@ -2242,13 +2576,7 @@
         function _updateUnreadBadge() {
             const badge = document.getElementById('unread-badge');
             if (!badge) return;
-            const unreadCount = currentInboxUnreadCount || currentMessages.filter(m => !m.seen && (!m._source || m._source === 'inbox')).length;
-            if (unreadCount > 0) {
-                badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
-                badge.style.display = 'inline';
-            } else {
-                badge.style.display = 'none';
-            }
+            badge.style.display = 'none';
         }
 
         function _attachmentId(att, index) {
@@ -2283,9 +2611,14 @@
             if (currentAccountType === 'global') {
                 return currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? t('unreadMail') : t('allMail');
             }
+            if (currentAccountType === 'group') {
+                return currentGroupFolder === GROUP_UNREAD_FOLDER ? t('groupUnreadMail') : t('groupAllMail');
+            }
             if (currentAccountType === 'external') {
                 if (currentExternalFolder === EXTERNAL_ALL_FOLDER) return t('allMail');
                 if (currentExternalFolder === EXTERNAL_UNREAD_FOLDER) return t('unreadMail');
+                if (currentExternalFolder === EXTERNAL_DRAFTS_FOLDER) return t('appDrafts');
+                if (currentExternalFolder === EXTERNAL_OUTBOX_FOLDER) return t('appOutbox');
                 return currentExternalFolder || 'INBOX';
             }
             if (currentTab === LOCAL_ALL_FOLDER) return t('allMail');
@@ -2293,6 +2626,7 @@
             if (currentTab === 'sent') return t('sent');
             if (currentTab === 'trash') return t('trash');
             if (currentTab === 'drafts') return t('drafts');
+            if (currentTab === 'outbox') return t('outbox');
             return t('inbox');
         }
 
@@ -2300,6 +2634,8 @@
             document.querySelectorAll('.mail-folder-item').forEach(btn => {
                 const activeKey = currentAccountType === 'global'
                     ? currentGlobalFolder
+                    : currentAccountType === 'group'
+                        ? currentGroupFolder
                     : currentAccountType === 'external' ? currentExternalFolder : currentTab;
                 btn.classList.toggle('active', btn.dataset.folder === activeKey);
             });
@@ -2308,6 +2644,8 @@
             const label = document.getElementById('current-mailbox-label');
             if (label) label.textContent = currentAccountType === 'global'
                 ? t('globalMailboxHint')
+                : currentAccountType === 'group'
+                    ? t('groupMailboxHint', {group: currentGroupName})
                 : currentAccountType === 'external'
                     ? _accountDisplayName(currentExternalAccount, currentExternalAccount?.email || '')
                     : _accountDisplayName(mailboxes.find(item => item.address === currentMailbox), currentMailbox);
@@ -2421,6 +2759,8 @@
                     : (payload.error || payload.message || `${t('loadFailed')} (${resp.status})`);
                 const err = new Error(message);
                 if (payload && typeof payload === 'object') err.checks = payload.checks;
+                if (payload && typeof payload === 'object') err.payload = payload;
+                err.status = resp.status;
                 throw err;
             }
             return payload;
@@ -2462,6 +2802,48 @@
             return (account?.group || '').trim() || t('defaultAccountGroup');
         }
 
+        function _groupStateKey(group) {
+            return `memail.groupCollapsed.${group}`;
+        }
+
+        function _loadGroupCollapseState() {
+            try {
+                groupCollapseState = JSON.parse(localStorage.getItem('memail-group-collapse') || '{}') || {};
+            } catch (e) {
+                groupCollapseState = {};
+            }
+        }
+
+        function _saveGroupCollapseState() {
+            try {
+                localStorage.setItem('memail-group-collapse', JSON.stringify(groupCollapseState));
+            } catch (e) {}
+        }
+
+        function _isGroupCollapsed(group) {
+            return groupCollapseState[_groupStateKey(group)] === true;
+        }
+
+        function toggleAccountGroup(encodedGroup) {
+            const group = decodeURIComponent(String(encodedGroup || ''));
+            const key = _groupStateKey(group);
+            groupCollapseState[key] = !_isGroupCollapsed(group);
+            _saveGroupCollapseState();
+            renderMailboxes();
+        }
+
+        function _groupAccounts(group) {
+            return {
+                local: mailboxes.filter(item => _accountGroupName(item) === group),
+                external: externalAccounts.filter(item => _accountGroupName(item) === group),
+            };
+        }
+
+        function _groupAccountCount(group) {
+            const accounts = _groupAccounts(group);
+            return accounts.local.length + accounts.external.length;
+        }
+
         function _accountSettingsSearchText(account, fallbackEmail = '') {
             return [
                 fallbackEmail,
@@ -2492,6 +2874,14 @@
                 return matched ? (matched[1] || matched[0]).trim() : from.trim();
             }
             return (from.address || from.email || '').trim();
+        }
+
+        function _formatAddress(value) {
+            if (!value) return '';
+            if (typeof value === 'string') return value;
+            const name = value.name || '';
+            const address = value.address || value.email || '';
+            return name && address ? `${name} <${address}>` : (address || name || '');
         }
 
         function _accountProviderIcon(type, provider = '') {
@@ -2726,6 +3116,8 @@
             const name = String(folder?.path || folder?.name || '').toLowerCase();
             if (name === EXTERNAL_ALL_FOLDER) return 'bi-collection';
             if (name === EXTERNAL_UNREAD_FOLDER) return 'bi-envelope-exclamation';
+            if (name === EXTERNAL_DRAFTS_FOLDER) return 'bi-file-earmark-text';
+            if (name === EXTERNAL_OUTBOX_FOLDER) return 'bi-exclamation-diamond';
             if (name === 'inbox' || name.includes('收件')) return 'bi-inbox';
             if (name.includes('sent') || name.includes('已发送')) return 'bi-send';
             if (name.includes('trash') || name.includes('deleted') || name.includes('回收')) return 'bi-trash';
@@ -2740,9 +3132,14 @@
             currentMessages = [];
             currentSentMessages = [];
             currentTrashMessages = [];
+            currentDraftMessages = [];
+            currentOutboxMessages = [];
+            currentFolderCounts = {};
             currentTotal = 0;
             currentSentTotal = 0;
             currentTrashTotal = 0;
+            currentDraftTotal = 0;
+            currentOutboxTotal = 0;
             currentInboxUnreadCount = 0;
         }
 
@@ -2758,14 +3155,29 @@
             currentGlobalHasMore = false;
         }
 
+        function _groupExternalIds(group) {
+            return _groupAccounts(group).external.map(account => String(account.id)).filter(Boolean);
+        }
+
+        function _groupLocalMailboxes(group) {
+            return _groupAccounts(group).local;
+        }
+
         function _isExternalVirtualFolder(folderPath) {
-            return folderPath === EXTERNAL_ALL_FOLDER || folderPath === EXTERNAL_UNREAD_FOLDER;
+            return [
+                EXTERNAL_ALL_FOLDER,
+                EXTERNAL_UNREAD_FOLDER,
+                EXTERNAL_DRAFTS_FOLDER,
+                EXTERNAL_OUTBOX_FOLDER,
+            ].includes(folderPath);
         }
 
         function _externalVirtualFolders() {
             return [
                 { path: EXTERNAL_ALL_FOLDER, name: t('allMail'), specialUse: '', virtual: true },
                 { path: EXTERNAL_UNREAD_FOLDER, name: t('unreadMail'), specialUse: '', virtual: true },
+                { path: EXTERNAL_DRAFTS_FOLDER, name: t('appDrafts'), specialUse: '', virtual: true },
+                { path: EXTERNAL_OUTBOX_FOLDER, name: t('appOutbox'), specialUse: '', virtual: true },
             ];
         }
 
@@ -2853,6 +3265,7 @@
                 renderFolderList();
                 _updateFolderChrome();
                 if (currentAccountType === 'global') queryGlobalMessages(true);
+                if (currentAccountType === 'group') queryGroupMessages(true);
             } catch (e) {
                 // Status refresh is opportunistic; normal account loading still reports errors.
             }
@@ -2883,7 +3296,33 @@
                     </button>`);
             }
             _groupedAccountEntries().forEach(([group, entries]) => {
-                rows.push(`<div class="mail-account-group">${_escapeHtml(group)}</div>`);
+                const encodedGroup = encodeURIComponent(group);
+                const collapsed = _isGroupCollapsed(group);
+                const isGroupActive = currentAccountType === 'group' && currentGroupName === group;
+                rows.push(`
+                    <button class="mail-account-group-toggle" onclick="toggleAccountGroup('${encodedGroup}')" title="${collapsed ? '+' : '-'}">
+                        <span class="mail-account-group-label">
+                            <i class="bi ${collapsed ? 'bi-chevron-right' : 'bi-chevron-down'}"></i>
+                            <span class="text-truncate">${_escapeHtml(group)}</span>
+                            <span class="mail-account-group-count">${_groupAccountCount(group)}</span>
+                        </span>
+                    </button>`);
+                if (collapsed) return;
+                rows.push(`
+                    <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_ALL_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_ALL_FOLDER}')">
+                        <span class="mail-account-provider-icon"><i class="bi bi-collection"></i></span>
+                        <span class="mail-account-main">
+                            <span class="mail-account-title">${_escapeHtml(t('allMail'))}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(t('groupMailboxHint', {group}))}</span>
+                        </span>
+                    </button>
+                    <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_UNREAD_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_UNREAD_FOLDER}')">
+                        <span class="mail-account-provider-icon"><i class="bi bi-envelope-exclamation"></i></span>
+                        <span class="mail-account-main">
+                            <span class="mail-account-title">${_escapeHtml(t('unreadMail'))}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(t('groupMailboxHint', {group}))}</span>
+                        </span>
+                    </button>`);
                 entries.forEach(entry => {
                     if (entry.type === 'local') {
                         const address = entry.id;
@@ -3023,10 +3462,20 @@
             if (currentAccountType === 'global') {
                 list.innerHTML = `
                     <button class="mail-folder-item ${currentGlobalFolder === GLOBAL_ALL_FOLDER ? 'active' : ''}" data-folder="${GLOBAL_ALL_FOLDER}" onclick="selectGlobalFolder('${GLOBAL_ALL_FOLDER}')">
-                        <i class="bi bi-collection"></i><span>${t('allMail')}</span>
+                        <i class="bi bi-collection"></i><span>${t('allMail')}</span>${_folderBadge(currentFolderCounts.globalAll)}
                     </button>
                     <button class="mail-folder-item ${currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? 'active' : ''}" data-folder="${GLOBAL_UNREAD_FOLDER}" onclick="selectGlobalFolder('${GLOBAL_UNREAD_FOLDER}')">
-                        <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>
+                        <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.globalUnread)}
+                    </button>`;
+                return;
+            }
+            if (currentAccountType === 'group') {
+                list.innerHTML = `
+                    <button class="mail-folder-item ${currentGroupFolder === GROUP_ALL_FOLDER ? 'active' : ''}" data-folder="${GROUP_ALL_FOLDER}" onclick="selectGroupMailbox('${encodeURIComponent(currentGroupName)}', '${GROUP_ALL_FOLDER}')">
+                        <i class="bi bi-collection"></i><span>${t('allMail')}</span>${_folderBadge(currentFolderCounts.groupAll)}
+                    </button>
+                    <button class="mail-folder-item ${currentGroupFolder === GROUP_UNREAD_FOLDER ? 'active' : ''}" data-folder="${GROUP_UNREAD_FOLDER}" onclick="selectGroupMailbox('${encodeURIComponent(currentGroupName)}', '${GROUP_UNREAD_FOLDER}')">
+                        <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.groupUnread)}
                     </button>`;
                 return;
             }
@@ -3042,7 +3491,7 @@
                     const fallbackFolder = _isExternalVirtualFolder(currentExternalFolder) ? 'INBOX' : (currentExternalFolder || 'INBOX');
                     const virtualFolders = _externalVirtualFolders().map(folder => `
                         <button class="mail-folder-item ${folder.path === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(folder.path)}" onclick="selectFolder(${_jsString(encodeURIComponent(folder.path))})">
-                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(folder.name)}</span>
+                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(folder.name)}</span>${_folderBadge(folder.path === EXTERNAL_UNREAD_FOLDER ? currentFolderCounts.externalUnread : folder.path === EXTERNAL_ALL_FOLDER ? currentFolderCounts.externalAll : folder.path === EXTERNAL_DRAFTS_FOLDER ? currentFolderCounts.externalDrafts : folder.path === EXTERNAL_OUTBOX_FOLDER ? currentFolderCounts.externalOutbox : 0)}
                         </button>`).join('');
                     list.innerHTML = syncPrefix + virtualFolders + `
                         <button class="mail-folder-item ${fallbackFolder === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(fallbackFolder)}" onclick="selectFolder(${_jsString(encodeURIComponent(fallbackFolder))})">
@@ -3060,7 +3509,7 @@
                     const label = folder.name || folder.path || 'INBOX';
                     return `
                         <button class="mail-folder-item ${path === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(path)}" onclick="selectFolder(${_jsString(encodeURIComponent(path))})">
-                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(label)}</span>
+                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(label)}</span>${_folderBadge(path === EXTERNAL_UNREAD_FOLDER ? currentFolderCounts.externalUnread : path === EXTERNAL_ALL_FOLDER ? currentFolderCounts.externalAll : path === EXTERNAL_DRAFTS_FOLDER ? currentFolderCounts.externalDrafts : path === EXTERNAL_OUTBOX_FOLDER ? currentFolderCounts.externalOutbox : (path === currentExternalFolder ? currentExternalTotal : 0))}
                         </button>`;
                 }).join('');
                 return;
@@ -3068,22 +3517,25 @@
 
             list.innerHTML = composeButton + `
                 <button class="mail-folder-item ${currentTab === LOCAL_ALL_FOLDER ? 'active' : ''}" data-folder="${LOCAL_ALL_FOLDER}" onclick="selectFolder('${LOCAL_ALL_FOLDER}')">
-                    <i class="bi bi-collection"></i><span>${t('allMail')}</span>
+                    <i class="bi bi-collection"></i><span>${t('allMail')}</span>${_folderBadge(currentFolderCounts.localAll)}
                 </button>
                 <button class="mail-folder-item ${currentTab === LOCAL_UNREAD_FOLDER ? 'active' : ''}" data-folder="${LOCAL_UNREAD_FOLDER}" onclick="selectFolder('${LOCAL_UNREAD_FOLDER}')">
-                    <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>
+                    <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.localUnread || currentInboxUnreadCount)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'inbox' ? 'active' : ''}" data-folder="inbox" onclick="selectFolder('inbox')">
-                    <i class="bi bi-inbox"></i><span>${t('inbox')}</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
+                    <i class="bi bi-inbox"></i><span>${t('inbox')}</span>${_folderBadge(currentFolderCounts.localInbox || currentInboxUnreadCount)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'sent' ? 'active' : ''}" data-folder="sent" onclick="selectFolder('sent')">
-                    <i class="bi bi-send"></i><span>${t('sent')}</span>
+                    <i class="bi bi-send"></i><span>${t('sent')}</span>${_folderBadge(currentFolderCounts.localSent)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'drafts' ? 'active' : ''}" data-folder="drafts" onclick="selectFolder('drafts')">
-                    <i class="bi bi-file-earmark-text"></i><span>${t('drafts')}</span>
+                    <i class="bi bi-file-earmark-text"></i><span>${t('drafts')}</span>${_folderBadge(currentDraftTotal)}
+                </button>
+                <button class="mail-folder-item ${currentTab === 'outbox' ? 'active' : ''}" data-folder="outbox" onclick="selectFolder('outbox')">
+                    <i class="bi bi-exclamation-diamond"></i><span>${t('outbox')}</span>${_folderBadge(currentOutboxTotal)}
                 </button>
                 <button class="mail-folder-item ${currentTab === 'trash' ? 'active' : ''}" data-folder="trash" onclick="selectFolder('trash')">
-                    <i class="bi bi-trash"></i><span>${t('trash')}</span>
+                    <i class="bi bi-trash"></i><span>${t('trash')}</span>${_folderBadge(currentTrashTotal)}
                 </button>`;
             _updateUnreadBadge();
         }
@@ -3130,8 +3582,7 @@
         async function removeMailbox(encodedAddress) {
             const address = decodeURIComponent(encodedAddress);
             if (!confirm(t('confirmRemoveMailbox', {email: address}))) return;
-            const resp = await fetch(`/api/mailboxes/${encodeURIComponent(address)}`, { method: 'DELETE' });
-            const data = await resp.json();
+            const data = await fetchWithSensitiveConfirm(`/api/mailboxes/${encodeURIComponent(address)}`, { method: 'DELETE' }, 'delete_mailbox');
             if (data.success) {
                 mailboxes = data.mailboxes || [];
                 accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
@@ -3144,6 +3595,8 @@
                 renderMailboxes();
                 renderFolderList();
                 renderAccountSettingsLists();
+            } else if (data.message) {
+                _showMailboxError(data.message);
             }
         }
 
@@ -3178,6 +3631,7 @@
         async function selectMailbox(encodedAddress) {
             const address = decodeURIComponent(encodedAddress);
             currentAccountType = 'local';
+            currentGroupName = '';
             if (autoRefreshTimer) {
                 clearInterval(autoRefreshTimer);
                 autoRefreshTimer = null;
@@ -3198,6 +3652,8 @@
 
         async function selectGlobalMailbox() {
             currentAccountType = 'global';
+            currentGroupName = '';
+            currentGroupFolder = GROUP_ALL_FOLDER;
             currentMailbox = '';
             currentEmail = '';
             currentExternalAccountId = null;
@@ -3221,6 +3677,8 @@
 
         async function selectGlobalFolder(folder) {
             currentAccountType = 'global';
+            currentGroupName = '';
+            currentGroupFolder = GROUP_ALL_FOLDER;
             currentGlobalFolder = folder === GLOBAL_UNREAD_FOLDER ? GLOBAL_UNREAD_FOLDER : GLOBAL_ALL_FOLDER;
             _resetGlobalMessageState();
             renderFolderList();
@@ -3228,10 +3686,50 @@
             await queryGlobalMessages(false);
         }
 
+        async function selectGroupMailbox(encodedGroup, folder = GROUP_ALL_FOLDER) {
+            const group = decodeURIComponent(String(encodedGroup || ''));
+            if (!group) return;
+            currentAccountType = 'group';
+            currentGroupName = group;
+            currentGroupFolder = folder === GROUP_UNREAD_FOLDER ? GROUP_UNREAD_FOLDER : GROUP_ALL_FOLDER;
+            currentMailbox = '';
+            currentEmail = '';
+            currentExternalAccountId = null;
+            currentExternalAccount = null;
+            currentExternalFolders = [];
+            _resetLocalMessageState();
+            _resetExternalMessageState();
+            _resetGlobalMessageState();
+            if (autoRefreshTimer) {
+                clearInterval(autoRefreshTimer);
+                autoRefreshTimer = null;
+                document.getElementById('auto-refresh-toggle').checked = false;
+            }
+            renderMailboxes();
+            renderFolderList();
+            _updateFolderChrome();
+            document.getElementById('btn-refresh-mail').disabled = false;
+            resetMailDetail();
+            await queryGroupMessages(false);
+        }
+
         async function selectFolder(folder) {
             const decodedFolder = decodeURIComponent(String(folder || ''));
             if (currentAccountType === 'external') {
                 const switchSeq = ++externalAccountSwitchSeq;
+                if (decodedFolder === EXTERNAL_DRAFTS_FOLDER || decodedFolder === EXTERNAL_OUTBOX_FOLDER) {
+                    currentExternalFolder = decodedFolder;
+                    currentExternalMessages = [];
+                    renderFolderList();
+                    _updateFolderChrome();
+                    if (decodedFolder === EXTERNAL_DRAFTS_FOLDER) {
+                        await queryDrafts();
+                    } else {
+                        await queryOutbox();
+                    }
+                    resetMailDetail();
+                    return;
+                }
                 if (decodedFolder === '__memail_sent_pending__') {
                     try {
                         await _refreshExternalFolders(currentExternalAccountId);
@@ -3267,6 +3765,7 @@
             if (!account) return;
             const switchSeq = ++externalAccountSwitchSeq;
             currentAccountType = 'external';
+            currentGroupName = '';
             currentExternalAccountId = account.id;
             currentExternalAccount = account;
             currentEmail = account.email || '';
@@ -3330,7 +3829,7 @@
             if (!account) return;
             if (!confirm(t('confirmRemoveExternal', {email: account.email || id}))) return;
             try {
-                await _imapApi(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                await deleteExternalAccountWithConfirm(id);
                 externalAccounts = externalAccounts.filter(item => String(item.id) !== String(id));
                 accountOrder = accountOrder.filter(key => key !== _accountOrderKey('external', id));
                 await persistAccountOrder();
@@ -3352,6 +3851,18 @@
                 }
             } catch (e) {
                 _showMailboxError(`${t('deleteFailed')}: ${e.message}`);
+            }
+        }
+
+        async function deleteExternalAccountWithConfirm(id) {
+            try {
+                return await _imapApi(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            } catch (e) {
+                const action = e.payload?.action || 'delete_external_account';
+                if (e.status !== 403 || !e.payload?.require_confirmation) throw e;
+                const ok = await confirmSensitiveAction(action);
+                if (!ok) throw new Error('已取消二次确认');
+                return _imapApi(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
             }
         }
 
@@ -3833,6 +4344,21 @@
             alert.style.display = 'block';
         }
 
+        function _showSecurityAlert(type, message) {
+            const alert = document.getElementById('security-settings-alert');
+            if (!alert) return;
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+        }
+
+        function _clearSecurityAlert() {
+            const alert = document.getElementById('security-settings-alert');
+            if (!alert) return;
+            alert.style.display = 'none';
+            alert.textContent = '';
+        }
+
         function _clearAiSettingsAlert() {
             const alert = document.getElementById('ai-settings-alert');
             if (!alert) return;
@@ -3841,7 +4367,13 @@
         }
 
         function _switchSettingsTab(name = 'system') {
-            const tabId = name === 'ai' ? 'settings-ai-tab' : name === 'accounts' ? 'settings-accounts-tab' : 'settings-system-tab';
+            const tabId = name === 'ai'
+                ? 'settings-ai-tab'
+                : name === 'accounts'
+                    ? 'settings-accounts-tab'
+                    : name === 'security'
+                        ? 'settings-security-tab'
+                        : 'settings-system-tab';
             const tab = document.getElementById(tabId);
             if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
             _syncSettingsFooter();
@@ -4060,6 +4592,168 @@
             _renderSettingsStatus(settings);
         }
 
+        async function confirmSensitiveAction(action) {
+            const password = prompt(t('confirmPasswordPrompt'));
+            if (!password) return false;
+            const code = prompt(t('enterTotp')) || '';
+            const resp = await fetch('/api/security/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action, password, totp_code: code }),
+            });
+            const data = await resp.json();
+            if (!data.success) {
+                _showSettingsAlert('danger', data.message || t('settingsSaveFailed'));
+                return false;
+            }
+            return true;
+        }
+
+        async function fetchWithSensitiveConfirm(url, options, action) {
+            let resp = await fetch(url, options);
+            let data = await resp.json();
+            if (resp.status === 403 && data.require_confirmation) {
+                const ok = await confirmSensitiveAction(data.action || action);
+                if (!ok) return data;
+                resp = await fetch(url, options);
+                data = await resp.json();
+            }
+            return data;
+        }
+
+        function renderSecuritySettings(payload = {}) {
+            const sessions = payload.sessions || [];
+            const tokens = payload.tokens || [];
+            const logs = payload.logs || [];
+            const currentSessionId = payload.current_session_id || '';
+            const totpStatus = document.getElementById('totp-status');
+            if (totpStatus) totpStatus.textContent = payload.totp_enabled ? t('configured') : t('notConfigured');
+            const sessionList = document.getElementById('session-list');
+            if (sessionList) {
+                sessionList.innerHTML = sessions.length ? sessions.map(item => `
+                    <div class="account-settings-row">
+                        <span class="mail-account-provider-icon"><i class="bi bi-display"></i></span>
+                        <span class="flex-grow-1 min-w-0">
+                            <span class="mail-account-title">${_escapeHtml(item.username || 'admin')}${item.id === currentSessionId ? ' · 当前' : ''}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(item.ip || '')} · ${_escapeHtml(item.last_seen || item.created_at || '')}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(item.user_agent || '')}</span>
+                        </span>
+                        <span class="account-settings-row-actions">
+                            ${item.revoked ? `<span class="badge text-bg-light">${t('revoke')}</span>` : `<button class="btn btn-sm btn-outline-danger" onclick="revokeSession('${_escapeAttr(item.id)}')">${t('revoke')}</button>`}
+                        </span>
+                    </div>`).join('') : `<div class="account-settings-empty">${t('noMatch')}</div>`;
+            }
+            const tokenList = document.getElementById('device-token-list');
+            if (tokenList) {
+                tokenList.innerHTML = tokens.length ? tokens.map(item => `
+                    <div class="account-settings-row">
+                        <span class="mail-account-provider-icon"><i class="bi bi-phone"></i></span>
+                        <span class="flex-grow-1 min-w-0">
+                            <span class="mail-account-title">${_escapeHtml(item.name || item.id)}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(item.last_seen || item.created_at || '')}</span>
+                        </span>
+                        <span class="account-settings-row-actions">
+                            <button class="btn btn-sm btn-outline-danger" onclick="revokeDeviceToken('${_escapeAttr(item.id)}')"><i class="bi bi-x-lg"></i></button>
+                        </span>
+                    </div>`).join('') : `<div class="account-settings-empty">${t('noMatch')}</div>`;
+            }
+            const logList = document.getElementById('audit-log-list');
+            if (logList) {
+                logList.innerHTML = logs.length ? logs.map(item => `
+                    <div class="account-settings-row">
+                        <span class="mail-account-provider-icon"><i class="bi ${item.success ? 'bi-check2-circle' : 'bi-exclamation-triangle'}"></i></span>
+                        <span class="flex-grow-1 min-w-0">
+                            <span class="mail-account-title">${_escapeHtml(item.action || '')}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(item.created_at || '')} · ${_escapeHtml(item.ip || '')}</span>
+                        </span>
+                    </div>`).join('') : `<div class="account-settings-empty">${t('noMatch')}</div>`;
+            }
+        }
+
+        async function loadSecuritySettings() {
+            _clearSecurityAlert();
+            try {
+                const [sessionsResp, tokensResp, auditResp] = await Promise.all([
+                    fetch('/api/security/sessions'),
+                    fetch('/api/devices/tokens'),
+                    fetch('/api/security/audit?limit=50'),
+                ]);
+                const sessions = await sessionsResp.json();
+                const tokens = await tokensResp.json();
+                const audit = await auditResp.json();
+                renderSecuritySettings({
+                    sessions: sessions.sessions || [],
+                    current_session_id: sessions.current_session_id || '',
+                    totp_enabled: sessions.totp_enabled,
+                    tokens: tokens.tokens || [],
+                    logs: audit.logs || [],
+                });
+            } catch (e) {
+                _showSecurityAlert('danger', `${t('settingsLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        async function setupTotp() {
+            _clearSecurityAlert();
+            const data = await fetchWithSensitiveConfirm('/api/security/totp/setup', { method: 'POST' }, 'save_settings');
+            if (!data.success) {
+                _showSecurityAlert('danger', data.message || t('settingsSaveFailed'));
+                return;
+            }
+            document.getElementById('totp-secret').textContent = data.secret || '';
+            document.getElementById('totp-setup-panel').style.display = 'block';
+            _showSecurityAlert('success', data.otpauth_uri || data.secret || '');
+        }
+
+        async function enableTotp() {
+            const code = document.getElementById('totp-code-input').value.trim();
+            const resp = await fetch('/api/security/totp/enable', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+            });
+            const data = await resp.json();
+            if (!data.success) {
+                _showSecurityAlert('danger', data.message || t('settingsSaveFailed'));
+                return;
+            }
+            document.getElementById('totp-setup-panel').style.display = 'none';
+            await loadSecuritySettings();
+        }
+
+        async function disableTotp() {
+            const data = await fetchWithSensitiveConfirm('/api/security/totp/disable', { method: 'POST' }, 'save_settings');
+            if (!data.success) _showSecurityAlert('danger', data.message || t('settingsSaveFailed'));
+            await loadSecuritySettings();
+        }
+
+        async function revokeSession(sessionId) {
+            const data = await fetchWithSensitiveConfirm(`/api/security/sessions/${encodeURIComponent(sessionId)}/revoke`, { method: 'POST' }, 'revoke_session');
+            if (!data.success) _showSecurityAlert('danger', data.message || t('settingsSaveFailed'));
+            await loadSecuritySettings();
+        }
+
+        async function createDeviceToken() {
+            const name = document.getElementById('device-token-name').value.trim();
+            const data = await fetchWithSensitiveConfirm('/api/devices/tokens', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+            }, 'create_device_token');
+            if (!data.success) {
+                _showSecurityAlert('danger', data.message || t('settingsSaveFailed'));
+                return;
+            }
+            document.getElementById('new-device-token').innerHTML = `${t('tokenCreated')}: <code>${_escapeHtml(data.token || '')}</code>`;
+            await loadSecuritySettings();
+        }
+
+        async function revokeDeviceToken(tokenId) {
+            const data = await fetchWithSensitiveConfirm(`/api/devices/tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' }, 'revoke_device_token');
+            if (!data.success) _showSecurityAlert('danger', data.message || t('settingsSaveFailed'));
+            await loadSecuritySettings();
+        }
+
         async function loadSettings() {
             const alert = document.getElementById('settings-alert');
             alert.style.display = 'none';
@@ -4078,7 +4772,7 @@
         async function openSettings(tab = 'system') {
             _getSettingsModal().show();
             _switchSettingsTab(tab);
-            await Promise.all([loadSettings(), loadAiSettings()]);
+            await Promise.all([loadSettings(), loadAiSettings(), loadSecuritySettings()]);
             renderAccountSettingsLists();
             handleAiProviderChange();
         }
@@ -4109,7 +4803,17 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
-                const data = await resp.json();
+                let data = await resp.json();
+                if (resp.status === 403 && data.require_confirmation) {
+                    const ok = await confirmSensitiveAction(data.action || 'save_settings');
+                    if (!ok) throw new Error(data.message || t('settingsSaveFailed'));
+                    const retryResp = await fetch('/api/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    data = await retryResp.json();
+                }
                 if (!data.success) {
                     throw new Error(data.message || t('settingsSaveFailed'));
                 }
@@ -4126,6 +4830,7 @@
         // 页面加载时初始化语言 + 获取域名和账号列表
         document.addEventListener('DOMContentLoaded', async () => {
             applyLang();
+            _loadGroupCollapseState();
             document.querySelectorAll('#settingsModal [data-bs-toggle="tab"]').forEach(tab => {
                 tab.addEventListener('shown.bs.tab', _syncSettingsFooter);
             });
@@ -4156,10 +4861,12 @@
         const AUTO_REFRESH_INTERVAL = 15000; // 15秒
 
         function toggleAutoRefresh(enabled) {
-            if (enabled && (currentAccountType === 'global' || currentEmail)) {
+            if (enabled && (currentAccountType === 'global' || currentAccountType === 'group' || currentEmail)) {
                 autoRefreshTimer = setInterval(() => {
                     if (currentAccountType === 'global') {
                         queryGlobalMessages(true);
+                    } else if (currentAccountType === 'group') {
+                        queryGroupMessages(true);
                     } else if (currentAccountType === 'external') {
                         queryExternalMails(true, false);
                     } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
@@ -4210,6 +4917,18 @@
                 return;
             }
 
+            if (currentAccountType === 'group') {
+                if (tabInbox) tabInbox.className = 'btn btn-outline-secondary';
+                if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
+                if (batchBar) batchBar.style.cssText = 'display:none !important;';
+                if (searchBar) searchBar.style.display = 'flex';
+                if (currentGlobalMessages.length > 0) renderGlobalMessages(currentGlobalMessages);
+                else queryGroupMessages(false);
+                resetMailDetail();
+                return;
+            }
+
             if (currentAccountType === 'external') {
                 if (tabInbox) tabInbox.className = 'btn btn-outline-secondary';
                 if (tabSent) tabSent.className = 'btn btn-outline-secondary';
@@ -4218,6 +4937,12 @@
                 if (searchBar) searchBar.style.display = currentExternalAccountId ? 'flex' : 'none';
                 if (!currentExternalAccountId) {
                     document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                } else if (currentExternalFolder === EXTERNAL_DRAFTS_FOLDER) {
+                    if (searchBar) searchBar.style.display = 'none';
+                    currentDraftMessages.length ? renderDraftMessages(currentDraftMessages) : queryDrafts();
+                } else if (currentExternalFolder === EXTERNAL_OUTBOX_FOLDER) {
+                    if (searchBar) searchBar.style.display = 'none';
+                    currentOutboxMessages.length ? renderOutboxMessages(currentOutboxMessages) : queryOutbox();
                 } else if (currentExternalMessages.length > 0) {
                     renderExternalMessages(currentExternalMessages);
                 } else {
@@ -4272,7 +4997,12 @@
                 } else if (tab === 'drafts') {
                     if (tabSent) tabSent.className = 'btn btn-outline-secondary';
                     if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
-                    document.getElementById('mail-list').innerHTML = `<div class="empty-state"><i class="bi bi-file-earmark-text d-block"></i><p>${t('noDrafts')}</p></div>`;
+                    queryDrafts();
+                    resetMailDetail();
+                } else if (tab === 'outbox') {
+                    if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                    if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
+                    queryOutbox();
                     resetMailDetail();
                 } else {
                     if (tabSent) tabSent.className = 'btn btn-outline-secondary';
@@ -4306,9 +5036,43 @@
                 queryGlobalMessages(false);
                 return;
             }
+            if (currentAccountType === 'group') {
+                const btn = document.getElementById('btn-refresh-mail');
+                const externalIds = _groupExternalIds(currentGroupName);
+                if (btn) btn.disabled = true;
+                try {
+                    if (externalIds.length) {
+                        const sync = await _imapApi('/accounts/sync', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ force: true, background: true, accountIds: externalIds.join(',') }),
+                        });
+                        if (Array.isArray(sync.accounts)) {
+                            externalAccounts = sync.accounts;
+                            renderMailboxes();
+                            renderFolderList();
+                            _updateFolderChrome();
+                        }
+                    }
+                } catch (e) {
+                    _showMailboxError(`${t('syncFailed')}: ${e.message}`);
+                } finally {
+                    if (btn) btn.disabled = false;
+                }
+                queryGroupMessages(false);
+                return;
+            }
             if (currentAccountType === 'external') {
                 if (!currentExternalAccountId) {
                     document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                    return;
+                }
+                if (currentExternalFolder === EXTERNAL_DRAFTS_FOLDER) {
+                    await queryDrafts();
+                    return;
+                }
+                if (currentExternalFolder === EXTERNAL_OUTBOX_FOLDER) {
+                    await queryOutbox();
                     return;
                 }
                 const accountId = currentExternalAccountId;
@@ -4346,8 +5110,9 @@
             if (currentTab === 'inbox') queryInbox();
             else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) queryLocalVirtualMessages();
             else if (currentTab === 'sent') querySent();
+            else if (currentTab === 'drafts') queryDrafts();
+            else if (currentTab === 'outbox') queryOutbox();
             else if (currentTab === 'trash') queryTrash();
-            else if (currentTab === 'drafts') switchTab('drafts');
         }
 
         async function querySent(append = false) {
@@ -4368,6 +5133,7 @@
                     return;
                 }
                 currentSentTotal = data.total || data.messages.length;
+                _updateFolderCounts({ localSent: currentSentTotal });
                 renderSentMessages(append ? currentSentMessages.concat(data.messages) : data.messages);
             } catch (e) {
                 mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
@@ -4424,6 +5190,13 @@
                 const sent = sentResult.messages;
                 const trash = trashResult.messages;
                 currentInboxUnreadCount = unreadResult.total;
+                _updateFolderCounts({
+                    localInbox: unreadResult.total,
+                    localUnread: unreadResult.total,
+                    localSent: sentResult.total,
+                    localTrash: trashResult.total,
+                    localAll: inboxResult.total + sentResult.total + trashResult.total,
+                });
                 const merged = [
                     ...(currentTab === LOCAL_UNREAD_FOLDER ? unread : inbox).map(msg => _normalizeLocalVirtualMessage(msg, 'inbox')),
                     ...(currentTab === LOCAL_UNREAD_FOLDER ? [] : sent.map(msg => _normalizeLocalVirtualMessage(msg, 'sent'))),
@@ -4434,7 +5207,8 @@
                 currentMessages = merged;
                 currentSentMessages = sent;
                 currentTrashMessages = trash;
-                currentTotal = merged.length;
+                currentTotal = currentTab === LOCAL_UNREAD_FOLDER ? unreadResult.total : currentFolderCounts.localAll;
+                await loadMessageMetaFor(currentMessages, { accountType: 'local', accountId: currentEmail });
                 renderMessages(currentMessages);
             } catch (e) {
                 if (!silent) {
@@ -4443,8 +5217,8 @@
             }
         }
 
-        async function _fetchLocalAggregate(unreadOnly = false) {
-            const results = await Promise.all(mailboxes.map(async item => {
+        async function _fetchLocalAggregate(unreadOnly = false, sourceMailboxes = mailboxes) {
+            const results = await Promise.all(sourceMailboxes.map(async item => {
                 const email = item.address || '';
                 if (!email) return [];
                 try {
@@ -4468,10 +5242,10 @@
             return results.flat();
         }
 
-        async function _searchLocalAggregate(query, unreadOnly = false) {
+        async function _searchLocalAggregate(query, unreadOnly = false, sourceMailboxes = mailboxes) {
             const q = String(query || '').trim();
             if (!q) return [];
-            const results = await Promise.all(mailboxes.map(async item => {
+            const results = await Promise.all(sourceMailboxes.map(async item => {
                 const email = item.address || '';
                 if (!email) return [];
                 try {
@@ -4501,7 +5275,7 @@
             const account = externalAccounts.find(item => String(item.id) === String(msg.accountId))
                 || externalAccounts.find(item => String(item.email || '').toLowerCase() === String(msg.accountEmail || '').toLowerCase());
             const accountId = msg.accountId || account?.id || '';
-            return {
+            const normalized = {
                 ...msg,
                 _accountType: 'external',
                 _accountId: accountId,
@@ -4509,6 +5283,12 @@
                 _source: msg.folder || msg.sourceFolder || 'INBOX',
                 _sortTime: _messageSortTime(msg),
             };
+            if (normalized.flagged) {
+                normalized.meta = { ...normalized.meta, favorite: true };
+                const key = _messageMetaKey('external', accountId, normalized._source, normalized.uid);
+                messageMetaCache[key] = { ...(messageMetaCache[key] || {}), favorite: true };
+            }
+            return normalized;
         }
 
         async function queryGlobalMessages(silent = false) {
@@ -4531,6 +5311,53 @@
                 currentGlobalMessages = merged;
                 currentGlobalTotal = (externalData.total || externalMessages.length) + localMessages.length;
                 currentGlobalHasMore = Boolean(externalData.hasMore);
+                _updateFolderCounts({
+                    globalAll: currentGlobalTotal,
+                    globalUnread: currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? currentGlobalTotal : merged.filter(msg => !msg.seen).length,
+                });
+                await loadMessageMetaFor(merged);
+                renderGlobalMessages(merged);
+            } catch (e) {
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
+            }
+        }
+
+        async function queryGroupMessages(silent = false) {
+            if (currentAccountType !== 'group' || !currentGroupName) return;
+            const mailList = document.getElementById('mail-list');
+            if (!silent) {
+                resetMailDetail();
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            }
+            try {
+                const unreadOnly = currentGroupFolder === GROUP_UNREAD_FOLDER;
+                const localAccounts = _groupLocalMailboxes(currentGroupName);
+                const externalIds = _groupExternalIds(currentGroupName);
+                const externalParams = new URLSearchParams({
+                    count: String(PAGE_SIZE),
+                    unread: unreadOnly ? 'true' : 'false',
+                });
+                if (externalIds.length) externalParams.set('accountIds', externalIds.join(','));
+                const [localMessages, externalData] = await Promise.all([
+                    _fetchLocalAggregate(unreadOnly, localAccounts),
+                    externalIds.length
+                        ? _imapApi(`/mails?${externalParams.toString()}`).catch(() => ({ mails: [], total: 0, unseen: 0, hasMore: false }))
+                        : Promise.resolve({ mails: [], total: 0, unseen: 0, hasMore: false }),
+                ]);
+                const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
+                const merged = localMessages.concat(externalMessages)
+                    .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
+                    .slice(0, PAGE_SIZE);
+                currentGlobalMessages = merged;
+                currentGlobalTotal = (externalData.total || externalMessages.length) + localMessages.length;
+                currentGlobalHasMore = Boolean(externalData.hasMore);
+                _updateFolderCounts({
+                    groupAll: unreadOnly ? (currentFolderCounts.groupAll || 0) : currentGlobalTotal,
+                    groupUnread: unreadOnly ? currentGlobalTotal : merged.filter(msg => !msg.seen).length,
+                });
+                await loadMessageMetaFor(merged);
                 renderGlobalMessages(merged);
             } catch (e) {
                 if (!silent) {
@@ -4548,20 +5375,21 @@
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-collection d-block"></i><p>${emptyText}</p></div>`;
                 return;
             }
-            mailList.innerHTML = messages.map(msg => {
+            mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
                 const isExternal = msg._accountType === 'external';
                 const sourceFolder = msg.folder || msg.sourceFolder || msg._source || 'INBOX';
                 const msgId = isExternal ? `${sourceFolder}::${msg.uid}` : (msg.id || msg.msgid);
                 const sender = isExternal ? (msg.from?.name || msg.from?.address || t('unknownSender')) : _formatAddress(msg.from);
                 const subject = msg.subject || t('noSubject');
                 const date = msg.date || msg.createdAt || msg.created_at;
+                const metaFallback = { accountType: isExternal ? 'external' : 'local', accountId: msg._accountId || '', folder: sourceFolder, messageId: isExternal ? msg.uid : msgId };
                 const accountBadge = msg._accountLabel ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg._accountLabel)}</span>` : '';
                 const folderBadge = isExternal ? `<span class="badge text-bg-light me-1">${_escapeHtml(sourceFolder)}</span>` : '';
                 return `
-                    <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'}" data-msg-id="${_escapeAttr(msgId)}" onclick="${isExternal ? `viewGlobalExternalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(msgId))}, this)` : `viewGlobalLocalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(String(msgId)))}, this)`}">
+                    <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="${isExternal ? `viewGlobalExternalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(msgId))}, this)` : `viewGlobalLocalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(String(msgId)))}, this)`}">
                         <div class="card-body py-2">
                             <div class="d-flex justify-content-between align-items-start">
-                                <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(sender)}</span></span>
+                                <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
                                 <small class="text-muted text-nowrap">${date ? new Date(date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
                             </div>
                             <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(subject)}</span></div>
@@ -4577,6 +5405,7 @@
             const msgRef = _parseExternalMessageRef(encodedMsgId);
             currentExternalAccountId = accountId;
             currentExternalAccount = _externalAccountById(accountId);
+            currentEmail = currentExternalAccount?.email || currentEmail;
             await viewExternalMailDetail(encodedMsgId, element);
             const idx = currentGlobalMessages.findIndex(msg =>
                 msg._accountType === 'external' &&
@@ -4592,7 +5421,180 @@
             const messageId = decodeURIComponent(encodedMessageId);
             if (!email || !messageId) return;
             currentEmail = email;
+            currentMailbox = email;
             await viewMailDetail(messageId, element);
+        }
+
+        function _currentDetailRef() {
+            return window._currentDetailRef || null;
+        }
+
+        function _findMessageByRef(ref) {
+            if (!ref) return null;
+            const id = String(ref.messageId || '');
+            const pools = [currentMessages, currentExternalMessages, currentGlobalMessages, currentTrashMessages, currentSentMessages];
+            for (const pool of pools) {
+                const found = (pool || []).find(msg => {
+                    if (String(msg.uid || msg.id || msg.msgid) !== id) return false;
+                    const msgAccountId = String(msg._accountId || msg.accountId || msg.account_id || ref.accountId || '');
+                    const msgFolder = String(msg.folder || msg.sourceFolder || msg._source || ref.folder || '');
+                    return (!ref.accountId || !msgAccountId || msgAccountId === String(ref.accountId)) &&
+                        (!ref.folder || !msgFolder || msgFolder === String(ref.folder));
+                });
+                if (found) return found;
+            }
+            return null;
+        }
+
+        function rerenderCurrentList() {
+            if (currentAccountType === 'external') {
+                if (currentExternalFolder === EXTERNAL_DRAFTS_FOLDER) renderDraftMessages(currentDraftMessages);
+                else if (currentExternalFolder === EXTERNAL_OUTBOX_FOLDER) renderOutboxMessages(currentOutboxMessages);
+                else renderExternalMessages(currentExternalMessages);
+            } else if (currentAccountType === 'global' || currentAccountType === 'group') {
+                renderGlobalMessages(currentGlobalMessages);
+            } else if (currentTab === 'trash') {
+                renderTrashMessages(currentTrashMessages);
+            } else if (currentTab === 'sent') {
+                renderSentMessages(currentSentMessages);
+            } else if (currentTab === 'drafts') {
+                renderDraftMessages(currentDraftMessages);
+            } else if (currentTab === 'outbox') {
+                renderOutboxMessages(currentOutboxMessages);
+            } else {
+                renderMessages(currentMessages);
+            }
+        }
+
+        function renderMessageActions(ref, msg = {}) {
+            const meta = _metaForMessage(msg, ref);
+            const isUnread = !msg.seen;
+            const canReply = ref.accountType !== 'global' && ref.folder !== 'trash' && ref.folder !== 'sent';
+            const canForward = ref.accountType !== 'global' && ref.folder !== 'trash';
+            const canToggleRead = ref.folder !== 'sent';
+            const colorButtons = MESSAGE_COLORS.map(color => `<button type="button" class="mail-color-btn ${color}" onclick="setCurrentMailColor('${color}')" title="${color}"></button>`).join('');
+            return `
+                <div class="mail-action-menu">
+                    ${_detailTranslateButton()}
+                    <button class="btn btn-sm btn-outline-secondary" onclick="toggleFavoriteCurrentMail()" title="${meta.favorite ? t('unfavorite') : t('favorite')}">
+                        <i class="bi ${meta.favorite ? 'bi-star-fill text-warning' : 'bi-star'}"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="togglePinCurrentMail()" title="${meta.pinned ? t('unpin') : t('pin')}">
+                        <i class="bi ${meta.pinned ? 'bi-pin-angle-fill text-warning' : 'bi-pin-angle'}"></i>
+                    </button>
+                    ${canToggleRead ? `<button class="btn btn-sm btn-outline-secondary" onclick="toggleReadCurrentMail()" title="${t('markReadUnread')}">
+                        <i class="bi ${isUnread ? 'bi-envelope-open' : 'bi-envelope'}"></i>
+                    </button>` : ''}
+                    ${canReply ? `<button class="btn btn-sm btn-outline-primary" onclick="openReply()"><i class="bi bi-reply me-1"></i>${t('reply')}</button>` : ''}
+                    ${canReply ? `<button class="btn btn-sm btn-outline-primary" onclick="openReplyAll()"><i class="bi bi-reply-all me-1"></i>${t('replyAll')}</button>` : ''}
+                    ${canForward ? `<button class="btn btn-sm btn-outline-primary" onclick="openForward()"><i class="bi bi-forward me-1"></i>${t('forward')}</button>` : ''}
+                    <span class="mail-color-picker" title="${t('colorLabel')}">
+                        ${colorButtons}
+                        <button class="btn btn-sm btn-outline-secondary" onclick="setCurrentMailColor('')" title="${t('clearColor')}"><i class="bi bi-x-lg"></i></button>
+                    </span>
+                </div>`;
+        }
+
+        async function toggleFavoriteCurrentMail() {
+            const ref = _currentDetailRef();
+            const msg = _findMessageByRef(ref);
+            const meta = _metaForMessage(msg || {}, ref || {});
+            if (ref?.accountType === 'external') {
+                const key = _messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId);
+                messageMetaCache[key] = { ...(messageMetaCache[key] || {}), favorite: !meta.favorite };
+                if (msg) msg.flagged = !meta.favorite;
+                _imapApi(`/accounts/${encodeURIComponent(ref.accountId)}/mails/${encodeURIComponent(ref.messageId)}/flags?folder=${encodeURIComponent(ref.folder || 'INBOX')}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: meta.favorite ? 'remove' : 'add', flags: ['\\Flagged'] }),
+                }).catch(() => {});
+            }
+            const saved = await updateMessageMeta(ref, { favorite: !meta.favorite });
+            if (msg) _applyMetaToMessage(msg, saved, ref);
+            if (window._currentDetailMsg) window._currentDetailMsg.meta = saved;
+            rerenderCurrentList();
+            refreshDetailActionBar();
+        }
+
+        async function togglePinCurrentMail() {
+            const ref = _currentDetailRef();
+            const msg = _findMessageByRef(ref);
+            const meta = _metaForMessage(msg || {}, ref || {});
+            const saved = await updateMessageMeta(ref, { pinned: !meta.pinned });
+            if (msg) _applyMetaToMessage(msg, saved, ref);
+            if (window._currentDetailMsg) window._currentDetailMsg.meta = saved;
+            rerenderCurrentList();
+            refreshDetailActionBar();
+        }
+
+        async function setCurrentMailColor(color) {
+            const ref = _currentDetailRef();
+            const msg = _findMessageByRef(ref);
+            const saved = await updateMessageMeta(ref, { color });
+            if (msg) _applyMetaToMessage(msg, saved, ref);
+            if (window._currentDetailMsg) window._currentDetailMsg.meta = saved;
+            rerenderCurrentList();
+            refreshDetailActionBar();
+        }
+
+        function refreshDetailActionBar() {
+            const bar = document.getElementById('mail-detail-actions');
+            const ref = _currentDetailRef();
+            if (!bar || !ref) return;
+            bar.innerHTML = renderMessageActions(ref, window._currentDetailMsg || _findMessageByRef(ref) || {});
+        }
+
+        async function setMessageReadState(ref, seen) {
+            if (!ref) return;
+            if (ref.accountType === 'external') {
+                await _imapApi(`/accounts/${encodeURIComponent(ref.accountId)}/mails/${encodeURIComponent(ref.messageId)}/flags?folder=${encodeURIComponent(ref.folder || 'INBOX')}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: seen ? 'add' : 'remove', flags: ['\\Seen'] }),
+                });
+            } else {
+                const resp = await fetch('/api/inbox/mark', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: ref.accountId || currentEmail, message_id: ref.messageId, seen }),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('settingsSaveFailed'));
+            }
+            const msg = _findMessageByRef(ref);
+            const wasUnread = msg ? !msg.seen : false;
+            if (msg) msg.seen = seen;
+            if (window._currentDetailMsg) window._currentDetailMsg.seen = seen;
+            if (ref.accountType === 'local' && msg && wasUnread === seen) {
+                const delta = seen ? -1 : 1;
+                currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount + delta);
+                _updateFolderCounts({
+                    localInbox: currentInboxUnreadCount,
+                    localUnread: currentInboxUnreadCount,
+                });
+                if (currentTab === LOCAL_UNREAD_FOLDER && seen) {
+                    currentMessages = currentMessages.filter(item => String(item.id || item.msgid) !== String(ref.messageId));
+                    currentTotal = Math.max(0, currentTotal + delta);
+                }
+            } else if (ref.accountType === 'external' && msg && wasUnread === seen) {
+                const delta = seen ? -1 : 1;
+                _updateFolderCounts({
+                    externalUnread: Math.max(0, (currentFolderCounts.externalUnread || 0) + delta),
+                });
+            }
+        }
+
+        async function toggleReadCurrentMail() {
+            const ref = _currentDetailRef();
+            const msg = window._currentDetailMsg || _findMessageByRef(ref);
+            if (!ref || !msg) return;
+            try {
+                await setMessageReadState(ref, !msg.seen);
+                rerenderCurrentList();
+                refreshDetailActionBar();
+            } catch (e) {
+                _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
+            }
         }
 
         function renderSentMessages(messages) {
@@ -4602,14 +5604,15 @@
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-send d-block"></i><p>${t('noSentMail')}</p></div>`;
                 return;
             }
-            mailList.innerHTML = messages.map(msg => {
+            mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
                 const toStr = _escapeHtml((msg.to || []).join(', '));
                 const subject = _escapeHtml(msg.subject || t('noSubject'));
+                const metaFallback = { accountType: 'local', accountId: currentEmail, folder: 'sent', messageId: msg.id };
                 return `
-                    <div class="card mb-2 mail-item" data-msg-id="${msg.id}" onclick="viewSentDetailById('${msg.id}', this)">
+                    <div class="card mb-2 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewSentDetailById('${msg.id}', this)">
                         <div class="card-body py-2">
                             <div class="d-flex justify-content-between align-items-start">
-                                <strong><i class="bi bi-arrow-right me-1 text-muted"></i><span class="mail-copy">${toStr}</span></strong>
+                                <strong>${_renderMessageFlags(msg, metaFallback)}<i class="bi bi-arrow-right me-1 text-muted"></i><span class="mail-copy">${toStr}</span></strong>
                                 <small class="text-muted">${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
                             </div>
                             <div class="text-truncate"><span class="mail-copy">${subject}</span></div>
@@ -4618,6 +5621,156 @@
             }).join('');
             if (currentSentTotal > currentSentMessages.length) {
                 mailList.insertAdjacentHTML('beforeend', `<div class="text-center py-3"><button class="btn btn-outline-primary btn-sm" onclick="querySent(true)"><i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentSentMessages.length}/${currentSentTotal})</button></div>`);
+            }
+        }
+
+        async function queryDrafts() {
+            if (!currentEmail && !['global', 'group'].includes(currentAccountType)) return;
+            const mailList = document.getElementById('mail-list');
+            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            try {
+                const params = new URLSearchParams();
+                if (currentAccountType === 'external') {
+                    params.set('account_type', 'external');
+                    params.set('account_id', currentExternalAccountId || '');
+                } else {
+                    params.set('account_type', 'local');
+                    params.set('account_id', currentEmail || '');
+                }
+                const resp = await fetch(`/api/drafts?${params.toString()}`);
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('loadFailed'));
+                currentDraftMessages = data.drafts || [];
+                currentDraftTotal = currentDraftMessages.length;
+                _updateFolderCounts(currentAccountType === 'external' ? { externalDrafts: currentDraftTotal } : {});
+                renderDraftMessages(currentDraftMessages);
+            } catch (e) {
+                mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+            }
+        }
+
+        function renderDraftMessages(messages) {
+            currentDraftMessages = messages;
+            const mailList = document.getElementById('mail-list');
+            if (!messages.length) {
+                mailList.innerHTML = `<div class="empty-state"><i class="bi bi-file-earmark-text d-block"></i><p>${t('noDrafts')}</p></div>`;
+                return;
+            }
+            mailList.innerHTML = messages.map(msg => `
+                <div class="card mb-2 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="openDraft(${_jsString(msg.id)}, this)">
+                    <div class="card-body py-2">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.to || t('unknownSender'))}</span></span>
+                            <small class="text-muted">${msg.updated_at ? new Date(msg.updated_at).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
+                        </div>
+                        <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
+                    </div>
+                </div>`).join('');
+        }
+
+        async function queryOutbox() {
+            if (!currentEmail && !['global', 'group'].includes(currentAccountType)) return;
+            const mailList = document.getElementById('mail-list');
+            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            try {
+                const params = new URLSearchParams();
+                if (currentAccountType === 'external') {
+                    params.set('account_type', 'external');
+                    params.set('account_id', currentExternalAccountId || '');
+                } else if (currentEmail) {
+                    params.set('account_type', 'local');
+                    params.set('account_id', currentEmail);
+                }
+                const resp = await fetch(`/api/outbox?${params.toString()}`);
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('loadFailed'));
+                currentOutboxMessages = data.messages || [];
+                currentOutboxTotal = currentOutboxMessages.length;
+                _updateFolderCounts(currentAccountType === 'external' ? { externalOutbox: currentOutboxTotal } : {});
+                renderOutboxMessages(currentOutboxMessages);
+            } catch (e) {
+                mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+            }
+        }
+
+        function renderOutboxMessages(messages) {
+            currentOutboxMessages = messages;
+            const mailList = document.getElementById('mail-list');
+            if (!messages.length) {
+                mailList.innerHTML = `<div class="empty-state"><i class="bi bi-exclamation-diamond d-block"></i><p>${t('noOutbox')}</p></div>`;
+                return;
+            }
+            mailList.innerHTML = messages.map(msg => `
+                <div class="card mb-2 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="viewOutboxDetail(${_jsString(msg.id)}, this)">
+                    <div class="card-body py-2">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.to || t('unknownSender'))}</span></span>
+                            <small class="text-danger">${_escapeHtml(msg.status || '')}</small>
+                        </div>
+                        <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
+                        <small class="mail-intro text-muted text-truncate d-block">${_escapeHtml(msg.error || '')}</small>
+                    </div>
+                </div>`).join('');
+        }
+
+        async function openDraft(draftId, element) {
+            const draft = currentDraftMessages.find(item => item.id === draftId);
+            if (!draft) return;
+            document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
+            if (element) element.classList.add('active');
+            currentComposeSender = null;
+            if (draft.account_type === 'external') {
+                currentExternalAccountId = draft.account_id || currentExternalAccountId;
+                currentExternalAccount = _externalAccountById(currentExternalAccountId) || currentExternalAccount;
+                currentEmail = draft.from_email || currentExternalAccount?.email || currentEmail;
+            } else {
+                currentEmail = draft.from_email || draft.account_id || currentEmail;
+                currentMailbox = currentEmail || currentMailbox;
+            }
+            _renderComposePage('compose', {
+                draftId: draft.id,
+                to: draft.to || '',
+                subject: draft.subject || '',
+                html: draft.html || '',
+                text: draft.text || '',
+                fromName: draft.from_name || '',
+            });
+        }
+
+        function viewOutboxDetail(messageId, element) {
+            const msg = currentOutboxMessages.find(item => item.id === messageId);
+            if (!msg) return;
+            document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
+            if (element) element.classList.add('active');
+            document.getElementById('mail-detail-content').innerHTML = `
+                <div class="mb-3"><strong>${t('from')}:</strong> ${_escapeHtml(msg.from_name || msg.from_email || '')}</div>
+                <div class="mb-3"><strong>${t('to')}:</strong> ${_escapeHtml(msg.to || '')}</div>
+                <div class="mb-3"><strong>${t('subject')}:</strong> ${_escapeHtml(msg.subject || t('noSubject'))}</div>
+                <div class="mb-3"><strong>${t('time')}:</strong> ${_escapeHtml(msg.updated_at || msg.created_at || '')}</div>
+                <div class="alert alert-danger">${_escapeHtml(msg.error || t('sendFailed'))}</div>
+                ${msg.status === 'sent'
+                    ? `<span class="badge text-bg-success">${t('sent')}</span>`
+                    : `<button class="btn btn-primary btn-sm" onclick="retryOutbox(${_jsString(messageId)})"><i class="bi bi-arrow-clockwise me-1"></i>${t('retrySend')}</button>`}
+                <hr>
+                <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:6px; overflow:hidden;">
+                    <iframe id="outbox-body-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" style="width:100%;border:none;min-height:200px;"></iframe>
+                </div>`;
+            _renderMailBodyIframe(document.getElementById('outbox-body-frame'), msg.html || _escapeHtml(msg.text || '').replace(/\n/g, '<br>'));
+        }
+
+        async function retryOutbox(messageId) {
+            try {
+                const resp = await fetch(`/api/outbox/${encodeURIComponent(messageId)}/retry`, { method: 'POST' });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('sendFailed'));
+                await queryOutbox();
+                _showMailboxError(t('sentSuccess'), 'success');
+                if (currentAccountType === 'external' && currentExternalAccountId) {
+                    _clearExternalFolderCache(currentExternalAccountId);
+                    _refreshExternalFolders(currentExternalAccountId).catch(() => {});
+                }
+            } catch (e) {
+                _showMailboxError(`${t('sendFailed')}: ${e.message}`);
             }
         }
 
@@ -4645,8 +5798,23 @@
             if (element) element.classList.add('active');
             const detailContent = document.getElementById('mail-detail-content');
             const toStr = _escapeHtml((msg.to || []).join(', '));
+            const detailRef = { accountType: 'local', accountId: currentEmail, folder: 'sent', messageId: msg.id };
+            msg.meta = msg.meta || _metaForMessage(msg, detailRef);
+            msg.seen = true;
+            window._currentDetailMsg = {
+                ...msg,
+                from: { address: msg.from_address || currentEmail },
+                to: msg.to || [],
+                text: msg.text || '',
+                html: msg.html || '',
+                createdAt: msg.createdAt || msg.created_at || msg.date,
+            };
+            window._currentDetailRef = detailRef;
             detailContent.innerHTML = `
-                <div class="mb-3"><strong>${t('from')}:</strong> ${_escapeHtml(msg.from_address || currentEmail)}</div>
+                <div class="d-flex justify-content-between align-items-start mb-3 gap-2">
+                    <div><strong>${t('from')}:</strong> ${_escapeHtml(msg.from_address || currentEmail)}</div>
+                    <div class="text-nowrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
+                </div>
                 <div class="mb-3"><strong>${t('to')}:</strong> ${toStr}</div>
                 <div class="mb-3"><strong>${t('subject')}:</strong> ${_escapeHtml(msg.subject || t('noSubject'))}</div>
                 <div class="mb-3"><strong>${t('time')}:</strong> ${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</div>
@@ -4686,23 +5854,27 @@
 
         function renderTrashMessages(messages) {
             currentTrashMessages = messages;
+            currentTrashTotal = Math.max(currentTrashTotal, messages.length);
+            _updateFolderCounts({ localTrash: currentTrashTotal });
             const mailList = document.getElementById('mail-list');
             if (messages.length === 0) {
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-trash d-block"></i><p>${t('noTrashMail')}</p></div>`;
                 return;
             }
-            mailList.innerHTML = messages.map(msg => `
-                <div class="card mb-2 mail-item" data-msg-id="${msg.id}" onclick="viewMailDetail('${msg.id}', this, true)">
+            mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
+                const metaFallback = { accountType: 'local', accountId: currentEmail, folder: 'trash', messageId: msg.id };
+                return `
+                <div class="card mb-2 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewMailDetail('${msg.id}', this, true)">
                     <div class="card-body py-2">
                         <div class="d-flex justify-content-between align-items-start">
-                            <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
+                            <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
                             <small class="text-muted">${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
                         </div>
                         <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
                         <small class="mail-intro text-muted text-truncate d-block"><span class="mail-copy">${_escapeHtml(msg.intro || '')}</span></small>
                     </div>
                 </div>
-            `).join('');
+            `; }).join('');
             if (currentTrashTotal > currentTrashMessages.length) {
                 mailList.insertAdjacentHTML('beforeend', `<div class="text-center py-3"><button class="btn btn-outline-primary btn-sm" onclick="queryTrash(true)"><i class="bi bi-arrow-down-circle me-1"></i>${t('loadMore')} (${currentTrashMessages.length}/${currentTrashTotal})</button></div>`);
             }
@@ -4710,6 +5882,8 @@
 
         function resetMailDetail() {
             currentComposeSender = null;
+            window._currentDetailMsg = null;
+            window._currentDetailRef = null;
             quillEditor = null;
             document.getElementById('mail-detail-content').innerHTML = `
                 <div class="text-center text-muted py-5">
@@ -4780,6 +5954,11 @@
             _setCurrentMailbox(email);
                 currentTotal = data.total || 0;
                 currentInboxUnreadCount = data.messages.filter(msg => !msg.seen).length;
+                _updateFolderCounts({
+                    localInbox: currentInboxUnreadCount,
+                    localUnread: currentInboxUnreadCount,
+                    localAll: Math.max(currentFolderCounts.localAll || 0, data.total || 0),
+                });
                 
                 if (append) {
                     // 追加模式：合并新消息到已有列表
@@ -4787,6 +5966,7 @@
                 } else {
                     currentMessages = data.messages;
                 }
+                await loadMessageMetaFor(currentMessages, { accountType: 'local', accountId: email, folder: 'inbox' });
                 
                 document.getElementById('btn-refresh-mail').disabled = false;
                 currentSentMessages = [];
@@ -4837,9 +6017,10 @@
             const batchBar = document.getElementById('batch-bar');
             const isInboxTab = currentTab === 'inbox';
             const isVirtualTab = [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab);
+            const supportsBatch = isInboxTab || currentTab === LOCAL_UNREAD_FOLDER;
 
             // 显示/隐藏批量操作栏
-            if (messages.length > 0 && isInboxTab) {
+            if (messages.length > 0 && supportsBatch) {
                 if (batchBar) {
                     batchBar.style.display = 'flex';
                     batchBar.style.cssText = 'display:flex !important;';
@@ -4869,23 +6050,24 @@
                 return;
             }
             
-            mailList.innerHTML = messages.map(msg => {
+            mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
                 const source = msg._source || 'inbox';
                 const sourceLabel = source === 'sent' ? t('sent') : source === 'trash' ? t('trash') : t('inbox');
                 const msgKey = `${source}:${msg.id}`;
+                const metaFallback = { accountType: 'local', accountId: msg._accountId || currentEmail, folder: source, messageId: msg.id };
                 const clickHandler = source === 'sent'
                     ? `viewSentDetailById(${_jsString(msg.id)}, this.closest('.mail-item'))`
                     : `viewMailDetail(${_jsString(msg.id)}, this.closest('.mail-item'), ${source === 'trash' ? 'true' : 'false'})`;
                 return `
-                <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'}" data-msg-id="${_escapeAttr(msgKey)}">
+                <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgKey)}">
                     <div class="card-body py-2">
                         <div class="d-flex align-items-start">
-                            ${isInboxTab ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
+                            ${supportsBatch && source === 'inbox' ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
                                 <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(msg.id)}" onchange="updateBatchButtons()">
                             </div>` : ''}
                             <div class="flex-grow-1 mail-item-body" onclick="${clickHandler}">
                                 <div class="d-flex justify-content-between align-items-start">
-                                    <span class="mail-sender text-truncate me-2"><span class="mail-copy">${source === 'sent' ? _escapeHtml((msg.to || []).map(item => typeof item === 'string' ? item : (item.address || item.name || '')).filter(Boolean).join(', ') || t('unknownSender')) : _escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
+                                    <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${source === 'sent' ? _escapeHtml((msg.to || []).map(item => typeof item === 'string' ? item : (item.address || item.name || '')).filter(Boolean).join(', ') || t('unknownSender')) : _escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
                                     <div class="mail-item-meta text-end ms-2">
                                         ${msg.extracted_code ? `<span class="badge bg-success me-1" title="验证码"><i class="bi bi-key me-1"></i>${msg.extracted_code}</span>` : ''}
                                         <small class="text-muted">${new Date(msg.createdAt || msg.created_at || msg.date || msg.receivedAt || 0).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
@@ -4966,6 +6148,16 @@
                 }
                 currentExternalTotal = data.total || 0;
                 currentExternalHasMore = isVirtualFolder ? false : !!data.hasMore;
+                const nextExternalCounts = {
+                    externalUnread: data.unseen ?? currentFolderCounts.externalUnread,
+                };
+                if (folderPath === EXTERNAL_ALL_FOLDER) {
+                    nextExternalCounts.externalAll = data.total || currentExternalTotal;
+                }
+                if (folderPath === EXTERNAL_UNREAD_FOLDER) {
+                    nextExternalCounts.externalUnread = data.total || (data.mails || []).length;
+                }
+                _updateFolderCounts(nextExternalCounts);
                 if (data.syncStatus && currentExternalAccount) {
                     currentExternalAccount.syncStatus = data.syncStatus;
                     _mergeExternalAccount({ id: accountId, syncStatus: data.syncStatus });
@@ -4975,6 +6167,7 @@
                 }
                 const mails = data.mails || [];
                 currentExternalMessages = append ? currentExternalMessages.concat(mails) : mails;
+                await loadMessageMetaFor(currentExternalMessages, { accountType: 'external', accountId });
                 document.getElementById('btn-refresh-mail').disabled = false;
                 const searchBar = document.getElementById('search-bar');
                 if (searchBar) searchBar.style.display = isVirtualFolder ? 'none' : 'flex';
@@ -5015,22 +6208,23 @@
                 return;
             }
 
-            mailList.innerHTML = messages.map(msg => {
+            mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
                 const sourceFolder = msg.folder || msg.sourceFolder || currentExternalFolder || 'INBOX';
                 const hasExplicitFolder = Boolean(msg.folder || msg.sourceFolder);
                 const msgId = _isExternalVirtualFolder(currentExternalFolder) || hasExplicitFolder
                     ? `${sourceFolder}::${msg.uid}`
                     : String(msg.uid);
+                const metaFallback = { accountType: 'external', accountId: currentExternalAccountId, folder: sourceFolder, messageId: msg.uid };
                 const sender = msg.from?.name || msg.from?.address || t('unknownSender');
                 const intro = msg.to?.length ? msg.to.map(item => item.address || item.name).filter(Boolean).join(', ') : '';
                 const folderBadge = _isExternalVirtualFolder(currentExternalFolder) || hasExplicitFolder
                     ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg.folderName || sourceFolder)}</span>`
                     : '';
                 return `
-                    <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
+                    <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
                         <div class="card-body py-2">
                             <div class="d-flex justify-content-between align-items-start">
-                                <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(sender)}</span></span>
+                                <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
                                 <div class="mail-item-meta text-end ms-2">
                                     ${msg.flagged ? `<i class="bi bi-star-fill text-warning me-1"></i>` : ''}
                                     <small class="text-muted">${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
@@ -5116,22 +6310,37 @@
             try {
                 const msg = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/mails/${encodeURIComponent(uid)}?folder=${encodeURIComponent(sourceFolder)}`);
                 const idx = currentExternalMessages.findIndex(m => String(m.uid) === String(uid) && String(m.folder || m.sourceFolder || currentExternalFolder || 'INBOX') === String(sourceFolder));
+                const wasUnread = idx !== -1 ? !currentExternalMessages[idx].seen : false;
                 if (idx !== -1) currentExternalMessages[idx].seen = true;
+                if (wasUnread) {
+                    _updateFolderCounts({
+                        externalUnread: Math.max(0, (currentFolderCounts.externalUnread || 0) - 1),
+                    });
+                }
                 if (element) element.classList.remove('mail-unread');
+                const detailRef = { accountType: 'external', accountId: currentExternalAccountId, folder: sourceFolder, messageId: uid };
+                const existingMeta = _metaForMessage(idx !== -1 ? currentExternalMessages[idx] : {}, detailRef);
+                if (msg.flagged) existingMeta.favorite = true;
                 window._currentDetailMsg = {
+                    uid,
                     subject: msg.subject || '',
                     from: { address: msg.from || '' },
+                    to: msg.to || '',
+                    cc: msg.cc || '',
                     text: msg.text || '',
                     html: msg.html || '',
                     createdAt: msg.date,
+                    seen: true,
+                    meta: existingMeta,
                 };
+                window._currentDetailRef = detailRef;
                 const from = _escapeHtml(msg.from || t('unknownSender'));
                 const to = _escapeHtml(msg.to || '');
                 const cc = _escapeHtml(msg.cc || '');
                 detailContent.innerHTML = `
                     <div class="d-flex justify-content-between align-items-start mb-3 gap-2">
                         <div><strong>${t('from')}:</strong> ${from}</div>
-                        <div class="text-nowrap">${_detailTranslateButton()}</div>
+                        <div class="text-nowrap" id="mail-detail-actions">${renderMessageActions(detailRef, window._currentDetailMsg)}</div>
                     </div>
                     <div class="mb-3"><strong>${t('to')}:</strong> ${to}</div>
                     ${cc ? `<div class="mb-3"><strong>CC:</strong> ${cc}</div>` : ''}
@@ -5155,6 +6364,7 @@
             if (currentAccountType === 'local' && !currentEmail) return;
             if (currentAccountType === 'external' && !currentExternalAccountId) return;
             if (currentAccountType === 'global' && !mailboxes.length && !externalAccounts.length) return;
+            if (currentAccountType === 'group' && !currentGroupName) return;
             const query = document.getElementById('search-input').value.trim();
             if (!query) { clearSearch(); return; }
 
@@ -5179,6 +6389,35 @@
                     currentGlobalMessages = merged;
                     currentGlobalTotal = merged.length;
                     currentGlobalHasMore = false;
+                    await loadMessageMetaFor(merged);
+                    renderGlobalMessages(merged);
+                    if (merged.length === 0) {
+                        mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
+                    }
+                    return;
+                }
+                if (currentAccountType === 'group') {
+                    const unreadOnly = currentGroupFolder === GROUP_UNREAD_FOLDER;
+                    const localAccounts = _groupLocalMailboxes(currentGroupName);
+                    const externalIds = _groupExternalIds(currentGroupName);
+                    const externalParams = new URLSearchParams({
+                        q: query,
+                        count: String(PAGE_SIZE),
+                        unread: unreadOnly ? 'true' : 'false',
+                    });
+                    if (externalIds.length) externalParams.set('accountIds', externalIds.join(','));
+                    const [localMessages, externalData] = await Promise.all([
+                        _searchLocalAggregate(query, unreadOnly, localAccounts),
+                        externalIds.length ? _imapApi(`/search?${externalParams.toString()}`).catch(() => ({ mails: [] })) : Promise.resolve({ mails: [] }),
+                    ]);
+                    const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
+                    const merged = localMessages.concat(externalMessages)
+                        .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
+                        .slice(0, PAGE_SIZE);
+                    currentGlobalMessages = merged;
+                    currentGlobalTotal = merged.length;
+                    currentGlobalHasMore = false;
+                    await loadMessageMetaFor(merged);
                     renderGlobalMessages(merged);
                     if (merged.length === 0) {
                         mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
@@ -5207,6 +6446,7 @@
                     }
                     currentExternalMessages = mails;
                     currentExternalHasMore = false;
+                    await loadMessageMetaFor(currentExternalMessages, { accountType: 'external', accountId: currentExternalAccountId });
                     renderExternalMessages(currentExternalMessages);
                     if (currentExternalMessages.length === 0) {
                         mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
@@ -5220,6 +6460,7 @@
                 });
                 const data = await resp.json();
                 if (data.success) {
+                    await loadMessageMetaFor(data.messages, { accountType: 'local', accountId: currentEmail, folder: 'inbox' });
                     renderMessages(data.messages);
                     if (data.messages.length === 0) {
                         mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
@@ -5238,6 +6479,8 @@
                 queryExternalMails(false, false);
             } else if (currentAccountType === 'global') {
                 queryGlobalMessages(false);
+            } else if (currentAccountType === 'group') {
+                queryGroupMessages(false);
             } else if (currentMessages.length > 0) {
                 renderMessages(currentMessages);
             } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
@@ -5247,8 +6490,8 @@
 
         async function viewMailDetail(messageId, element, isTrash = false) {
             cancelActiveTranslation();
-            const isGlobalContext = currentAccountType === 'global';
-            if (!['local', 'global'].includes(currentAccountType) || !currentEmail) return;
+            const isGlobalContext = currentAccountType === 'global' || currentAccountType === 'group';
+            if (!['local', 'global', 'group'].includes(currentAccountType) || !currentEmail) return;
             
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
             if (element) element.classList.add('active');
@@ -5288,31 +6531,39 @@
 
                 const msg = data.detail;
                 // 保存当前查看的邮件详情供回复使用
+                const sourceFolder = isTrash ? 'trash' : 'inbox';
+                const detailRef = { accountType: 'local', accountId: currentEmail, folder: sourceFolder, messageId };
+                msg.meta = msg.meta || _metaForMessage(msg, detailRef);
+                msg.seen = true;
                 window._currentDetailMsg = msg;
+                window._currentDetailRef = detailRef;
                 // 同步已读状态：更新 currentMessages 并移除未读样式
                 const idx = currentMessages.findIndex(m => m.id === messageId && (!m._source || m._source === 'inbox'));
+                const wasUnread = !isTrash && idx !== -1 ? !currentMessages[idx].seen : false;
                 if (!isTrash && idx !== -1) currentMessages[idx].seen = true;
                 const globalIdx = currentGlobalMessages.findIndex(m => String(m.id || m.msgid) === String(messageId));
                 if (!isTrash && globalIdx !== -1) currentGlobalMessages[globalIdx].seen = true;
-                if (!isGlobalContext && !isTrash && currentInboxUnreadCount > 0) currentInboxUnreadCount -= 1;
                 if (!isTrash && element) element.classList.remove('mail-unread');
-                if (!isGlobalContext) _updateUnreadBadge();
+                if (!isGlobalContext && wasUnread) {
+                    currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount - 1);
+                    _updateFolderCounts({
+                        localInbox: currentInboxUnreadCount,
+                        localUnread: currentInboxUnreadCount,
+                    });
+                    _updateUnreadBadge();
+                }
                 const escapedSubject = _escapeHtml(msg.subject || t('noSubject'));
                 const escapedFromName = _escapeHtml(msg.from?.name || '');
                 const escapedFromAddr = _escapeHtml(msg.from?.address || '');
-                const actionButtons = isGlobalContext ? `
-                            ${_detailTranslateButton()}` : isTrash ? `
-                            ${_detailTranslateButton()}
+                const actionButtons = isTrash ? `
+                            ${renderMessageActions(detailRef, msg)}
                             <button class="btn btn-sm btn-outline-primary me-1" onclick="restoreEmail('${messageId}')">
                                 <i class="bi bi-arrow-counterclockwise me-1"></i>${t('restore')}
                             </button>
                             <button class="btn btn-sm btn-outline-danger" onclick="permanentDeleteEmail('${messageId}')">
                                 <i class="bi bi-x-circle me-1"></i>${t('permanentDelete')}
                             </button>` : `
-                            ${_detailTranslateButton()}
-                            <button class="btn btn-sm btn-outline-primary me-1" onclick="openReply()">
-                                <i class="bi bi-reply me-1"></i>${t('reply')}
-                            </button>
+                            ${renderMessageActions(detailRef, msg)}
                             <button class="btn btn-sm btn-outline-danger" onclick="deleteEmail('${messageId}')">
                                 <i class="bi bi-trash me-1"></i>${t('delete')}
                             </button>`;
@@ -5321,7 +6572,7 @@
                         <div>
                             <strong>${t('from')}:</strong> ${escapedFromName} &lt;${escapedFromAddr}&gt;
                         </div>
-                        <div>${actionButtons}</div>
+                        <div id="mail-detail-actions">${actionButtons}</div>
                     </div>
                     <div class="mb-3">
                         <strong>${t('subject')}:</strong> ${escapedSubject}
@@ -5372,6 +6623,33 @@
         }
 
         function _currentSenderAccount() {
+            const detailRef = _currentDetailRef();
+            if (detailRef?.accountType === 'external') {
+                const account = _externalAccountById(detailRef.accountId) || currentExternalAccount;
+                const email = account?.email || currentEmail || '';
+                return {
+                    type: 'external',
+                    id: detailRef.accountId,
+                    email,
+                    name: _accountDisplayName(account, email),
+                    provider: account?.name || 'external',
+                    sendName: account?.sendName || account?.send_name || '',
+                    hasSmtp: Boolean(account?.smtp),
+                };
+            }
+            if (detailRef?.accountType === 'local') {
+                const email = detailRef.accountId || currentMailbox || currentEmail;
+                const account = mailboxes.find(item => item.address === email);
+                return {
+                    type: 'local',
+                    id: email,
+                    email,
+                    name: _accountDisplayName(account, email),
+                    provider: 'local',
+                    sendName: account?.send_name || account?.sendName || '',
+                    hasSmtp: true,
+                };
+            }
             if (currentAccountType === 'external' && currentExternalAccount) {
                 const email = currentExternalAccount.email || '';
                 return {
@@ -5425,17 +6703,25 @@
             }
 
             currentComposeSender = sender;
+            currentComposeDraftId = options.draftId || '';
+            window._currentDetailRef = null;
             quillEditor = null;
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
             const detailContent = document.getElementById('mail-detail-content');
-            const title = mode === 'reply' ? t('replyEmail') : t('composeEmail');
+            const title = mode === 'reply'
+                ? t('replyEmail')
+                : mode === 'replyAll'
+                    ? t('replyAll')
+                    : mode === 'forward'
+                        ? t('forward')
+                        : t('composeEmail');
             const providerIcon = _accountProviderIcon(sender.type, sender.provider);
             const defaultSendName = sender.sendName || '';
             detailContent.innerHTML = `
                 <div class="compose-page">
                     <div class="compose-page-header">
                         <div class="min-w-0">
-                            <h5 class="mb-2"><i class="bi ${mode === 'reply' ? 'bi-reply' : 'bi-pencil-square'} me-2"></i>${title}</h5>
+                            <h5 class="mb-2"><i class="bi ${mode === 'reply' ? 'bi-reply' : mode === 'replyAll' ? 'bi-reply-all' : mode === 'forward' ? 'bi-forward' : 'bi-pencil-square'} me-2"></i>${title}</h5>
                             <span class="compose-from-pill">
                                 <i class="bi ${providerIcon}"></i>
                                 <span>${t('sendingFrom')}: ${_escapeHtml(sender.name || sender.email)}</span>
@@ -5444,6 +6730,9 @@
                         </div>
                         <div class="compose-page-actions">
                             <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetMailDetail()">${t('cancel')}</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-save-draft" onclick="saveCurrentDraft()">
+                                <i class="bi bi-file-earmark-text me-1"></i>${t('saveDraft')}
+                            </button>
                             <button type="button" class="btn btn-primary btn-sm" id="btn-send-email" onclick="sendEmail()">
                                 <i class="bi bi-send me-1"></i>${t('send')}
                             </button>
@@ -5476,6 +6765,11 @@
             subjectInput.value = options.subject || '';
 
             const editor = _getQuillEditor();
+            if (editor && options.html) {
+                editor.root.innerHTML = options.html;
+            } else if (editor && options.text) {
+                editor.setText(options.text);
+            }
             if (editor && options.quoteText) {
                 editor.setContents([]);
                 editor.insertText(0, '\n\n');
@@ -5483,6 +6777,10 @@
                 editor.insertText(quoteStart, options.quoteText);
                 editor.formatText(quoteStart, options.quoteText.length, 'color', '#6c757d');
                 editor.setSelection(0, 0);
+            }
+            if (options.fromName) {
+                const fromNameInput = document.getElementById('compose-from-name');
+                if (fromNameInput) fromNameInput.value = options.fromName;
             }
             toInput.focus();
         }
@@ -5508,6 +6806,88 @@
             });
         }
 
+        function _splitRecipients(value) {
+            if (Array.isArray(value)) {
+                return value.map(item => item.address || item.name || item).filter(Boolean);
+            }
+            return String(value || '').split(/[;,]/).map(item => item.trim()).filter(Boolean);
+        }
+
+        function openReplyAll() {
+            const msg = window._currentDetailMsg;
+            if (!msg) return;
+            const origFrom = _messageFromAddress(msg);
+            const self = String(currentEmail || currentExternalAccount?.email || '').toLowerCase();
+            const recipients = [origFrom, ..._splitRecipients(msg.to), ..._splitRecipients(msg.cc)]
+                .filter(Boolean)
+                .filter((addr, idx, arr) => arr.findIndex(x => String(x).toLowerCase() === String(addr).toLowerCase()) === idx)
+                .filter(addr => String(addr).toLowerCase() !== self);
+            const origSubject = msg.subject || '';
+            const origDate = msg.createdAt ? new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
+            _renderComposePage('replyAll', {
+                to: recipients.join(', '),
+                subject: /^Re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`,
+                quoteText: `--- Original Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${msg.text || ''}`,
+            });
+        }
+
+        function openForward() {
+            const msg = window._currentDetailMsg;
+            if (!msg) return;
+            const origSubject = msg.subject || '';
+            const origFrom = _messageFromAddress(msg);
+            const origDate = msg.createdAt ? new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : '';
+            _renderComposePage('forward', {
+                to: '',
+                subject: /^Fwd:/i.test(origSubject) ? origSubject : `Fwd: ${origSubject}`,
+                quoteText: `--- Forwarded Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${msg.text || ''}`,
+            });
+        }
+
+        async function saveCurrentDraft() {
+            const editor = _getQuillEditor();
+            const sender = currentComposeSender || _currentSenderAccount();
+            if (!editor || !sender) return;
+            const payload = {
+                id: currentComposeDraftId,
+                account_type: sender.type,
+                account_id: sender.id || sender.email,
+                from_email: sender.email,
+                from_name: document.getElementById('compose-from-name')?.value.trim() || '',
+                to: document.getElementById('compose-to')?.value.trim() || '',
+                subject: document.getElementById('compose-subject')?.value.trim() || '',
+                text: editor.getText().trim(),
+                html: editor.root.innerHTML,
+            };
+            const btn = document.getElementById('btn-save-draft');
+            if (btn) btn.disabled = true;
+            try {
+                const resp = await fetch('/api/drafts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('settingsSaveFailed'));
+                currentComposeDraftId = data.draft?.id || currentComposeDraftId;
+                const alertDiv = document.getElementById('compose-alert');
+                if (alertDiv) {
+                    alertDiv.className = 'alert alert-success';
+                    alertDiv.textContent = t('draftSaved');
+                    alertDiv.style.display = 'block';
+                }
+            } catch (e) {
+                const alertDiv = document.getElementById('compose-alert');
+                if (alertDiv) {
+                    alertDiv.className = 'alert alert-danger';
+                    alertDiv.textContent = `${t('settingsSaveFailed')}: ${e.message}`;
+                    alertDiv.style.display = 'block';
+                }
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
         async function sendEmail() {
             const alertDiv = document.getElementById('compose-alert');
             const btn = document.getElementById('btn-send-email');
@@ -5525,7 +6905,7 @@
             const senderStillSelected = sender && (
                 (sender.type === 'local' && currentAccountType === 'local' && sender.email === (currentMailbox || currentEmail)) ||
                 (sender.type === 'external' && currentAccountType === 'external' && String(sender.id) === String(currentExternalAccountId)) ||
-                (currentAccountType === 'global' && (
+                ((currentAccountType === 'global' || currentAccountType === 'group') && (
                     (sender.type === 'local' && sender.email === currentEmail) ||
                     (sender.type === 'external' && String(sender.id) === String(currentExternalAccountId))
                 ))
@@ -5568,12 +6948,31 @@
             try {
                 let data;
                 if (sender.type === 'external') {
-                    await _imapApi(`/accounts/${encodeURIComponent(sender.id)}/send`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ to, subject, text: body, html: htmlBody, fromName }),
-                    });
-                    data = { success: true };
+                    try {
+                        await _imapApi(`/accounts/${encodeURIComponent(sender.id)}/send`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ to, subject, text: body, html: htmlBody, fromName }),
+                        });
+                        data = { success: true };
+                    } catch (sendErr) {
+                        await fetch('/api/outbox', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                account_type: 'external',
+                                account_id: sender.id,
+                                from_email: sender.email,
+                                from_name: fromName,
+                                to,
+                                subject,
+                                text: body,
+                                html: htmlBody,
+                                error: sendErr.message,
+                            }),
+                        }).catch(() => {});
+                        throw sendErr;
+                    }
                 } else {
                     const resp = await fetch('/api/send', {
                         method: 'POST',
@@ -5595,6 +6994,9 @@
                 }
 
                 if (data.success) {
+                    if (currentComposeDraftId) {
+                        await fetch(`/api/drafts/${encodeURIComponent(currentComposeDraftId)}`, { method: 'DELETE' }).catch(() => {});
+                    }
                     alertDiv.className = 'alert alert-success';
                     alertDiv.textContent = t('sentSuccess');
                     alertDiv.style.display = 'block';
@@ -5634,9 +7036,11 @@
             const count = ids.length;
             const deleteBtn = document.getElementById('btn-batch-delete');
             const readBtn = document.getElementById('btn-batch-read');
+            const unreadBtn = document.getElementById('btn-batch-unread');
             const selectedCount = document.getElementById('selected-count');
             if (deleteBtn) deleteBtn.disabled = count === 0;
             if (readBtn) readBtn.disabled = count === 0;
+            if (unreadBtn) unreadBtn.disabled = count === 0;
             if (selectedCount) selectedCount.textContent = count > 0 ? t('selected', {n: count}) : '';
         }
 
@@ -5650,7 +7054,7 @@
             const ids = getSelectedIds();
             if (ids.length === 0) return;
 
-            const label = action === 'delete' ? t('delete') : t('markRead');
+            const label = action === 'delete' ? t('delete') : action === 'mark_unread' ? t('markUnread') : t('markRead');
             if (action === 'delete' && !confirm(t('confirmDeleteN', {n: ids.length}))) return;
 
             try {
@@ -5666,15 +7070,37 @@
                 const data = await resp.json();
                 if (data.success) {
                     if (action === 'delete') {
+                        const removedUnread = currentMessages.filter(m => ids.includes(m.id) && !m.seen).length;
                         currentMessages = currentMessages.filter(m => !ids.includes(m.id));
+                        if (removedUnread) {
+                            currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount - removedUnread);
+                            _updateFolderCounts({
+                                localInbox: currentInboxUnreadCount,
+                                localUnread: currentInboxUnreadCount,
+                            });
+                        }
                         renderMessages(currentMessages);
                         resetMailDetail();
-                    } else if (action === 'mark_read') {
+                    } else if (action === 'mark_read' || action === 'mark_unread') {
+                        const seen = action === 'mark_read';
                         // 本地更新已读状态，避免不必要的网络请求
+                        let delta = 0;
                         ids.forEach(id => {
                             const m = currentMessages.find(msg => msg.id === id);
-                            if (m) m.seen = true;
+                            if (!m) return;
+                            const wasUnread = !m.seen;
+                            if (wasUnread === seen) delta += seen ? -1 : 1;
+                            m.seen = seen;
                         });
+                        currentInboxUnreadCount = Math.max(0, currentInboxUnreadCount + delta);
+                        _updateFolderCounts({
+                            localInbox: currentInboxUnreadCount,
+                            localUnread: currentInboxUnreadCount,
+                        });
+                        if (currentTab === LOCAL_UNREAD_FOLDER && seen) {
+                            currentMessages = currentMessages.filter(m => !m.seen);
+                            currentTotal = Math.max(0, currentTotal + delta);
+                        }
                         renderMessages(currentMessages);
                         _updateUnreadBadge();
                     }
@@ -5688,6 +7114,7 @@
 
         function batchDelete() { batchAction('delete'); }
         function batchMarkRead() { batchAction('mark_read'); }
+        function batchMarkUnread() { batchAction('mark_unread'); }
 
         // ---- 删除邮件 ----
 
@@ -5731,12 +7158,22 @@
 
         async function trashAction(url, messageId, label) {
             try {
-                const resp = await fetch(url, {
+                let resp = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email: currentEmail, message_id: messageId })
                 });
-                const data = await resp.json();
+                let data = await resp.json();
+                if (resp.status === 403 && data.require_confirmation) {
+                    const ok = await confirmSensitiveAction(data.action || 'permanent_delete');
+                    if (!ok) return;
+                    resp = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: currentEmail, message_id: messageId })
+                    });
+                    data = await resp.json();
+                }
                 if (data.success) {
                     currentTrashMessages = currentTrashMessages.filter(m => m.id !== messageId);
                     renderTrashMessages(currentTrashMessages);

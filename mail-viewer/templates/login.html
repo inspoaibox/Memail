@@ -91,6 +91,15 @@
                     <input type="password" class="form-control" name="password" data-i18n-ph="enterPassword" placeholder="请输入密码" autocomplete="current-password" autofocus required>
                 </div>
             </div>
+            {% if totp_required %}
+            <div class="mb-4">
+                <label class="form-label" data-i18n="totpCode">二次验证码</label>
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-shield-lock"></i></span>
+                    <input type="text" class="form-control" name="totp_code" inputmode="numeric" pattern="[0-9]{6}" data-i18n-ph="enterTotp" placeholder="6 位验证码" autocomplete="one-time-code" required>
+                </div>
+            </div>
+            {% endif %}
             <button type="submit" class="btn btn-primary w-100">
                 <i class="bi bi-box-arrow-in-right me-2"></i><span data-i18n="login">登录</span>
             </button>
@@ -105,6 +114,8 @@
                 enterUsername: '可留空',
                 password: '访问密码',
                 enterPassword: '请输入密码',
+                totpCode: '二次验证码',
+                enterTotp: '6 位验证码',
                 login: '登录',
                 securityNote: '多次失败会临时锁定登录入口',
             },
@@ -113,6 +124,8 @@
                 enterUsername: 'Optional',
                 password: 'Password',
                 enterPassword: 'Enter password',
+                totpCode: '2FA Code',
+                enterTotp: '6-digit code',
                 login: 'Login',
                 securityNote: 'Too many failures will temporarily lock login',
             }

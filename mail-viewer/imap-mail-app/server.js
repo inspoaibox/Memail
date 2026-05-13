@@ -2021,10 +2021,17 @@ app.post('/api/accounts/:id/sync', async (req, res) => {
 app.post('/api/accounts/sync', async (req, res) => {
   const force = ['1', 'true', 'yes'].includes(String(req.body?.force ?? req.query.force ?? '1').toLowerCase());
   const background = ['1', 'true', 'yes'].includes(String(req.body?.background ?? req.query.background ?? '0').toLowerCase());
+  const accountIds = String(req.body?.accountIds || req.query.accountIds || '')
+    .split(',')
+    .map(value => parseInt(value, 10))
+    .filter(id => Number.isInteger(id) && clients.has(id));
   try {
+    const selectedEntries = accountIds.length
+      ? accountIds.map(id => [id, clients.get(id)])
+      : Array.from(clients.entries());
     if (background) {
       const results = [];
-      for (const [id, client] of clients.entries()) {
+      for (const [id, client] of selectedEntries) {
         const account = await markAccountSyncQueued(client);
         backgroundSyncAccount(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
         results.push({ id, ok: true, queued: true, account });
@@ -2032,7 +2039,7 @@ app.post('/api/accounts/sync', async (req, res) => {
       return res.json({ ok: true, background: true, results, accounts: await accountListWithSync() });
     }
     const results = [];
-    for (const [id, client] of clients.entries()) {
+    for (const [id, client] of selectedEntries) {
       try {
         const result = await syncAccountToCache(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
         results.push({
@@ -2298,8 +2305,13 @@ app.get('/api/mails', async (req, res) => {
   const count = parseInt(req.query.count, 10) || 30;
   const before = req.query.before || '';
   const unreadOnly = ['1', 'true', 'yes'].includes(String(req.query.unread || '').toLowerCase());
+  const accountIds = String(req.query.accountIds || '')
+    .split(',')
+    .map(value => parseInt(value, 10))
+    .filter(id => Number.isInteger(id) && clients.has(id));
   try {
-    const keys = Array.from(clients.values()).map(client => stableAccountKey(client.account));
+    const selectedClients = accountIds.length ? accountIds.map(id => clients.get(id)) : Array.from(clients.values());
+    const keys = selectedClients.map(client => stableAccountKey(client.account));
     const data = await readCachedMessagesByAccountKeys(keys, { count, before, unreadOnly });
     const payload = data || { total: 0, unseen: 0, mails: [], hasMore: false, cached: true };
     payload.mails = attachCurrentAccountIds(payload.mails);
@@ -2312,12 +2324,16 @@ app.get('/api/mails', async (req, res) => {
 app.get('/api/search', async (req, res) => {
   const keyword = String(req.query.q || '').trim();
   const accountId = req.query.accountId ? parseInt(req.query.accountId, 10) : null;
+  const accountIds = String(req.query.accountIds || '')
+    .split(',')
+    .map(value => parseInt(value, 10))
+    .filter(id => Number.isInteger(id) && clients.has(id));
   const unreadOnly = ['1', 'true', 'yes'].includes(String(req.query.unread || '').toLowerCase());
   if (!keyword) return res.json({ total: 0, mails: [], cached: true });
   try {
     const selectedClients = Number.isInteger(accountId) && clients.has(accountId)
       ? [clients.get(accountId)]
-      : Array.from(clients.values());
+      : accountIds.length ? accountIds.map(id => clients.get(id)) : Array.from(clients.values());
     const keys = selectedClients.map(client => stableAccountKey(client.account));
     const data = await searchCachedMessages(keys, keyword, { count: parseInt(req.query.count, 10) || 50, unreadOnly });
     const payload = data || { total: 0, mails: [], cached: true };

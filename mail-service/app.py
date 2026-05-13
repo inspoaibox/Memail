@@ -814,7 +814,7 @@ async def delete_message(message_id: str, account=Depends(get_current_account)):
 
 @app.post("/messages/batch")
 async def batch_action(request: Request, account=Depends(get_current_account)):
-    """批量操作邮件（删除 / 标记已读）"""
+    """批量操作邮件（删除 / 标记已读 / 标记未读）"""
     address = account["address"]
     data = await request.json()
     action = data.get("action", "")
@@ -844,6 +844,10 @@ async def batch_action(request: Request, account=Depends(get_current_account)):
         result = db.messages.update_many(query_filter, {"$set": {"seen": True, "updated_at": now}})
         logger.info(f"Batch mark_read: {result.modified_count} messages by {address}")
         return {"message": f"Marked {result.modified_count} as read", "count": result.modified_count}
+    elif action == "mark_unread":
+        result = db.messages.update_many(query_filter, {"$set": {"seen": False, "updated_at": now}})
+        logger.info(f"Batch mark_unread: {result.modified_count} messages by {address}")
+        return {"message": f"Marked {result.modified_count} as unread", "count": result.modified_count}
     elif action == "restore":
         result = db.messages.update_many({**query_filter, "is_deleted": True}, {"$set": {"is_deleted": False, "updated_at": now}})
         logger.info(f"Batch restore: {result.modified_count} messages by {address}")
