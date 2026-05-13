@@ -304,7 +304,7 @@
             width: 100%;
             max-width: none;
             margin: 0;
-            padding: 8px 10px 10px !important;
+            padding: 6px 6px 8px !important;
         }
         @media (min-width: 992px) {
             html, body {
@@ -331,7 +331,7 @@
                 align-items: stretch;
                 display: grid;
                 grid-template-columns: minmax(220px, 285px) minmax(210px, 280px) minmax(260px, 340px) minmax(0, 1fr);
-                gap: 8px;
+                gap: 4px;
             }
             .mail-col {
                 display: flex;
@@ -358,7 +358,7 @@
             .mail-left {
                 display: flex;
                 flex-direction: column;
-                gap: 1rem;
+                gap: 0.4rem;
             }
             .mail-left .mail-query-card {
                 flex: 1 1 auto;
@@ -370,7 +370,7 @@
             }
             .mail-domain-body,
             .mail-list-body {
-                gap: 0.75rem;
+                gap: 0.4rem;
             }
             .mail-domain-scroll,
             .mail-list-scroll,
@@ -1276,8 +1276,8 @@
         </div>
     </nav>
 
-    <div class="container-fluid py-2 px-3 mail-shell">
-        <div class="row g-3 mail-layout">
+    <div class="container-fluid py-1 px-2 mail-shell">
+        <div class="row g-1 mail-layout">
             <!-- 第1栏：邮箱账号 -->
             <div class="col-12 col-lg-3 mail-col mail-left" id="mail-left-column">
                 <div class="card mail-query-card">
@@ -6285,8 +6285,8 @@
                 const accountBadge = msg._accountLabel ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg._accountLabel)}</span>` : '';
                 const folderBadge = isExternal ? `<span class="badge text-bg-light me-1">${_escapeHtml(batchRef?.folder || sourceFolder)}</span>` : '';
                 return `
-                    <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="${isExternal ? `viewGlobalExternalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(msgId))}, this)` : `viewGlobalLocalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(String(msgId)))}, this)`}">
-                        <div class="card-body py-2">
+                    <div class="card mb-1 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="${isExternal ? `viewGlobalExternalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(msgId))}, this)` : `viewGlobalLocalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(String(msgId)))}, this)`}">
+                        <div class="card-body py-1 px-2">
                             <div class="d-flex align-items-start">
                                 ${supportsBatch && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
                                     <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
@@ -6585,8 +6585,8 @@
                 const subject = _escapeHtml(msg.subject || t('noSubject'));
                 const metaFallback = { accountType: 'local', accountId: currentEmail, folder: 'sent', messageId: msg.id };
                 return `
-                    <div class="card mb-2 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewSentDetailById('${msg.id}', this)">
-                        <div class="card-body py-2">
+                    <div class="card mb-1 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewSentDetailById('${msg.id}', this)">
+                        <div class="card-body py-1 px-2">
                             <div class="d-flex justify-content-between align-items-start">
                                 <strong>${_renderMessageFlags(msg, metaFallback)}<i class="bi bi-arrow-right me-1 text-muted"></i><span class="mail-copy">${toStr}</span></strong>
                                 <small class="text-muted">${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
@@ -6635,8 +6635,8 @@
                 return;
             }
             mailList.innerHTML = messages.map(msg => `
-                <div class="card mb-2 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="openDraft(${_jsString(msg.id)}, this)">
-                    <div class="card-body py-2">
+                <div class="card mb-1 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="openDraft(${_jsString(msg.id)}, this)">
+                    <div class="card-body py-1 px-2">
                         <div class="d-flex justify-content-between align-items-start">
                             <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.to || t('unknownSender'))}</span></span>
                             <small class="text-muted">${msg.updated_at ? new Date(msg.updated_at).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
@@ -6679,8 +6679,8 @@
                 return;
             }
             mailList.innerHTML = messages.map(msg => `
-                <div class="card mb-2 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="viewOutboxDetail(${_jsString(msg.id)}, this)">
-                    <div class="card-body py-2">
+                <div class="card mb-1 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="viewOutboxDetail(${_jsString(msg.id)}, this)">
+                    <div class="card-body py-1 px-2">
                         <div class="d-flex justify-content-between align-items-start">
                             <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.to || t('unknownSender'))}</span></span>
                             <small class="text-danger">${_escapeHtml(msg.status || '')}</small>
@@ -6845,8 +6845,8 @@
             mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
                 const metaFallback = { accountType: 'local', accountId: currentEmail, folder: 'trash', messageId: msg.id };
                 return `
-                <div class="card mb-2 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewMailDetail('${msg.id}', this, true)">
-                    <div class="card-body py-2">
+                <div class="card mb-1 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewMailDetail('${msg.id}', this, true)">
+                    <div class="card-body py-1 px-2">
                         <div class="d-flex justify-content-between align-items-start">
                             <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
                             <small class="text-muted">${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
@@ -7032,8 +7032,8 @@
                     ? `viewSentDetailById(${_jsString(msg.id)}, this.closest('.mail-item'))`
                     : `viewMailDetail(${_jsString(msg.id)}, this.closest('.mail-item'), ${source === 'trash' ? 'true' : 'false'})`;
                 return `
-                <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgKey)}">
-                    <div class="card-body py-2">
+                <div class="card mb-1 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgKey)}">
+                    <div class="card-body py-1 px-2">
                         <div class="d-flex align-items-start">
                             ${supportsBatch && source === 'inbox' && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
                                 <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
@@ -7187,8 +7187,8 @@
                     ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg.folderName || sourceFolder)}</span>`
                     : '';
                 return `
-                    <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
-                        <div class="card-body py-2">
+                    <div class="card mb-1 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
+                        <div class="card-body py-1 px-2">
                             <div class="d-flex align-items-start">
                                 ${supportsBatch && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
                                     <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
