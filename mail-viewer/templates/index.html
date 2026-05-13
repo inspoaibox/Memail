@@ -8155,8 +8155,12 @@
                             localUnread: currentInboxUnreadCount,
                         });
                         if (currentTab === LOCAL_UNREAD_FOLDER && seen) {
-                            currentMessages = currentMessages.filter(m => !m.seen);
                             currentTotal = Math.max(0, currentTotal + delta);
+                            const maxPage = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
+                            if (currentPage > maxPage) currentPage = maxPage;
+                            await queryLocalVirtualMessages(true, currentPage);
+                            resetMailDetail();
+                            return;
                         }
                         renderMessages(currentMessages);
                         _updateUnreadBadge();
@@ -8184,14 +8188,26 @@
                         }
                         if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
                         if (context.type === 'external' && currentExternalFolder === EXTERNAL_UNREAD_FOLDER && seen) {
-                            currentExternalMessages = currentExternalMessages.filter(m => !m.seen);
                             currentExternalTotal = Math.max(0, currentExternalTotal + delta);
+                            const maxPage = Math.max(1, Math.ceil(currentExternalTotal / PAGE_SIZE));
+                            if (currentExternalPage > maxPage) currentExternalPage = maxPage;
+                            await queryExternalMails(true, currentExternalPage);
+                            resetMailDetail();
+                            return;
                         } else if (context.type === 'mixed' && seen && (
                             (currentAccountType === 'global' && currentGlobalFolder === GLOBAL_UNREAD_FOLDER) ||
                             (currentAccountType === 'group' && currentGroupFolder === GROUP_UNREAD_FOLDER)
                         )) {
-                            currentGlobalMessages = currentGlobalMessages.filter(m => !m.seen);
                             currentGlobalTotal = Math.max(0, currentGlobalTotal + delta);
+                            const maxPage = Math.max(1, Math.ceil(currentGlobalTotal / PAGE_SIZE));
+                            if (currentGlobalPage > maxPage) currentGlobalPage = maxPage;
+                            if (currentAccountType === 'group') {
+                                await queryGroupMessages(true, currentGlobalPage);
+                            } else {
+                                await queryGlobalMessages(true, currentGlobalPage);
+                            }
+                            resetMailDetail();
+                            return;
                         }
                         if (context.type === 'external') renderExternalMessages(currentExternalMessages);
                         else renderGlobalMessages(currentGlobalMessages);
