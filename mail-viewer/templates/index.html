@@ -2016,10 +2016,13 @@
                 appOutbox: '发送失败',
                 favorite: '收藏',
                 unfavorite: '取消收藏',
+                favoriteUpdated: '收藏状态已更新',
                 pin: '置顶',
                 unpin: '取消置顶',
+                pinUpdated: '置顶状态已更新',
                 markUnread: '未读',
                 markReadUnread: '标记已读/未读',
+                readStateUpdated: '已读状态已更新',
                 markAllRead: '全部已读',
                 markAllReadLocalOnly: '当前列表不支持批量标记已读',
                 noUnreadToMark: '当前列表没有未读邮件',
@@ -2306,10 +2309,13 @@
                 appOutbox: 'Failed Send',
                 favorite: 'Favorite',
                 unfavorite: 'Unfavorite',
+                favoriteUpdated: 'Favorite updated',
                 pin: 'Pin',
                 unpin: 'Unpin',
+                pinUpdated: 'Pin updated',
                 markUnread: 'Unread',
                 markReadUnread: 'Mark read/unread',
+                readStateUpdated: 'Read state updated',
                 markAllRead: 'Mark all read',
                 markAllReadLocalOnly: 'This list does not support bulk mark read',
                 noUnreadToMark: 'No unread messages in this list',
@@ -2502,6 +2508,7 @@
         let editingExternalAccountId = null;
         let externalStatusTimer = null;
         let autoRefreshEnabled = true;
+        let lastBackgroundExternalSyncAt = 0;
         const PAGE_SIZE = 30;
         const LOCAL_ALL_FOLDER = 'all';
         const LOCAL_UNREAD_FOLDER = 'unread';
@@ -5442,6 +5449,40 @@
             }
         }
 
+        async function _backgroundSyncVisibleExternalAccounts(force = false) {
+            const now = Date.now();
+            if (!force && now - lastBackgroundExternalSyncAt < 60000) return;
+            let accountIds = [];
+            if (currentAccountType === 'external' && currentExternalAccountId) {
+                accountIds = [currentExternalAccountId];
+            } else if (currentAccountType === 'group' && currentGroupName) {
+                accountIds = _groupExternalIds(currentGroupName);
+            } else if (currentAccountType === 'keyword' && currentKeywordRuleId) {
+                const rule = _keywordRuleById(currentKeywordRuleId);
+                accountIds = _keywordRuleAccounts(rule).external.map(account => account.id).filter(Boolean);
+            } else if (currentAccountType === 'global') {
+                accountIds = externalAccounts.map(account => account.id).filter(Boolean);
+            }
+            accountIds = [...new Set(accountIds.map(id => String(id)).filter(Boolean))];
+            if (!accountIds.length) return;
+            lastBackgroundExternalSyncAt = now;
+            try {
+                const sync = await _imapApi('/accounts/sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force, background: true, accountIds: accountIds.join(',') }),
+                });
+                if (Array.isArray(sync.accounts)) {
+                    externalAccounts = sync.accounts;
+                    renderMailboxes();
+                    renderFolderList();
+                    _updateFolderChrome();
+                }
+            } catch (e) {
+                console.warn('background external sync failed', e);
+            }
+        }
+
         function toggleAutoRefresh(enabled) {
             autoRefreshEnabled = Boolean(enabled);
             _persistAutoRefreshPreference();
@@ -5452,12 +5493,16 @@
             if (enabled && (currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword' || currentEmail)) {
                 autoRefreshTimer = setInterval(() => {
                     if (currentAccountType === 'global') {
+                        _backgroundSyncVisibleExternalAccounts(false);
                         queryGlobalMessages(true);
                     } else if (currentAccountType === 'group') {
+                        _backgroundSyncVisibleExternalAccounts(false);
                         queryGroupMessages(true);
                     } else if (currentAccountType === 'keyword') {
+                        _backgroundSyncVisibleExternalAccounts(false);
                         queryKeywordRuleMessages(true);
                     } else if (currentAccountType === 'external') {
+                        _backgroundSyncVisibleExternalAccounts(false);
                         queryExternalMails(true, false);
                     } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
                         queryLocalVirtualMessages(true);
@@ -6381,6 +6426,7 @@
                 }
                 rerenderCurrentList();
                 refreshDetailActionBar();
+                _showMailboxError(t('favoriteUpdated'), 'success');
             } catch (e) {
                 _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
             }
@@ -6400,6 +6446,7 @@
                 }
                 rerenderCurrentList();
                 refreshDetailActionBar();
+                _showMailboxError(t('pinUpdated'), 'success');
             } catch (e) {
                 _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
             }
@@ -6508,6 +6555,7 @@
                 await setMessageReadState(ref, !msg.seen);
                 rerenderCurrentList();
                 refreshDetailActionBar();
+                _showMailboxError(t('readStateUpdated'), 'success');
             } catch (e) {
                 _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
             }
@@ -7630,7 +7678,7 @@
         }
 
         function _renderComposePage(mode = 'compose', options = {}) {
-            const sender = _currentSenderAccount();
+            const sender = options.sender || _currentSenderAccount();
             if (!sender) {
                 currentComposeSender = null;
                 quillEditor = null;
@@ -7733,7 +7781,12 @@
 
         function openReply() {
             const msg = window._currentDetailMsg;
+            const sender = currentComposeSender || _currentSenderAccount();
             if (!msg) return;
+            if (!sender) {
+                _showMailboxError(t('composeSelectAccount'));
+                return;
+            }
 
             const origSubject = msg.subject || '';
             const replySubject = /^Re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`;
@@ -7746,6 +7799,7 @@
                 to: origFrom,
                 subject: replySubject,
                 quoteText,
+                sender,
             });
         }
 
@@ -7758,9 +7812,14 @@
 
         function openReplyAll() {
             const msg = window._currentDetailMsg;
+            const sender = currentComposeSender || _currentSenderAccount();
             if (!msg) return;
+            if (!sender) {
+                _showMailboxError(t('composeSelectAccount'));
+                return;
+            }
             const origFrom = _messageFromAddress(msg);
-            const self = String(currentEmail || currentExternalAccount?.email || '').toLowerCase();
+            const self = String(sender.email || '').toLowerCase();
             const recipients = [origFrom, ..._splitRecipients(msg.to), ..._splitRecipients(msg.cc)]
                 .filter(Boolean)
                 .filter((addr, idx, arr) => arr.findIndex(x => String(x).toLowerCase() === String(addr).toLowerCase()) === idx)
@@ -7772,12 +7831,18 @@
                 to: recipients.join(', '),
                 subject: /^Re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`,
                 quoteText: `--- Original Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${_messageTextValue(msg)}`,
+                sender,
             });
         }
 
         function openForward() {
             const msg = window._currentDetailMsg;
+            const sender = currentComposeSender || _currentSenderAccount();
             if (!msg) return;
+            if (!sender) {
+                _showMailboxError(t('composeSelectAccount'));
+                return;
+            }
             const origSubject = msg.subject || '';
             const origFrom = _messageFromAddress(msg);
             const dateValue = _messageDateValue(msg);
@@ -7786,6 +7851,7 @@
                 to: '',
                 subject: /^Fwd:/i.test(origSubject) ? origSubject : `Fwd: ${origSubject}`,
                 quoteText: `--- Forwarded Message ---\nFrom: ${origFrom}\nDate: ${origDate}\nSubject: ${origSubject}\n\n${_messageTextValue(msg)}`,
+                sender,
             });
         }
 
@@ -7847,16 +7913,7 @@
             const body = editor.getText().trim();
             const htmlBody = editor.root.innerHTML;
             const sender = currentComposeSender || _currentSenderAccount();
-            const senderStillSelected = sender && (
-                (sender.type === 'local' && currentAccountType === 'local' && sender.email === (currentMailbox || currentEmail)) ||
-                (sender.type === 'external' && currentAccountType === 'external' && String(sender.id) === String(currentExternalAccountId)) ||
-                ((currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword') && (
-                    (sender.type === 'local' && sender.email === currentEmail) ||
-                    (sender.type === 'external' && String(sender.id) === String(currentExternalAccountId))
-                ))
-            );
-
-            if (!sender || !senderStillSelected) {
+            if (!sender) {
                 alertDiv.className = 'alert alert-danger';
                 alertDiv.textContent = t('composeSelectAccount');
                 alertDiv.style.display = 'block';
