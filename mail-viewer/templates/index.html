@@ -450,9 +450,20 @@
             flex-shrink: 0;
             white-space: nowrap;
             opacity: 0.72;
+            font-size: 0.74rem;
+        }
+        .mail-sender {
+            font-size: 0.94rem;
+            line-height: 1.3;
+        }
+        .mail-subject {
+            font-size: 0.88rem;
+            line-height: 1.32;
         }
         .mail-intro {
             opacity: 0.72;
+            font-size: 0.78rem;
+            line-height: 1.28;
         }
         /* 未读邮件样式 */
         .mail-item.mail-unread {
@@ -934,11 +945,26 @@
             flex: 0 0 auto;
         }
         #batch-bar {
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             align-items: center;
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: nowrap;
+            gap: 0.35rem !important;
         }
         #batch-bar .btn {
-            min-height: 30px;
+            min-height: 26px;
+            padding: 0.18rem 0.42rem;
+            font-size: 0.76rem;
+            line-height: 1.15;
+            white-space: nowrap;
+        }
+        #batch-bar .btn i {
+            margin-right: 0.18rem !important;
+        }
+        #batch-bar .form-check-label,
+        #batch-bar #selected-count {
+            font-size: 0.76rem;
         }
         .mail-folder-count {
             margin-left: auto;
