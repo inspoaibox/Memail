@@ -36,7 +36,7 @@ const ALLOWED_ATTRS = {
   'img': new Set(['src', 'alt', 'title', 'width', 'height', 'style']),
   'p': new Set(['style']),
   'span': new Set(['style']),
-  'table': new Set(['border', 'bordercolor', 'cellpadding', 'cellspacing', 'height', 'width', 'style']),
+  'table': new Set(['border', 'bordercolor', 'cellpadding', 'cellspacing', 'height', 'role', 'width', 'style']),
   'tbody': new Set(['style']),
   'tfoot': new Set(['style']),
   'thead': new Set(['style']),

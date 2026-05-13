@@ -26,6 +26,9 @@ const GOOGLE_AUTH_SCOPE = `${GOOGLE_SCOPE} openid email profile`;
 const MICROSOFT_SCOPE = 'offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send openid email profile';
 const MICROSOFT_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 const MICROSOFT_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
+const VIRTUAL_ALL_FOLDER = '__memail_all__';
+const VIRTUAL_UNREAD_FOLDER = '__memail_unread__';
+const VIRTUAL_FOLDER_SCAN_LIMIT = 30;
 const oauthStates = new Map();
 let runtimeSettings = {};
 if (!ACCOUNTS_SECRET) {
@@ -490,6 +493,109 @@ function buildRawMessage(mailOptions) {
 
 function isSelectableFolder(folder) {
   return folder && !folder.flags?.has('\\Noselect') && !folder.flags?.has('\\NonExistent');
+}
+
+function isVirtualFolder(folderPath) {
+  return folderPath === VIRTUAL_ALL_FOLDER || folderPath === VIRTUAL_UNREAD_FOLDER;
+}
+
+function isAllMailFolder(folder) {
+  const specialUse = String(folder?.specialUse || '').toLowerCase();
+  const name = String(folder?.name || folder?.path || '').toLowerCase();
+  return specialUse === '\\all' || name === 'all mail' || name.includes('[gmail]/all mail') || name.includes('所有邮件');
+}
+
+function aggregateFolders(folders) {
+  const selectable = (Array.isArray(folders) ? folders : []).filter(isSelectableFolder);
+  const allMail = selectable.find(isAllMailFolder);
+  return (allMail ? [allMail] : selectable).slice(0, VIRTUAL_FOLDER_SCAN_LIMIT);
+}
+
+function mapEnvelopeMessage(msg, folder) {
+  return {
+    uid: msg.uid,
+    seq: msg.seq,
+    folder: folder?.path || '',
+    folderName: folder?.name || folder?.path || '',
+    date: msg.envelope.date,
+    from: msg.envelope.from?.[0]
+      ? { name: msg.envelope.from[0].name || '', address: msg.envelope.from[0].address }
+      : { name: '', address: '(unknown)' },
+    to: msg.envelope.to?.map(t => ({ name: t.name || '', address: t.address })) || [],
+    subject: msg.envelope.subject || '(no subject)',
+    seen: msg.flags?.has('\\Seen') || false,
+    flagged: msg.flags?.has('\\Flagged') || false,
+  };
+}
+
+async function fetchFolderSlice(client, folder, count, unreadOnly = false) {
+  const lock = await client.client.getMailboxLock(folder.path);
+  try {
+    const status = await client.client.status(folder.path, { messages: true, unseen: true });
+    const total = unreadOnly ? (status.unseen || 0) : (status.messages || 0);
+    if (!total) {
+      return { messages: [], total, unseen: status.unseen || 0, hasMore: false };
+    }
+
+    const messages = [];
+    if (unreadOnly) {
+      const uids = await client.client.search({ seen: false }, { uid: true });
+      const selectedUids = uids.slice(-count);
+      if (selectedUids.length) {
+        for await (const msg of client.client.fetch(selectedUids, {
+          envelope: true,
+          flags: true,
+          uid: true,
+        }, { uid: true })) {
+          messages.push(mapEnvelopeMessage(msg, folder));
+        }
+      }
+      return { messages, total, unseen: status.unseen || 0, hasMore: uids.length > selectedUids.length };
+    }
+
+    const endSeq = status.messages;
+    const startSeq = Math.max(1, endSeq - count + 1);
+    for await (const msg of client.client.fetch(`${startSeq}:${endSeq}`, {
+      envelope: true,
+      flags: true,
+      uid: true,
+    })) {
+      messages.push(mapEnvelopeMessage(msg, folder));
+    }
+    return { messages, total, unseen: status.unseen || 0, hasMore: startSeq > 1 };
+  } finally {
+    lock.release();
+  }
+}
+
+async function fetchVirtualFolderMessages(client, folderPath, count) {
+  const unreadOnly = folderPath === VIRTUAL_UNREAD_FOLDER;
+  const folders = aggregateFolders(await client.client.list());
+  const allMessages = [];
+  let total = 0;
+  let unseen = 0;
+  let hasMore = false;
+
+  for (const folder of folders) {
+    try {
+      const result = await fetchFolderSlice(client, folder, count, unreadOnly);
+      total += result.total;
+      unseen += result.unseen;
+      hasMore = hasMore || result.hasMore;
+      allMessages.push(...result.messages);
+    } catch (err) {
+      console.warn(`Failed to aggregate folder ${folder.path}: ${err.message}`);
+    }
+  }
+
+  allMessages.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  return {
+    total,
+    unseen,
+    mails: allMessages.slice(0, count),
+    hasMore: hasMore || allMessages.length > count,
+    virtual: true,
+  };
 }
 
 function findSentFolder(folders) {
@@ -1150,6 +1256,9 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
 
   try {
     await client.ensureConnected();
+    if (isVirtualFolder(folder)) {
+      return res.json(await fetchVirtualFolderMessages(client, folder, count));
+    }
     const lock = await client.client.getMailboxLock(folder);
     try {
       const status = await client.client.status(folder, { messages: true, unseen: true });
@@ -1177,18 +1286,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
         flags: true,
         uid: true,
       })) {
-        mails.push({
-          uid: msg.uid,
-          seq: msg.seq,
-          date: msg.envelope.date,
-          from: msg.envelope.from?.[0]
-            ? { name: msg.envelope.from[0].name || '', address: msg.envelope.from[0].address }
-            : { name: '', address: '(unknown)' },
-          to: msg.envelope.to?.map(t => ({ name: t.name || '', address: t.address })) || [],
-          subject: msg.envelope.subject || '(no subject)',
-          seen: msg.flags?.has('\\Seen') || false,
-          flagged: msg.flags?.has('\\Flagged') || false,
-        });
+        mails.push(mapEnvelopeMessage(msg, { path: folder, name: folder }));
       }
 
       mails.sort((a, b) => new Date(b.date) - new Date(a.date));

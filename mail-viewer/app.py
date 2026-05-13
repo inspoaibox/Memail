@@ -80,7 +80,7 @@ _EMAIL_ALLOWED_ATTRIBUTES = {
     "img": ["src", "alt", "title", "width", "height", "style"],
     "p": ["style"],
     "span": ["style"],
-    "table": ["border", "bordercolor", "cellpadding", "cellspacing", "height", "width", "style"],
+    "table": ["border", "bordercolor", "cellpadding", "cellspacing", "height", "role", "width", "style"],
     "tbody": ["style"],
     "tfoot": ["style"],
     "thead": ["style"],

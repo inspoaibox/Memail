@@ -1660,6 +1660,10 @@
                 foldersLoadFailed: '文件夹加载失败',
                 noFolders: '没有可用文件夹',
                 noExternalMail: '此文件夹暂无邮件',
+                allMail: '所有邮件',
+                unreadMail: '未读邮件',
+                noAllMail: '当前账号暂无邮件',
+                noUnreadMail: '当前账号暂无未读邮件',
                 confirmRemoveExternal: '移除外部邮箱 "{email}" 吗？账号配置会从本机持久化存储中删除。',
                 gmailOAuthNotReady: 'Gmail OAuth2 未配置，请先在设置中填写 Google Client ID / Secret / Redirect URI。',
                 gmailOAuthSetupHint: 'Gmail OAuth 使用 https://mail.google.com/ 权限；如果不想申请 OAuth，可直接添加 Gmail 并填写 16 位应用专用密码。',
@@ -1695,6 +1699,7 @@
                 confirmPermanentDelete: '确定要彻底删除这封邮件吗？此操作不可恢复。',
                 auto: '自动',
                 searchPlaceholder: '搜索发件人/主题/内容...',
+                searchVirtualUnsupported: '当前视图暂不支持搜索，请切换到具体文件夹搜索',
                 selectAll: '全选',
                 delete: '删除',
                 markRead: '已读',
@@ -1857,6 +1862,10 @@
                 foldersLoadFailed: 'Failed to load folders',
                 noFolders: 'No folders available',
                 noExternalMail: 'No email in this folder',
+                allMail: 'All Mail',
+                unreadMail: 'Unread',
+                noAllMail: 'No mail in this account',
+                noUnreadMail: 'No unread mail in this account',
                 confirmRemoveExternal: 'Remove external mailbox "{email}"? Its saved account config will be deleted locally.',
                 gmailOAuthNotReady: 'Gmail OAuth2 is not configured. Fill Google Client ID / Secret / Redirect URI in settings first.',
                 gmailOAuthSetupHint: 'Gmail OAuth uses the https://mail.google.com/ scope. If you do not want OAuth review, add Gmail manually with a 16-character app password.',
@@ -1892,6 +1901,7 @@
                 confirmPermanentDelete: 'Permanently delete this email? This cannot be undone.',
                 auto: 'Auto',
                 searchPlaceholder: 'Search sender / subject / content...',
+                searchVirtualUnsupported: 'Search is available after switching to a concrete folder',
                 selectAll: 'All',
                 delete: 'Delete',
                 markRead: 'Read',
@@ -2003,7 +2013,7 @@
             renderMailboxes();
             renderFolderList();
             if (currentAccountType === 'external' && currentExternalMessages.length > 0) renderExternalMessages(currentExternalMessages);
-            if (currentAccountType === 'local' && currentMessages.length > 0 && currentTab === 'inbox') renderMessages(currentMessages);
+            if (currentAccountType === 'local' && currentMessages.length > 0 && [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER, 'inbox'].includes(currentTab)) renderMessages(currentMessages);
             if (currentAccountType === 'local' && currentSentMessages.length > 0 && currentTab === 'sent') renderSentMessages(currentSentMessages);
             if (currentAccountType === 'local' && currentTrashMessages.length > 0 && currentTab === 'trash') renderTrashMessages(currentTrashMessages);
             if (!currentEmail) resetMailDetail();
@@ -2032,6 +2042,7 @@
         let currentTotal = 0;
         let currentSentTotal = 0;
         let currentTrashTotal = 0;
+        let currentInboxUnreadCount = 0;
         let settingsModal = null;
         let externalAccountModal = null;
         let translationAbortController = null;
@@ -2043,6 +2054,10 @@
         let externalAccountFormMode = 'add';
         let editingExternalAccountId = null;
         const PAGE_SIZE = 30;
+        const LOCAL_ALL_FOLDER = 'all';
+        const LOCAL_UNREAD_FOLDER = 'unread';
+        const EXTERNAL_ALL_FOLDER = '__memail_all__';
+        const EXTERNAL_UNREAD_FOLDER = '__memail_unread__';
         const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
         let externalAccountSwitchSeq = 0;
@@ -2068,14 +2083,18 @@
             iframe.style.overflow = 'auto';
             const mailBodyCss = `
                 html,body{margin:0;padding:0;background:transparent;}
-                body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:0;overflow-wrap:anywhere;word-break:normal;line-height:1.55;}
+                body{font-family:"Noto Sans SC",system-ui,sans-serif;font-size:14px;color:#1a2421;padding:0;overflow-wrap:anywhere;word-break:normal;line-height:1.55;overflow-x:auto;}
                 img{max-width:100%;height:auto;}
                 a{color:#4a7c9b;}
-                table{max-width:100%;border-collapse:collapse;table-layout:auto;}
-                table[width="100%"]{width:100%;}
+                table{border-collapse:collapse;table-layout:auto;border-spacing:0;}
+                table:not(.memail-data-table){max-width:100%;}
+                table[width="100%"],table[role="presentation"]{width:100%;}
+                .memail-data-table{max-width:none;min-width:max-content;margin:8px 0;background:#fff;}
                 caption{text-align:left;}
                 col,colgroup{display:table-column;}
-                th,td{vertical-align:top;word-break:normal;overflow-wrap:break-word;}
+                th,td{vertical-align:top;word-break:normal;overflow-wrap:normal;}
+                .memail-data-table th,.memail-data-table td{padding:6px 8px;border:1px solid #d8e2df;}
+                .memail-data-table th{background:#f4f8f7;font-weight:700;}
                 pre{white-space:pre-wrap;overflow-wrap:anywhere;}
             `;
 
@@ -2087,6 +2106,16 @@
             iframeDoc.querySelectorAll('a[href]').forEach(a => {
                 a.setAttribute('target', '_blank');
                 a.setAttribute('rel', 'noopener noreferrer');
+            });
+            iframeDoc.querySelectorAll('table').forEach(table => {
+                const role = String(table.getAttribute('role') || '').toLowerCase();
+                const border = String(table.getAttribute('border') || '').trim();
+                const rows = table.querySelectorAll('tr').length;
+                const cells = table.querySelectorAll('td,th').length;
+                const hasHeader = Boolean(table.querySelector('th'));
+                const isPresentation = role === 'presentation' || role === 'none';
+                const looksLikeData = !isPresentation && (hasHeader || (border && border !== '0') || (rows >= 2 && cells >= 4));
+                if (looksLikeData) table.classList.add('memail-data-table');
             });
 
             // 从父页面计算 iframe 高度（sandbox 无 allow-scripts，脚本无法在 iframe 内执行）
@@ -2121,7 +2150,7 @@
         function _updateUnreadBadge() {
             const badge = document.getElementById('unread-badge');
             if (!badge) return;
-            const unreadCount = currentMessages.filter(m => !m.seen).length;
+            const unreadCount = currentInboxUnreadCount || currentMessages.filter(m => !m.seen && (!m._source || m._source === 'inbox')).length;
             if (unreadCount > 0) {
                 badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
                 badge.style.display = 'inline';
@@ -2159,7 +2188,13 @@
         }
 
         function _currentFolderTitle() {
-            if (currentAccountType === 'external') return currentExternalFolder || 'INBOX';
+            if (currentAccountType === 'external') {
+                if (currentExternalFolder === EXTERNAL_ALL_FOLDER) return t('allMail');
+                if (currentExternalFolder === EXTERNAL_UNREAD_FOLDER) return t('unreadMail');
+                return currentExternalFolder || 'INBOX';
+            }
+            if (currentTab === LOCAL_ALL_FOLDER) return t('allMail');
+            if (currentTab === LOCAL_UNREAD_FOLDER) return t('unreadMail');
             if (currentTab === 'sent') return t('sent');
             if (currentTab === 'trash') return t('trash');
             if (currentTab === 'drafts') return t('drafts');
@@ -2545,6 +2580,8 @@
 
         function _externalFolderIcon(folder) {
             const name = String(folder?.path || folder?.name || '').toLowerCase();
+            if (name === EXTERNAL_ALL_FOLDER) return 'bi-collection';
+            if (name === EXTERNAL_UNREAD_FOLDER) return 'bi-envelope-exclamation';
             if (name === 'inbox' || name.includes('收件')) return 'bi-inbox';
             if (name.includes('sent') || name.includes('已发送')) return 'bi-send';
             if (name.includes('trash') || name.includes('deleted') || name.includes('回收')) return 'bi-trash';
@@ -2562,12 +2599,24 @@
             currentTotal = 0;
             currentSentTotal = 0;
             currentTrashTotal = 0;
+            currentInboxUnreadCount = 0;
         }
 
         function _resetExternalMessageState() {
             currentExternalMessages = [];
             currentExternalTotal = 0;
             currentExternalHasMore = false;
+        }
+
+        function _isExternalVirtualFolder(folderPath) {
+            return folderPath === EXTERNAL_ALL_FOLDER || folderPath === EXTERNAL_UNREAD_FOLDER;
+        }
+
+        function _externalVirtualFolders() {
+            return [
+                { path: EXTERNAL_ALL_FOLDER, name: t('allMail'), specialUse: '', virtual: true },
+                { path: EXTERNAL_UNREAD_FOLDER, name: t('unreadMail'), specialUse: '', virtual: true },
+            ];
         }
 
         async function loadExternalPresets() {
@@ -2790,9 +2839,13 @@
                     return;
                 }
                 if (!currentExternalFolders.length) {
-                    const fallbackFolder = currentExternalFolder || 'INBOX';
-                    list.innerHTML = composeButton + `
-                        <button class="mail-folder-item active" data-folder="${_escapeAttr(fallbackFolder)}" onclick="selectFolder(${_jsString(encodeURIComponent(fallbackFolder))})">
+                    const fallbackFolder = _isExternalVirtualFolder(currentExternalFolder) ? 'INBOX' : (currentExternalFolder || 'INBOX');
+                    const virtualFolders = _externalVirtualFolders().map(folder => `
+                        <button class="mail-folder-item ${folder.path === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(folder.path)}" onclick="selectFolder(${_jsString(encodeURIComponent(folder.path))})">
+                            <i class="bi ${_externalFolderIcon(folder)}"></i><span class="text-truncate">${_escapeHtml(folder.name)}</span>
+                        </button>`).join('');
+                    list.innerHTML = composeButton + virtualFolders + `
+                        <button class="mail-folder-item ${fallbackFolder === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(fallbackFolder)}" onclick="selectFolder(${_jsString(encodeURIComponent(fallbackFolder))})">
                             <i class="bi bi-inbox"></i><span class="text-truncate">${_escapeHtml(fallbackFolder)}</span>
                         </button>`;
                     return;
@@ -2802,7 +2855,7 @@
                     ...currentExternalFolders,
                     { path: '__memail_sent_pending__', name: t('sent'), specialUse: '\\Sent', virtual: true },
                 ];
-                list.innerHTML = composeButton + foldersToRender.map(folder => {
+                list.innerHTML = composeButton + _externalVirtualFolders().concat(foldersToRender).map(folder => {
                     const path = folder.path || folder.name || 'INBOX';
                     const label = folder.name || folder.path || 'INBOX';
                     return `
@@ -2814,6 +2867,12 @@
             }
 
             list.innerHTML = composeButton + `
+                <button class="mail-folder-item ${currentTab === LOCAL_ALL_FOLDER ? 'active' : ''}" data-folder="${LOCAL_ALL_FOLDER}" onclick="selectFolder('${LOCAL_ALL_FOLDER}')">
+                    <i class="bi bi-collection"></i><span>${t('allMail')}</span>
+                </button>
+                <button class="mail-folder-item ${currentTab === LOCAL_UNREAD_FOLDER ? 'active' : ''}" data-folder="${LOCAL_UNREAD_FOLDER}" onclick="selectFolder('${LOCAL_UNREAD_FOLDER}')">
+                    <i class="bi bi-envelope-exclamation"></i><span>${t('unreadMail')}</span>
+                </button>
                 <button class="mail-folder-item ${currentTab === 'inbox' ? 'active' : ''}" data-folder="inbox" onclick="selectFolder('inbox')">
                     <i class="bi bi-inbox"></i><span>${t('inbox')}</span><span id="unread-badge" class="badge ms-auto" style="display:none;background:var(--navy);font-size:0.7em;"></span>
                 </button>
@@ -2959,7 +3018,13 @@
                 await queryExternalMails(false, false, switchSeq);
                 return;
             }
-            currentTab = decodedFolder || 'inbox';
+            const nextTab = decodedFolder || 'inbox';
+            const messageTabs = [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER, 'inbox'];
+            if (nextTab !== currentTab && (messageTabs.includes(nextTab) || messageTabs.includes(currentTab))) {
+                currentMessages = [];
+                currentTotal = 0;
+            }
+            currentTab = nextTab;
             _updateFolderChrome();
             switchTab(currentTab);
         }
@@ -3843,7 +3908,15 @@
         function toggleAutoRefresh(enabled) {
             if (enabled && currentEmail) {
                 autoRefreshTimer = setInterval(() => {
-                    currentAccountType === 'external' ? queryExternalMails(true, false) : queryInbox(true);
+                    if (currentAccountType === 'external') {
+                        queryExternalMails(true, false);
+                    } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
+                        queryLocalVirtualMessages(true);
+                    } else if (currentTab === 'inbox') {
+                        queryInbox(true);
+                    } else {
+                        refreshCurrentTab();
+                    }
                 }, AUTO_REFRESH_INTERVAL);
             } else {
                 if (autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -3878,7 +3951,7 @@
                 if (tabSent) tabSent.className = 'btn btn-outline-secondary';
                 if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
                 if (batchBar) batchBar.style.cssText = 'display:none !important;';
-                if (searchBar) searchBar.style.display = currentExternalAccountId ? 'flex' : 'none';
+                if (searchBar) searchBar.style.display = currentExternalAccountId && !_isExternalVirtualFolder(currentExternalFolder) ? 'flex' : 'none';
                 if (!currentExternalAccountId) {
                     document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
                 } else if (currentExternalMessages.length > 0) {
@@ -3890,11 +3963,25 @@
                 return;
             }
 
-            if (tab === 'inbox') {
+            if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(tab)) {
+                if (tabInbox) tabInbox.className = 'btn btn-outline-secondary';
+                if (tabSent) tabSent.className = 'btn btn-outline-secondary';
+                if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
+                if (batchBar) batchBar.style.cssText = 'display:none !important;';
+                if (searchBar) searchBar.style.display = 'none';
+                if (!currentEmail) {
+                    document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
+                } else if (currentMessages.length > 0) {
+                    renderMessages(currentMessages);
+                } else {
+                    queryLocalVirtualMessages();
+                }
+                resetMailDetail();
+            } else if (tab === 'inbox') {
                 if (tabInbox) tabInbox.className = 'btn btn-primary';
                 if (tabSent) tabSent.className = 'btn btn-outline-secondary';
                 if (tabTrash) tabTrash.className = 'btn btn-outline-secondary';
-                if (batchBar) batchBar.style.display = currentMessages.length > 0 ? 'flex' : 'none';
+                if (batchBar) batchBar.style.cssText = currentMessages.length > 0 ? 'display:flex !important;' : 'display:none !important;';
                 if (searchBar) searchBar.style.display = currentEmail ? 'flex' : 'none';
                 if (!currentEmail) {
                     document.getElementById('mail-list').innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-arrow-left me-2"></i>${t('queryHint')}</div>`;
@@ -3945,6 +4032,7 @@
                 return;
             }
             if (currentTab === 'inbox') queryInbox();
+            else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) queryLocalVirtualMessages();
             else if (currentTab === 'sent') querySent();
             else if (currentTab === 'trash') queryTrash();
             else if (currentTab === 'drafts') switchTab('drafts');
@@ -3971,6 +4059,68 @@
                 renderSentMessages(append ? currentSentMessages.concat(data.messages) : data.messages);
             } catch (e) {
                 mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+            }
+        }
+
+        function _messageSortTime(msg) {
+            const raw = msg.createdAt || msg.created_at || msg.date || msg.updatedAt || msg.updated_at || msg.receivedAt || 0;
+            const time = new Date(raw).getTime();
+            return Number.isFinite(time) ? time : 0;
+        }
+
+        function _normalizeLocalVirtualMessage(msg, source) {
+            const copy = { ...msg };
+            copy._source = source;
+            copy._sortTime = _messageSortTime(msg);
+            if (source === 'sent') {
+                copy.seen = true;
+            }
+            return copy;
+        }
+
+        async function _fetchLocalMailboxSlice(endpoint) {
+            const resp = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: currentEmail, offset: 0, limit: PAGE_SIZE }),
+            });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.message || t('loadFailed'));
+            return Array.isArray(data.messages) ? data.messages : [];
+        }
+
+        async function queryLocalVirtualMessages(silent = false) {
+            if (currentAccountType !== 'local' || !currentEmail) return;
+            const mailList = document.getElementById('mail-list');
+            if (!silent) {
+                resetMailDetail();
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            }
+
+            try {
+                const [inbox, sent, trash] = await Promise.all([
+                    _fetchLocalMailboxSlice('/api/inbox/query'),
+                    _fetchLocalMailboxSlice('/api/sent/query').catch(() => []),
+                    _fetchLocalMailboxSlice('/api/trash/query').catch(() => []),
+                ]);
+                currentInboxUnreadCount = inbox.filter(msg => !msg.seen).length;
+                const merged = [
+                    ...inbox.map(msg => _normalizeLocalVirtualMessage(msg, 'inbox')),
+                    ...sent.map(msg => _normalizeLocalVirtualMessage(msg, 'sent')),
+                    ...trash.map(msg => _normalizeLocalVirtualMessage(msg, 'trash')),
+                ]
+                    .filter(msg => currentTab !== LOCAL_UNREAD_FOLDER || !msg.seen)
+                    .sort((a, b) => b._sortTime - a._sortTime)
+                    .slice(0, PAGE_SIZE);
+                currentMessages = merged;
+                currentSentMessages = sent;
+                currentTrashMessages = trash;
+                currentTotal = merged.length;
+                renderMessages(currentMessages);
+            } catch (e) {
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
             }
         }
 
@@ -4158,6 +4308,7 @@
                 
             _setCurrentMailbox(email);
                 currentTotal = data.total || 0;
+                currentInboxUnreadCount = data.messages.filter(msg => !msg.seen).length;
                 
                 if (append) {
                     // 追加模式：合并新消息到已有列表
@@ -4213,9 +4364,11 @@
         function renderMessages(messages) {
             const mailList = document.getElementById('mail-list');
             const batchBar = document.getElementById('batch-bar');
+            const isInboxTab = currentTab === 'inbox';
+            const isVirtualTab = [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab);
 
             // 显示/隐藏批量操作栏
-            if (messages.length > 0 && currentTab === 'inbox') {
+            if (messages.length > 0 && isInboxTab) {
                 if (batchBar) {
                     batchBar.style.display = 'flex';
                     batchBar.style.cssText = 'display:flex !important;';
@@ -4229,42 +4382,57 @@
             updateBatchButtons();
             
             if (messages.length === 0) {
+                const emptyText = currentTab === LOCAL_ALL_FOLDER
+                    ? t('noAllMail')
+                    : currentTab === LOCAL_UNREAD_FOLDER
+                        ? t('noUnreadMail')
+                        : t('inboxEmpty');
                 mailList.innerHTML = `
                     <div class="empty-state">
-                        <i class="bi bi-inbox d-block"></i>
-                        <p>${t('inboxEmpty')}</p>
-                        <button class="btn-refresh" onclick="queryInbox()">
+                        <i class="bi ${currentTab === LOCAL_UNREAD_FOLDER ? 'bi-envelope-exclamation' : 'bi-inbox'} d-block"></i>
+                        <p>${emptyText}</p>
+                        <button class="btn-refresh" onclick="${isVirtualTab ? 'queryLocalVirtualMessages()' : 'queryInbox()'}">
                             <i class="bi bi-arrow-clockwise"></i>${t('refresh')}
                         </button>
                     </div>`;
                 return;
             }
             
-            mailList.innerHTML = messages.map(msg => `
-                <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'}" data-msg-id="${msg.id}">
+            mailList.innerHTML = messages.map(msg => {
+                const source = msg._source || 'inbox';
+                const sourceLabel = source === 'sent' ? t('sent') : source === 'trash' ? t('trash') : t('inbox');
+                const msgKey = `${source}:${msg.id}`;
+                const clickHandler = source === 'sent'
+                    ? `viewSentDetailById(${_jsString(msg.id)}, this.closest('.mail-item'))`
+                    : `viewMailDetail(${_jsString(msg.id)}, this.closest('.mail-item'), ${source === 'trash' ? 'true' : 'false'})`;
+                return `
+                <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'}" data-msg-id="${_escapeAttr(msgKey)}">
                     <div class="card-body py-2">
                         <div class="d-flex align-items-start">
-                            <div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
-                                <input class="form-check-input mail-checkbox" type="checkbox" value="${msg.id}" onchange="updateBatchButtons()">
-                            </div>
-                            <div class="flex-grow-1 mail-item-body" onclick="viewMailDetail('${msg.id}', this.closest('.mail-item'))">
+                            ${isInboxTab ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
+                                <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(msg.id)}" onchange="updateBatchButtons()">
+                            </div>` : ''}
+                            <div class="flex-grow-1 mail-item-body" onclick="${clickHandler}">
                                 <div class="d-flex justify-content-between align-items-start">
-                                    <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
+                                    <span class="mail-sender text-truncate me-2"><span class="mail-copy">${source === 'sent' ? _escapeHtml((msg.to || []).map(item => typeof item === 'string' ? item : (item.address || item.name || '')).filter(Boolean).join(', ') || t('unknownSender')) : _escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
                                     <div class="mail-item-meta text-end ms-2">
                                         ${msg.extracted_code ? `<span class="badge bg-success me-1" title="验证码"><i class="bi bi-key me-1"></i>${msg.extracted_code}</span>` : ''}
-                                        <small class="text-muted">${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
+                                        <small class="text-muted">${new Date(msg.createdAt || msg.created_at || msg.date || msg.receivedAt || 0).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
                                     </div>
                                 </div>
                                 <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                                <small class="mail-intro text-muted text-truncate d-block"><span class="mail-copy">${_escapeHtml(msg.intro || '')}</span></small>
+                                <small class="mail-intro text-muted text-truncate d-block">
+                                    ${isVirtualTab ? `<span class="badge text-bg-light me-1">${_escapeHtml(sourceLabel)}</span>` : ''}
+                                    <span class="mail-copy">${_escapeHtml(msg.intro || '')}</span>
+                                </small>
                             </div>
                         </div>
                     </div>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
             
             // 添加"加载更多"按钮（当还有更多数据时）
-            if (currentTotal > currentMessages.length && currentTab === 'inbox') {
+            if (currentTotal > currentMessages.length && isInboxTab) {
                 mailList.insertAdjacentHTML('beforeend', `
                     <div class="text-center py-3">
                         <button class="btn btn-outline-primary btn-sm" id="btn-load-more" onclick="queryInbox(false, true)">
@@ -4287,7 +4455,8 @@
                 }
                 return;
             }
-            const before = append && currentExternalMessages.length
+            const isVirtualFolder = _isExternalVirtualFolder(folderPath);
+            const before = append && !isVirtualFolder && currentExternalMessages.length
                 ? Math.min(...currentExternalMessages.map(m => Number(m.seq)).filter(Boolean))
                 : null;
 
@@ -4324,12 +4493,12 @@
                     return;
                 }
                 currentExternalTotal = data.total || 0;
-                currentExternalHasMore = !!data.hasMore;
+                currentExternalHasMore = isVirtualFolder ? false : !!data.hasMore;
                 const mails = data.mails || [];
                 currentExternalMessages = append ? currentExternalMessages.concat(mails) : mails;
                 document.getElementById('btn-refresh-mail').disabled = false;
                 const searchBar = document.getElementById('search-bar');
-                if (searchBar) searchBar.style.display = 'flex';
+                if (searchBar) searchBar.style.display = isVirtualFolder ? 'none' : 'flex';
 
                 let activeId = null;
                 if (silent) {
@@ -4357,14 +4526,25 @@
             updateBatchButtons();
 
             if (!messages.length) {
-                mailList.innerHTML = `<div class="empty-state"><i class="bi bi-folder d-block"></i><p>${t('noExternalMail')}</p></div>`;
+                const emptyText = currentExternalFolder === EXTERNAL_ALL_FOLDER
+                    ? t('noAllMail')
+                    : currentExternalFolder === EXTERNAL_UNREAD_FOLDER
+                        ? t('noUnreadMail')
+                        : t('noExternalMail');
+                mailList.innerHTML = `<div class="empty-state"><i class="bi bi-folder d-block"></i><p>${emptyText}</p></div>`;
                 return;
             }
 
             mailList.innerHTML = messages.map(msg => {
-                const msgId = String(msg.uid);
+                const sourceFolder = msg.folder || msg.sourceFolder || currentExternalFolder || 'INBOX';
+                const msgId = _isExternalVirtualFolder(currentExternalFolder)
+                    ? `${sourceFolder}::${msg.uid}`
+                    : String(msg.uid);
                 const sender = msg.from?.name || msg.from?.address || t('unknownSender');
                 const intro = msg.to?.length ? msg.to.map(item => item.address || item.name).filter(Boolean).join(', ') : '';
+                const folderBadge = _isExternalVirtualFolder(currentExternalFolder)
+                    ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg.folderName || sourceFolder)}</span>`
+                    : '';
                 return `
                     <div class="card mb-2 mail-item ${msg.seen ? '' : 'mail-unread'}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
                         <div class="card-body py-2">
@@ -4376,7 +4556,7 @@
                                 </div>
                             </div>
                             <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                            <small class="mail-intro text-muted text-truncate d-block"><span class="mail-copy">${_escapeHtml(intro)}</span></small>
+                            <small class="mail-intro text-muted text-truncate d-block">${folderBadge}<span class="mail-copy">${_escapeHtml(intro)}</span></small>
                         </div>
                     </div>`;
             }).join('');
@@ -4391,7 +4571,29 @@
             }
         }
 
-        function _renderExternalAttachments(uid, attachments) {
+        function _parseExternalMessageRef(raw) {
+            let value = String(raw || '');
+            try {
+                value = decodeURIComponent(value);
+            } catch (e) {
+                // Keep the raw value when a legacy caller passes an unescaped UID.
+            }
+            const splitAt = value.lastIndexOf('::');
+            if (splitAt > -1) {
+                return {
+                    folder: value.slice(0, splitAt) || 'INBOX',
+                    uid: value.slice(splitAt + 2),
+                    key: value,
+                };
+            }
+            return {
+                folder: currentExternalFolder || 'INBOX',
+                uid: value,
+                key: value,
+            };
+        }
+
+        function _renderExternalAttachments(uid, attachments, folderPath = currentExternalFolder || 'INBOX') {
             if (!attachments || attachments.length === 0) return '';
             return `
                 <div class="mb-3">
@@ -4401,7 +4603,7 @@
                             const filename = att.filename || `attachment_${index}`;
                             const size = _formatSize(att.size);
                             const attIndex = encodeURIComponent(String(att.index ?? index));
-                            const url = `/imap/api/accounts/${encodeURIComponent(currentExternalAccountId)}/mails/${encodeURIComponent(uid)}/attachments/${attIndex}?folder=${encodeURIComponent(currentExternalFolder || 'INBOX')}`;
+                            const url = `/imap/api/accounts/${encodeURIComponent(currentExternalAccountId)}/mails/${encodeURIComponent(uid)}/attachments/${attIndex}?folder=${encodeURIComponent(folderPath)}`;
                             return `<a class="btn btn-sm btn-outline-secondary" href="${url}" download title="${t('download')}"><i class="bi bi-download me-1"></i>${_escapeHtml(filename)}${size ? ` <span class="text-muted">(${size})</span>` : ''}</a>`;
                         }).join('')}
                     </div>
@@ -4411,7 +4613,9 @@
         async function viewExternalMailDetail(encodedUid, element) {
             cancelActiveTranslation();
             if (!currentExternalAccountId) return;
-            const uid = decodeURIComponent(String(encodedUid));
+            const msgRef = _parseExternalMessageRef(encodedUid);
+            const uid = msgRef.uid;
+            const sourceFolder = msgRef.folder;
             document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('active'));
             if (element) element.classList.add('active');
 
@@ -4427,8 +4631,8 @@
                 </div>`;
 
             try {
-                const msg = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/mails/${encodeURIComponent(uid)}?folder=${encodeURIComponent(currentExternalFolder || 'INBOX')}`);
-                const idx = currentExternalMessages.findIndex(m => String(m.uid) === String(uid));
+                const msg = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/mails/${encodeURIComponent(uid)}?folder=${encodeURIComponent(sourceFolder)}`);
+                const idx = currentExternalMessages.findIndex(m => String(m.uid) === String(uid) && String(m.folder || m.sourceFolder || currentExternalFolder || 'INBOX') === String(sourceFolder));
                 if (idx !== -1) currentExternalMessages[idx].seen = true;
                 if (element) element.classList.remove('mail-unread');
                 window._currentDetailMsg = {
@@ -4450,7 +4654,7 @@
                     ${cc ? `<div class="mb-3"><strong>CC:</strong> ${cc}</div>` : ''}
                     <div class="mb-3"><strong>${t('subject')}:</strong> ${_escapeHtml(msg.subject || t('noSubject'))}</div>
                     <div class="mb-3"><strong>${t('time')}:</strong> ${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</div>
-                    ${_renderExternalAttachments(uid, msg.attachments)}
+                    ${_renderExternalAttachments(uid, msg.attachments, sourceFolder)}
                     <div id="mail-translation-panel" class="mail-translation-panel" style="display:none;"></div>
                     <hr>
                     <div class="mail-body-container" style="background:#f8f9fa; padding:0; border-radius:6px; overflow:hidden;">
@@ -4474,6 +4678,10 @@
 
             try {
                 if (currentAccountType === 'external') {
+                    if (_isExternalVirtualFolder(currentExternalFolder || '')) {
+                        mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('searchVirtualUnsupported')}</p></div>`;
+                        return;
+                    }
                     const params = new URLSearchParams({
                         folder: currentExternalFolder || 'INBOX',
                         q: query,
@@ -4513,6 +4721,8 @@
                 queryExternalMails(false, false);
             } else if (currentMessages.length > 0) {
                 renderMessages(currentMessages);
+            } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
+                queryLocalVirtualMessages();
             }
         }
 
@@ -4560,8 +4770,9 @@
                 // 保存当前查看的邮件详情供回复使用
                 window._currentDetailMsg = msg;
                 // 同步已读状态：更新 currentMessages 并移除未读样式
-                const idx = currentMessages.findIndex(m => m.id === messageId);
+                const idx = currentMessages.findIndex(m => m.id === messageId && (!m._source || m._source === 'inbox'));
                 if (!isTrash && idx !== -1) currentMessages[idx].seen = true;
+                if (!isTrash && currentInboxUnreadCount > 0) currentInboxUnreadCount -= 1;
                 if (!isTrash && element) element.classList.remove('mail-unread');
                 _updateUnreadBadge();
                 const escapedSubject = _escapeHtml(msg.subject || t('noSubject'));
