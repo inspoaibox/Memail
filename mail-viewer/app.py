@@ -4,6 +4,7 @@ import hmac
 import json
 import hashlib
 import html as html_lib
+import mimetypes
 import os
 import threading
 import re
@@ -62,6 +63,8 @@ CONFIG_ENCRYPTION_KEY = (
     or app.secret_key
     or ""
 )
+MAX_SEND_ATTACHMENT_BYTES = int(os.getenv("MAX_SEND_ATTACHMENT_BYTES", str(15 * 1024 * 1024)))
+MAX_SEND_ATTACHMENTS_BYTES = int(os.getenv("MAX_SEND_ATTACHMENTS_BYTES", str(25 * 1024 * 1024)))
 MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 1024)))
 IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS", "3"))
 IMAGE_PROXY_READ_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_READ_TIMEOUT_SECONDS", "8"))
@@ -585,6 +588,16 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _safe_iso_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 def _touch_sync_event(settings: dict, event_type: str, payload: dict | None = None) -> dict:
     payload = payload or {}
     seq = _safe_int(settings.get("sync_seq"), 0) + 1
@@ -729,9 +742,12 @@ def _public_draft(item: dict) -> dict:
         "from_email": item.get("from_email", ""),
         "from_name": item.get("from_name", ""),
         "to": item.get("to", ""),
+        "cc": item.get("cc", ""),
+        "bcc": item.get("bcc", ""),
         "subject": item.get("subject", ""),
         "text": item.get("text", ""),
         "html": item.get("html", ""),
+        "attachments": item.get("attachments", []) if isinstance(item.get("attachments"), list) else [],
         "created_at": item.get("created_at", ""),
         "updated_at": item.get("updated_at", ""),
         "version": item.get("version", 1),
@@ -746,9 +762,12 @@ def _public_outbox(item: dict) -> dict:
         "from_email": item.get("from_email", ""),
         "from_name": item.get("from_name", ""),
         "to": item.get("to", ""),
+        "cc": item.get("cc", ""),
+        "bcc": item.get("bcc", ""),
         "subject": item.get("subject", ""),
         "text": item.get("text", ""),
         "html": item.get("html", ""),
+        "attachments": item.get("attachments", []) if isinstance(item.get("attachments"), list) else [],
         "status": item.get("status", "failed"),
         "error": item.get("error", ""),
         "attempts": item.get("attempts", 0),
@@ -767,9 +786,12 @@ def _store_outbox_failure(settings: dict, data: dict, message: str, account_type
         "from_email": data.get("from_email", ""),
         "from_name": data.get("from_name", ""),
         "to": data.get("to", ""),
+        "cc": data.get("cc", ""),
+        "bcc": data.get("bcc", ""),
         "subject": data.get("subject", ""),
         "text": data.get("text", ""),
         "html": data.get("html", ""),
+        "attachments": _normalize_send_attachments(data.get("attachments", []), keep_content=True),
         "reply_to": data.get("reply_to", ""),
         "status": "failed",
         "error": message,
@@ -941,26 +963,33 @@ def _public_keyword_rule(item: dict) -> dict:
     }
 
 
-def _device_auth() -> dict | None:
+def _device_auth(required_scope: str | None = None) -> dict | None:
     token = _extract_device_token()
     if not token:
         return None
     settings = _read_viewer_settings()
     token_hash = _hash_token(token)
-    now = _iso_now()
+    now_dt = _utc_now()
+    now = now_dt.isoformat()
     for item in _settings_list(settings, "device_tokens"):
         if item.get("token_hash") == token_hash and not item.get("revoked"):
-            item["last_seen"] = now
-            item["last_ip"] = _client_ip()
-            _write_viewer_settings(settings)
-            return {"id": item.get("id"), "name": item.get("name", ""), "scopes": item.get("scopes", [])}
+            scopes = item.get("scopes") if isinstance(item.get("scopes"), list) else []
+            normalized_scopes = {str(scope).strip() for scope in scopes if str(scope).strip()}
+            if required_scope and "*" not in normalized_scopes and "client:full" not in normalized_scopes and required_scope not in normalized_scopes:
+                return None
+            last_seen = _safe_iso_datetime(item.get("last_seen", ""))
+            if not last_seen or (now_dt - last_seen).total_seconds() >= 60:
+                item["last_seen"] = now
+                item["last_ip"] = _client_ip()
+                _write_viewer_settings(settings)
+            return {"id": item.get("id"), "name": item.get("name", ""), "scopes": scopes}
     return None
 
 
 def device_or_login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth = _device_auth()
+        auth = _device_auth("sync:read")
         if auth:
             request.device_auth = auth
             return f(*args, **kwargs)
@@ -1064,6 +1093,10 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if _admin_auth_enabled() and not session.get("authenticated"):
+            auth = _device_auth("client:full")
+            if auth:
+                request.device_auth = auth
+                return f(*args, **kwargs)
             if _wants_json_response():
                 return jsonify({"success": False, "message": "未授权访问"}), 401
             return redirect(url_for("login_page"))
@@ -1284,6 +1317,44 @@ def _format_attachments(detail: dict) -> list:
             })
         else:
             normalized.append({"index": index, "id": "", "filename": str(item), "size": 0, "contentType": ""})
+    return normalized
+
+
+def _normalize_send_attachments(attachments, keep_content: bool = False) -> list:
+    if not isinstance(attachments, list):
+        return []
+    normalized = []
+    total_size = 0
+    for index, item in enumerate(attachments[:20]):
+        if not isinstance(item, dict):
+            continue
+        filename = (item.get("filename") or item.get("name") or f"attachment_{index}").strip()
+        content = (item.get("content") or "").strip()
+        if not filename or not content:
+            continue
+        content_type = (
+            item.get("content_type")
+            or item.get("contentType")
+            or mimetypes.guess_type(filename)[0]
+            or "application/octet-stream"
+        )
+        try:
+            raw = base64.b64decode(content, validate=True)
+        except Exception:
+            continue
+        if len(raw) > MAX_SEND_ATTACHMENT_BYTES:
+            continue
+        total_size += len(raw)
+        if total_size > MAX_SEND_ATTACHMENTS_BYTES:
+            break
+        payload = {
+            "filename": filename,
+            "content_type": content_type,
+            "size": len(raw),
+        }
+        if keep_content:
+            payload["content"] = content
+        normalized.append(payload)
     return normalized
 
 
@@ -2603,6 +2674,52 @@ def trash_query():
         return jsonify({"success": False, "message": "服务内部错误，请稍后重试", "messages": []})
 
 
+@app.route("/api/trash/detail", methods=["POST"])
+@login_required
+def trash_detail():
+    """查询回收站邮件详情。"""
+    data = request.json or {}
+    email = data.get("email", "").strip()
+    password = data.get("password", "").strip() or _get_unified_password()
+    message_id = data.get("message_id", "").strip()
+
+    if not email or not message_id:
+        return jsonify({"success": False, "message": "缺少必要参数"})
+
+    base_url = DUCKMAIL_BASE_URL.rstrip("/")
+    try:
+        token, err = _get_mail_token(email, password)
+        if err:
+            return jsonify({"success": False, "message": err[0]})
+
+        headers = {"Authorization": f"Bearer {token}"}
+        last_resp = None
+        for endpoint in (
+            f"{base_url}/messages/trash/{message_id}",
+            f"{base_url}/trash/{message_id}",
+            f"{base_url}/messages/{message_id}",
+        ):
+            detail_resp = http_session.get(endpoint, headers=headers, timeout=30)
+            last_resp = detail_resp
+            if detail_resp.status_code == 200:
+                detail = detail_resp.json()
+                if isinstance(detail, dict):
+                    detail["html"] = _prepare_html_for_render(detail.get("html", ""))
+                    detail["attachments"] = _format_attachments(detail)
+                    settings = _read_viewer_settings()
+                    detail["meta"] = _public_message_meta(_get_message_meta(settings, "local", email, "trash", message_id))
+                return jsonify({"success": True, "detail": detail})
+            if detail_resp.status_code not in (404, 405):
+                break
+
+        detail = _extract_api_error(last_resp, "获取回收站详情失败") if last_resp else "获取回收站详情失败"
+        return jsonify({"success": False, "message": detail})
+
+    except Exception as e:
+        app.logger.error(f"获取回收站详情失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": "服务内部错误，请稍后重试"})
+
+
 @app.route("/api/inbox/restore", methods=["POST"])
 @login_required
 def inbox_restore():
@@ -2793,9 +2910,12 @@ def save_draft():
         "from_email": data.get("from_email", ""),
         "from_name": data.get("from_name", ""),
         "to": data.get("to", ""),
+        "cc": data.get("cc", ""),
+        "bcc": data.get("bcc", ""),
         "subject": data.get("subject", ""),
         "text": data.get("text", ""),
         "html": data.get("html", ""),
+        "attachments": _normalize_send_attachments(data.get("attachments", []), keep_content=True),
         "updated_at": now,
         "version": _safe_int(existing.get("version"), 0) + 1,
     })
@@ -2876,10 +2996,13 @@ def retry_outbox(message_id):
                 target,
                 json={
                     "to": item.get("to", ""),
+                    "cc": item.get("cc", ""),
+                    "bcc": item.get("bcc", ""),
                     "subject": item.get("subject", ""),
                     "text": item.get("text", ""),
                     "html": item.get("html", ""),
                     "fromName": item.get("from_name", ""),
+                    "attachments": item.get("attachments", []),
                 },
                 timeout=45,
             )
@@ -2910,9 +3033,12 @@ def retry_outbox(message_id):
         "from_email": item.get("from_email", ""),
         "from_name": item.get("from_name", ""),
         "to": item.get("to", ""),
+        "cc": item.get("cc", ""),
+        "bcc": item.get("bcc", ""),
         "subject": item.get("subject", ""),
         "text": item.get("text", ""),
         "html": item.get("html", ""),
+        "attachments": item.get("attachments", []),
         "reply_to": item.get("reply_to", ""),
         "outbox_id": message_id,
     }
@@ -2928,7 +3054,7 @@ def confirm_sensitive_action():
     password = data.get("password", "")
     code = data.get("totp_code", "")
     action = data.get("action", "*") or "*"
-    username = session.get("username", "")
+    username = session.get("username", "") or _get_admin_username()
     if not _verify_admin_credentials(username, password):
         settings = _read_viewer_settings()
         _append_audit(settings, "security.confirm.failed", {"action": action}, success=False)
@@ -3058,7 +3184,7 @@ def create_device_token():
         "id": _new_id("dev_"),
         "name": (data.get("name") or "Device").strip()[:80],
         "token_hash": _hash_token(token),
-        "scopes": data.get("scopes") if isinstance(data.get("scopes"), list) else ["sync:read"],
+        "scopes": data.get("scopes") if isinstance(data.get("scopes"), list) else ["client:full"],
         "created_at": now,
         "last_seen": "",
         "last_ip": "",
@@ -3212,10 +3338,13 @@ def _send_local_email(data: dict, retry_item: dict | None = None):
     from_email = data.get("from_email", "").strip()
     from_name = data.get("from_name", "").strip()
     to = data.get("to", "").strip()
+    cc = data.get("cc", "").strip()
+    bcc = data.get("bcc", "").strip()
     subject = data.get("subject", "").strip()
     html = data.get("html", "").strip()
     text = data.get("text", "").strip()
     reply_to = data.get("reply_to", "").strip()
+    attachments = _normalize_send_attachments(data.get("attachments", []), keep_content=True)
 
     # 基本校验
     if not from_email:
@@ -3234,6 +3363,8 @@ def _send_local_email(data: dict, retry_item: dict | None = None):
 
     # 支持多收件人（逗号分隔）
     to_list = [addr.strip() for addr in to.split(",") if addr.strip()]
+    cc_list = [addr.strip() for addr in cc.split(",") if addr.strip()]
+    bcc_list = [addr.strip() for addr in bcc.split(",") if addr.strip()]
 
     # 构造 Resend API 请求
     payload = {
@@ -3241,6 +3372,10 @@ def _send_local_email(data: dict, retry_item: dict | None = None):
         "to": to_list,
         "subject": subject,
     }
+    if cc_list:
+        payload["cc"] = cc_list
+    if bcc_list:
+        payload["bcc"] = bcc_list
     sanitized_html = _sanitize_email_html(html) if html else ""
     if html:
         payload["html"] = sanitized_html
@@ -3248,6 +3383,15 @@ def _send_local_email(data: dict, retry_item: dict | None = None):
         payload["text"] = text
     if reply_to:
         payload["reply_to"] = reply_to
+    if attachments:
+        payload["attachments"] = [
+            {
+                "filename": item["filename"],
+                "content": item["content"],
+                "content_type": item["content_type"],
+            }
+            for item in attachments
+        ]
 
     try:
         resp = http_session.post(
@@ -3272,9 +3416,19 @@ def _send_local_email(data: dict, retry_item: dict | None = None):
                     json={
                         "from_address": from_email.lower(),
                         "to": to_list,
+                        "cc": cc_list,
+                        "bcc": bcc_list,
                         "subject": subject,
                         "text": text,
                         "html": sanitized_html,
+                        "attachments": [
+                            {
+                                "filename": item["filename"],
+                                "content_type": item["content_type"],
+                                "size": item["size"],
+                            }
+                            for item in attachments
+                        ],
                         "resend_id": resend_id,
                     },
                     headers={

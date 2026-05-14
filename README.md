@@ -209,7 +209,23 @@ External IMAP accounts, folders, message lists, cached message bodies, and runti
 
 The background sync scheduler is enabled by default: after startup it waits about 20 seconds, then checks external IMAP accounts every 15 minutes. Fresh accounts are skipped until their TTL expires. The small sync label beside an account name is only a status indicator and does not need to be clicked; refreshing “All Accounts” queues all external accounts for background sync and immediately shows existing cache, while refreshing inside one external account syncs the current folder immediately. Tune or disable it with `IMAP_SYNC_CHECK_INTERVAL_SECONDS`, `IMAP_SYNC_STARTUP_DELAY_SECONDS`, or `IMAP_SYNC_SCHEDULER_ENABLED=0`.
 
-Drafts, failed-send records, and sent records are persisted with the viewer settings. The compose screen opens inline in the right reading pane and uses the currently selected mailbox as the sender. “Save Draft” stores the message in the selected account’s “App Drafts” view, failed sends go to “Failed Send”, and both local accounts and external SMTP accounts can retry from the failed-send record. Remote IMAP Drafts/Sent folders still appear as normal provider folders when available.
+Drafts, failed-send records, and sent records are persisted with the viewer settings. The compose screen opens inline in the right reading pane and uses the currently selected mailbox as the sender. “Save Draft” stores the message in the selected account’s “App Drafts” view, failed sends go to “Failed Send”, and both local accounts and external SMTP accounts can retry from the failed-send record. Compose supports To, Cc, Bcc, and attachments; drafts and failed-send records preserve these fields. Remote IMAP Drafts/Sent folders still appear as normal provider folders when available.
+
+### Windows Desktop Client
+
+The repository includes a native Windows WPF client in `Memail.Desktop`. It is not an Electron/WebView shell: the main layout, account tree, folders, message list, and compose window are native WPF. WebView2 is only used to render HTML email bodies.
+
+Build locally:
+
+```powershell
+dotnet build .\Memail.Desktop\Memail.Desktop.csproj
+dotnet publish .\Memail.Desktop\Memail.Desktop.csproj -c Release -r win-x64 --self-contained false -o .\Memail.Desktop\publish\win-x64
+dotnet publish .\Memail.Desktop\Memail.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o .\Memail.Desktop\publish\win-x64-self-contained
+```
+
+GitHub builds the Windows x64 package through the **Desktop** workflow. After it finishes, open the repository **Actions** page, download the `Memail.Desktop-win-x64-self-contained` artifact, then run `Memail.Desktop.exe`. The desktop client supports admin username/password/2FA login and `client:full` device-token login. The lighter `Memail.Desktop-win-x64` artifact requires the .NET 8 Desktop Runtime on the target PC.
+
+The desktop client includes its own settings center. You can add, edit, and delete local mailboxes and external IMAP/SMTP accounts from the client; external account presets include Gmail, Outlook, QQ, 163, MXRoute, and custom servers. AI settings can also be managed there: add OpenAI / Gemini / OpenAI-compatible channels, fetch model lists, and save the default translation model. Security settings can list, create, and revoke device tokens; newly created tokens are copied to the clipboard and shown only once. The mail view supports pagination, search, page-level read/unread actions, delete, restore, permanent delete, retry failed sends, favorite, pin, and AI translation; compose supports Cc, Bcc, and attachments; HTML email bodies run with scripts disabled. System-level Gmail / Outlook OAuth Client ID, Client Secret, and public callback URL remain in the Web UI system settings.
 
 ### Security And Multi-Device Sync
 
@@ -217,7 +233,7 @@ The Web UI settings page includes security controls:
 
 - TOTP / 2FA setup and enablement.
 - Login session list with IP/User-Agent and revoke support.
-- Device Tokens for future desktop/mobile sync clients. Tokens are shown once.
+- Device Tokens for desktop clients and future mobile/sync clients. Tokens are shown once.
 - Audit logs for logins, sensitive confirmations, settings changes, device-token actions, and send success/failure.
 
 Sensitive actions require secondary confirmation: saving system settings, deleting local mailboxes, deleting external accounts, permanent deletion, creating/revoking device tokens, and revoking login sessions. Confirmation checks the admin password and, if enabled, the 6-digit TOTP code.

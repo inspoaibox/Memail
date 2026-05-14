@@ -966,6 +966,37 @@
         #batch-bar #selected-count {
             font-size: 0.76rem;
         }
+        .pagination-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+        }
+        .pagination-meta {
+            font-size: 0.76rem;
+            color: var(--muted-text);
+            white-space: nowrap;
+        }
+        .pagination-size,
+        .pagination-jump-input {
+            width: auto;
+            min-width: 72px;
+            font-size: 0.76rem;
+            padding-top: 0.18rem;
+            padding-bottom: 0.18rem;
+        }
+        .pagination-jump {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .pagination-jump .btn {
+            padding: 0.18rem 0.42rem;
+            font-size: 0.76rem;
+            line-height: 1.15;
+            white-space: nowrap;
+        }
         .mail-folder-count {
             margin-left: auto;
             color: var(--muted-text);
@@ -2106,6 +2137,9 @@
                 pageInfo: '第 {page} / {pages} 页',
                 prevPage: '上一页',
                 nextPage: '下一页',
+                pageSizeLabel: '每页',
+                jumpPageLabel: '跳至',
+                goPage: '前往',
                 querying: '查询中...',
                 searching: '搜索中...',
                 sending: '发送中...',
@@ -2403,6 +2437,9 @@
                 pageInfo: 'Page {page} / {pages}',
                 prevPage: 'Previous',
                 nextPage: 'Next',
+                pageSizeLabel: 'Per page',
+                jumpPageLabel: 'Go to',
+                goPage: 'Go',
                 querying: 'Querying...',
                 searching: 'Searching...',
                 sending: 'Sending...',
@@ -2555,7 +2592,8 @@
         let externalStatusTimer = null;
         let autoRefreshEnabled = true;
         let lastBackgroundExternalSyncAt = 0;
-        const PAGE_SIZE = 30;
+        let currentPageSize = 30;
+        const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
         const LOCAL_ALL_FOLDER = 'all';
         const LOCAL_UNREAD_FOLDER = 'unread';
         const GLOBAL_ALL_FOLDER = 'all';
@@ -2642,23 +2680,81 @@
         }
 
         function _totalPages(total) {
-            return Math.max(1, Math.ceil((Number(total) || 0) / PAGE_SIZE));
+            return Math.max(1, Math.ceil((Number(total) || 0) / currentPageSize));
         }
 
-        function _renderPagination({ currentPage = 1, total = 0, onPageChange = '' } = {}) {
+        function _loadPageSizePreference() {
+            const saved = Number(localStorage.getItem('memail-page-size') || '');
+            currentPageSize = PAGE_SIZE_OPTIONS.includes(saved) ? saved : 30;
+        }
+
+        function _savePageSizePreference(value) {
+            if (!PAGE_SIZE_OPTIONS.includes(value)) return;
+            currentPageSize = value;
+            localStorage.setItem('memail-page-size', String(value));
+            const select = document.getElementById('page-size-select');
+            if (select) select.value = String(currentPageSize);
+        }
+
+        function updatePageSize(value) {
+            const nextValue = Number(value) || 30;
+            if (!PAGE_SIZE_OPTIONS.includes(nextValue) || nextValue === currentPageSize) return;
+            _savePageSizePreference(nextValue);
+            currentPage = 1;
+            currentExternalPage = 1;
+            currentGlobalPage = 1;
+            currentSentPage = 1;
+            currentTrashPage = 1;
+            currentDraftPage = 1;
+            currentOutboxPage = 1;
+            refreshCurrentTab();
+        }
+
+        function jumpToPage(context, total) {
+            const input = document.getElementById('page-jump-input');
+            if (!input) return;
+            const pages = _totalPages(total);
+            const requested = Math.min(Math.max(Number(input.value) || 1, 1), pages);
+            input.value = String(requested);
+            if (context === 'local-inbox') return queryInbox(false, requested);
+            if (context === 'local-virtual') return queryLocalVirtualMessages(false, requested);
+            if (context === 'local-sent') return querySent(requested);
+            if (context === 'local-trash') return queryTrash(requested);
+            if (context === 'external') return queryExternalMails(false, requested);
+            if (context === 'global') return queryGlobalMessages(false, requested);
+            if (context === 'group') return queryGroupMessages(false, requested);
+        }
+
+        function _setPageAndJump(context, total, page) {
+            const input = document.getElementById('page-jump-input');
+            if (input) input.value = String(page);
+            return jumpToPage(context, total);
+        }
+
+        function _renderPagination({ currentPage = 1, total = 0, context = '' } = {}) {
             const pages = _totalPages(total);
             if (pages <= 1) return '';
             const safePage = Math.min(Math.max(Number(currentPage) || 1, 1), pages);
             const prevDisabled = safePage <= 1 ? 'disabled' : '';
             const nextDisabled = safePage >= pages ? 'disabled' : '';
-            const prevHandler = safePage > 1 ? `${onPageChange}(${safePage - 1})` : '';
-            const nextHandler = safePage < pages ? `${onPageChange}(${safePage + 1})` : '';
+            const prevHandler = safePage > 1 ? `_setPageAndJump('${context}', ${total}, ${safePage - 1})` : '';
+            const nextHandler = safePage < pages ? `_setPageAndJump('${context}', ${total}, ${safePage + 1})` : '';
+            const options = PAGE_SIZE_OPTIONS.map(size => `<option value="${size}" ${size === currentPageSize ? 'selected' : ''}>${size}</option>`).join('');
             return `
-                <div class="d-flex align-items-center justify-content-center gap-2 py-3">
+                <div class="pagination-bar py-3">
                     <button type="button" class="btn btn-outline-secondary btn-sm" ${prevDisabled} ${prevHandler ? `onclick="${prevHandler}"` : ''}>
                         <i class="bi bi-chevron-left me-1"></i>${t('prevPage')}
                     </button>
-                    <span class="small text-muted">${t('pageInfo', { page: safePage, pages })}</span>
+                    <span class="pagination-meta">${t('pageInfo', { page: safePage, pages })}</span>
+                    <span class="pagination-meta">${t('pageSizeLabel')}</span>
+                    <select class="form-select form-select-sm pagination-size" id="page-size-select" onchange="updatePageSize(this.value)">
+                        ${options}
+                    </select>
+                    <div class="pagination-jump">
+                        <span class="pagination-meta">${t('jumpPageLabel')}</span>
+                        <input type="number" min="1" max="${pages}" value="${safePage}" class="form-control form-control-sm pagination-jump-input" id="page-jump-input" onkeydown="if(event.key==='Enter') jumpToPage('${context}', ${total})">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="jumpToPage('${context}', ${total})">${t('goPage')}</button>
+                    </div>
                     <button type="button" class="btn btn-outline-secondary btn-sm" ${nextDisabled} ${nextHandler ? `onclick="${nextHandler}"` : ''}>
                         ${t('nextPage')}<i class="bi bi-chevron-right ms-1"></i>
                     </button>
@@ -5449,6 +5545,7 @@
             applyLang();
             _loadGroupCollapseState();
             _loadAutoRefreshPreference();
+            _loadPageSizePreference();
             document.addEventListener('click', event => {
                 const target = event.target.closest('[data-mail-action]');
                 if (!target) return;
@@ -5853,14 +5950,14 @@
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
             const safePage = Math.max(Number(page) || 1, 1);
-            const offset = (safePage - 1) * PAGE_SIZE;
+            const offset = (safePage - 1) * currentPageSize;
             mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
 
             try {
                 const resp = await fetch('/api/sent/query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email: currentEmail, offset, limit: PAGE_SIZE })
+                    body: JSON.stringify({ email: currentEmail, offset, limit: currentPageSize })
                 });
                 const data = await resp.json();
                 if (!data.success) {
@@ -5898,7 +5995,7 @@
             const resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, offset: 0, limit: PAGE_SIZE, ...payloadExtra }),
+                body: JSON.stringify({ email, offset: 0, limit: currentPageSize, ...payloadExtra }),
             });
             const data = await resp.json();
             if (!data.success) throw new Error(data.message || t('loadFailed'));
@@ -5914,7 +6011,7 @@
                 mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
             }
             const safePage = Math.max(Number(page) || 1, 1);
-            const baseOffset = (safePage - 1) * PAGE_SIZE;
+            const baseOffset = (safePage - 1) * currentPageSize;
 
             try {
                 const [inboxResult, unreadResult, sentResult, trashResult] = await Promise.all([
@@ -5941,7 +6038,7 @@
                     ...(currentTab === LOCAL_UNREAD_FOLDER ? [] : trash.map(msg => _normalizeLocalVirtualMessage(msg, 'trash'))),
                 ]
                     .sort((a, b) => b._sortTime - a._sortTime)
-                    .slice(0, PAGE_SIZE);
+                    .slice(0, currentPageSize);
                 currentPage = safePage;
                 currentMessages = merged;
                 currentSentMessages = merged.filter(msg => msg._source === 'sent');
@@ -5965,7 +6062,7 @@
                     const resp = await fetch('/api/inbox/query', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email, offset, limit: PAGE_SIZE, unread_only: unreadOnly }),
+                        body: JSON.stringify({ email, offset, limit: currentPageSize, unread_only: unreadOnly }),
                     });
                     const data = await resp.json();
                     if (!data.success) return [];
@@ -6065,7 +6162,7 @@
             const parts = await Promise.all(terms.map(async term => {
                 const params = new URLSearchParams({
                     q: term,
-                    count: String(PAGE_SIZE),
+                    count: String(currentPageSize),
                     accountIds: accountIds.join(','),
                 });
                 const data = await _imapApi(`/search?${params.toString()}`).catch(() => ({ mails: [] }));
@@ -6136,9 +6233,9 @@
             try {
                 const unreadOnly = currentGlobalFolder === GLOBAL_UNREAD_FOLDER;
                 const safePage = Math.max(Number(page) || 1, 1);
-                const offset = (safePage - 1) * PAGE_SIZE;
+                const offset = (safePage - 1) * currentPageSize;
                 const externalParams = new URLSearchParams({
-                    count: String(PAGE_SIZE),
+                    count: String(currentPageSize),
                     page: String(safePage),
                     offset: String(offset),
                     unread: unreadOnly ? 'true' : 'false',
@@ -6150,7 +6247,7 @@
                 const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                 const merged = localMessages.concat(externalMessages)
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
-                    .slice(0, PAGE_SIZE);
+                    .slice(0, currentPageSize);
                 currentGlobalPage = safePage;
                 currentGlobalMessages = merged;
                 currentGlobalTotal = Math.max(externalData.total || 0, merged.length);
@@ -6179,9 +6276,9 @@
                 const localAccounts = _groupLocalMailboxes(currentGroupName);
                 const externalIds = _groupExternalIds(currentGroupName);
                 const safePage = Math.max(Number(page) || 1, 1);
-                const offset = (safePage - 1) * PAGE_SIZE;
+                const offset = (safePage - 1) * currentPageSize;
                 const externalParams = new URLSearchParams({
-                    count: String(PAGE_SIZE),
+                    count: String(currentPageSize),
                     page: String(safePage),
                     offset: String(offset),
                     unread: unreadOnly ? 'true' : 'false',
@@ -6196,7 +6293,7 @@
                 const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                 const merged = localMessages.concat(externalMessages)
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
-                    .slice(0, PAGE_SIZE);
+                    .slice(0, currentPageSize);
                 currentGlobalPage = safePage;
                 currentGlobalMessages = merged;
                 currentGlobalTotal = Math.max(externalData.total || 0, merged.length);
@@ -6238,7 +6335,7 @@
                 ]);
                 const merged = _mergeKeywordMessages(localMessages.concat(externalMessages))
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
-                    .slice(0, PAGE_SIZE);
+                    .slice(0, currentPageSize);
                 currentGlobalMessages = merged;
                 currentGlobalTotal = merged.length;
                 _updateFolderCounts({ keywordMatches: merged.length });
@@ -6306,9 +6403,7 @@
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
                 currentPage: currentGlobalPage,
                 total: currentGlobalTotal,
-                onPageChange: currentAccountType === 'group'
-                    ? 'queryGroupMessages.bind(null, false)'
-                    : 'queryGlobalMessages.bind(null, false)',
+                context: currentAccountType === 'group' ? 'group' : 'global',
             }));
         }
 
@@ -6598,7 +6693,7 @@
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
                 currentPage: currentSentPage,
                 total: currentSentTotal,
-                onPageChange: 'querySent',
+                context: 'local-sent',
             }));
         }
 
@@ -6811,14 +6906,14 @@
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
             const safePage = Math.max(Number(page) || 1, 1);
-            const offset = (safePage - 1) * PAGE_SIZE;
+            const offset = (safePage - 1) * currentPageSize;
             mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
 
             try {
                 const resp = await fetch('/api/trash/query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email: currentEmail, offset, limit: PAGE_SIZE })
+                    body: JSON.stringify({ email: currentEmail, offset, limit: currentPageSize })
                 });
                 const data = await resp.json();
                 if (!data.success) {
@@ -6859,7 +6954,7 @@
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
                 currentPage: currentTrashPage,
                 total: currentTrashTotal,
-                onPageChange: 'queryTrash',
+                context: 'local-trash',
             }));
         }
 
@@ -6889,7 +6984,7 @@
             }
             
             const safePage = Math.max(Number(page) || 1, 1);
-            const reqOffset = (safePage - 1) * PAGE_SIZE;
+            const reqOffset = (safePage - 1) * currentPageSize;
             
             if (!silent) {
                 mailList.innerHTML = `
@@ -6911,7 +7006,7 @@
                 const resp = await fetch('/api/inbox/query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, offset: reqOffset, limit: PAGE_SIZE })
+                    body: JSON.stringify({ email, offset: reqOffset, limit: currentPageSize })
                 });
                 const data = await resp.json();
                 
@@ -7061,7 +7156,7 @@
                 mailList.insertAdjacentHTML('beforeend', _renderPagination({
                     currentPage,
                     total: currentTotal,
-                    onPageChange: isVirtualTab ? 'queryLocalVirtualMessages.bind(null, false)' : 'queryInbox.bind(null, false)',
+                    context: isVirtualTab ? 'local-virtual' : 'local-inbox',
                 }));
             }
             _updateUnreadBadge();
@@ -7081,7 +7176,7 @@
             }
             const isVirtualFolder = _isExternalVirtualFolder(folderPath);
             const safePage = Math.max(Number(page) || 1, 1);
-            const offset = (safePage - 1) * PAGE_SIZE;
+            const offset = (safePage - 1) * currentPageSize;
 
             if (!silent) {
                 mailList.innerHTML = `
@@ -7096,7 +7191,7 @@
             try {
                 const params = new URLSearchParams({
                     folder: folderPath,
-                    count: String(PAGE_SIZE),
+                    count: String(currentPageSize),
                     page: String(safePage),
                     offset: String(offset),
                 });
@@ -7212,7 +7307,7 @@
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
                 currentPage: currentExternalPage,
                 total: currentExternalTotal,
-                onPageChange: 'queryExternalMails.bind(null, false)',
+                context: 'external',
             }));
         }
 
@@ -7350,14 +7445,14 @@
                         _searchLocalAggregate(query, unreadOnly),
                         _imapApi(`/search?${new URLSearchParams({
                             q: query,
-                            count: String(PAGE_SIZE),
+                            count: String(currentPageSize),
                             unread: unreadOnly ? 'true' : 'false',
                         }).toString()}`).catch(() => ({ mails: [] })),
                     ]);
                     const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                     const merged = localMessages.concat(externalMessages)
                         .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
-                        .slice(0, PAGE_SIZE);
+                        .slice(0, currentPageSize);
                     currentGlobalPage = 1;
                     currentGlobalMessages = merged;
                     currentGlobalTotal = merged.length;
@@ -7374,7 +7469,7 @@
                     const externalIds = _groupExternalIds(currentGroupName);
                     const externalParams = new URLSearchParams({
                         q: query,
-                        count: String(PAGE_SIZE),
+                        count: String(currentPageSize),
                         unread: unreadOnly ? 'true' : 'false',
                     });
                     if (externalIds.length) externalParams.set('accountIds', externalIds.join(','));
@@ -7385,7 +7480,7 @@
                     const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                     const merged = localMessages.concat(externalMessages)
                         .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
-                        .slice(0, PAGE_SIZE);
+                        .slice(0, currentPageSize);
                     currentGlobalPage = 1;
                     currentGlobalMessages = merged;
                     currentGlobalTotal = merged.length;
@@ -7409,7 +7504,7 @@
                         const params = new URLSearchParams({
                             accountId: String(currentExternalAccountId),
                             q: query,
-                            count: String(PAGE_SIZE),
+                            count: String(currentPageSize),
                             unread: currentExternalFolder === EXTERNAL_UNREAD_FOLDER ? 'true' : 'false',
                         });
                         const data = await _imapApi(`/search?${params.toString()}`);
@@ -8156,7 +8251,7 @@
                         });
                         if (currentTab === LOCAL_UNREAD_FOLDER && seen) {
                             currentTotal = Math.max(0, currentTotal + delta);
-                            const maxPage = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
+                            const maxPage = Math.max(1, Math.ceil(currentTotal / currentPageSize));
                             if (currentPage > maxPage) currentPage = maxPage;
                             await queryLocalVirtualMessages(true, currentPage);
                             resetMailDetail();
@@ -8189,7 +8284,7 @@
                         if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
                         if (context.type === 'external' && currentExternalFolder === EXTERNAL_UNREAD_FOLDER && seen) {
                             currentExternalTotal = Math.max(0, currentExternalTotal + delta);
-                            const maxPage = Math.max(1, Math.ceil(currentExternalTotal / PAGE_SIZE));
+                            const maxPage = Math.max(1, Math.ceil(currentExternalTotal / currentPageSize));
                             if (currentExternalPage > maxPage) currentExternalPage = maxPage;
                             await queryExternalMails(true, currentExternalPage);
                             resetMailDetail();
@@ -8199,7 +8294,7 @@
                             (currentAccountType === 'group' && currentGroupFolder === GROUP_UNREAD_FOLDER)
                         )) {
                             currentGlobalTotal = Math.max(0, currentGlobalTotal + delta);
-                            const maxPage = Math.max(1, Math.ceil(currentGlobalTotal / PAGE_SIZE));
+                            const maxPage = Math.max(1, Math.ceil(currentGlobalTotal / currentPageSize));
                             if (currentGlobalPage > maxPage) currentGlobalPage = maxPage;
                             if (currentAccountType === 'group') {
                                 await queryGroupMessages(true, currentGlobalPage);

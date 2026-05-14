@@ -27,6 +27,8 @@ const MONGO_DB_NAME = process.env.MONGO_DB_NAME || process.env.DB_NAME || 'mails
 const IMAP_CACHE_TTL_MS = Math.max(30, parseInt(process.env.IMAP_CACHE_TTL_SECONDS || '86400', 10)) * 1000;
 const IMAP_CACHE_SYNC_WINDOW = Math.max(30, parseInt(process.env.IMAP_CACHE_SYNC_WINDOW || '100', 10));
 const IMAP_CACHE_LOOKBACK = Math.max(20, parseInt(process.env.IMAP_CACHE_LOOKBACK || '50', 10));
+const MAX_SEND_ATTACHMENT_BYTES = Math.max(1024 * 1024, parseInt(process.env.MAX_SEND_ATTACHMENT_BYTES || String(15 * 1024 * 1024), 10));
+const MAX_SEND_ATTACHMENTS_BYTES = Math.max(1024 * 1024, parseInt(process.env.MAX_SEND_ATTACHMENTS_BYTES || String(25 * 1024 * 1024), 10));
 const IMAP_SYNC_SCHEDULER_ENABLED = process.env.IMAP_SYNC_SCHEDULER_ENABLED !== '0';
 const IMAP_SYNC_CHECK_INTERVAL_MS = Math.max(60, parseInt(process.env.IMAP_SYNC_CHECK_INTERVAL_SECONDS || '900', 10)) * 1000;
 const IMAP_SYNC_STARTUP_DELAY_MS = Math.max(5, parseInt(process.env.IMAP_SYNC_STARTUP_DELAY_SECONDS || '20', 10)) * 1000;
@@ -506,6 +508,31 @@ function buildRawMessage(mailOptions) {
   return new MailComposer(mailOptions).compile().build();
 }
 
+function normalizeAddressList(value) {
+  if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean);
+  return String(value || '').split(',').map(item => item.trim()).filter(Boolean);
+}
+
+function normalizeSendAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  let totalSize = 0;
+  return value.slice(0, 20).map(item => {
+    if (!item || typeof item !== 'object') return null;
+    const filename = String(item.filename || item.name || 'attachment').trim() || 'attachment';
+    const content = String(item.content || '').trim();
+    if (!content) return null;
+    const data = Buffer.from(content, 'base64');
+    if (data.length > MAX_SEND_ATTACHMENT_BYTES) return null;
+    totalSize += data.length;
+    if (totalSize > MAX_SEND_ATTACHMENTS_BYTES) return null;
+    return {
+      filename,
+      content: data,
+      contentType: String(item.contentType || item.content_type || 'application/octet-stream').trim() || 'application/octet-stream',
+    };
+  }).filter(Boolean);
+}
+
 function stableAccountKey(account) {
   const raw = [
     String(account?.auth?.user || '').trim().toLowerCase(),
@@ -783,8 +810,9 @@ async function searchCachedMessages(accountKeys, keyword, options = {}) {
   if (options.unreadOnly) query.seen = false;
   const limit = Math.min(Math.max(parseInt(options.count, 10) || 50, 1), 100);
   const docs = await collections.messages.find(query).sort({ date: -1 }).limit(limit).toArray();
+  const total = await collections.messages.countDocuments(query);
   return {
-    total: docs.length,
+    total,
     mails: docs.map(normalizeCacheMessage),
     cached: true,
   };
@@ -1301,7 +1329,7 @@ function backgroundSyncAccount(client, options = {}) {
 
 async function markAccountSyncQueued(client) {
   const current = await readAccountSyncStatus(client);
-  if (current?.syncing) return current;
+  if (current?.syncing || (current?.synced && !current.stale)) return current;
   await markSyncState(client, ACCOUNT_SYNC_STATE_FOLDER, { syncing: true, error: '' });
   return readAccountSyncStatus(client);
 }
@@ -2024,7 +2052,26 @@ app.post('/api/accounts/:id/sync', async (req, res) => {
   if (!client) return res.status(404).json({ error: '账户不存在' });
   const folder = String(req.body?.folder || req.query.folder || '').trim();
   const force = ['1', 'true', 'yes'].includes(String(req.body?.force ?? req.query.force ?? '1').toLowerCase());
+  const background = ['1', 'true', 'yes'].includes(String(req.body?.background ?? req.query.background ?? '0').toLowerCase());
   try {
+    if (background && !folder) {
+      const account = await markAccountSyncQueued(client);
+      backgroundSyncAccount(client, { force, window: IMAP_CACHE_SYNC_WINDOW });
+      return res.json({ ok: true, background: true, queued: true, account });
+    }
+
+    if (background && folder) {
+      if (isVirtualFolder(folder)) {
+        await markSyncState(client, folder, { syncing: true, error: '' });
+        backgroundSyncVirtualFolder(client, folder, { force, window: IMAP_CACHE_SYNC_WINDOW });
+      } else {
+        const resolvedFolder = await resolveFolder(client, folder);
+        await markSyncState(client, resolvedFolder.path, { syncing: true, error: '' });
+        backgroundSyncFolder(client, resolvedFolder, { force, window: IMAP_CACHE_SYNC_WINDOW });
+      }
+      return res.json({ ok: true, background: true, queued: true, folder: await readSyncStatus(client, folder) });
+    }
+
     let result;
     if (folder) {
       if (isVirtualFolder(folder)) result = await syncVirtualFolderToCache(client, folder, { force, window: IMAP_CACHE_SYNC_WINDOW });
@@ -2376,12 +2423,19 @@ app.get('/api/accounts/:id/search', async (req, res) => {
   const folder = req.query.folder || 'INBOX';
   const keyword = req.query.q || '';
   const field = req.query.field || 'subject';
+  const count = Math.min(200, Math.max(1, parseInt(req.query.count, 10) || 50));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || ((Math.max(1, parseInt(req.query.page, 10) || 1) - 1) * count));
   if (!keyword) return res.status(400).json({ error: '请输入搜索关键词' });
 
   try {
-    const cached = await searchCachedMessages([stableAccountKey(client.account)], keyword, { count: 50 });
+    const cached = await searchCachedMessages([stableAccountKey(client.account)], keyword, { count: offset + count });
     if (cached && cached.mails.length) {
-      return res.json(attachCurrentAccountIds(cached.mails));
+      return res.json({
+        mails: attachCurrentAccountIds(cached.mails).slice(offset, offset + count),
+        total: cached.total || cached.mails.length,
+        offset,
+        count,
+      });
     }
 
     await client.ensureConnected();
@@ -2396,10 +2450,10 @@ app.get('/api/accounts/:id/search', async (req, res) => {
         searchQuery = { subject: keyword };
       }
       const uids = await client.client.search(searchQuery, { uid: true });
-      if (uids.length === 0) return res.json([]);
+      if (uids.length === 0) return res.json({ mails: [], total: 0, offset, count });
 
       const mails = [];
-      for await (const msg of client.client.fetch(uids.slice(0, 30), {
+      for await (const msg of client.client.fetch(uids.slice(offset, offset + count), {
         envelope: true,
         flags: true,
         uid: true,
@@ -2415,7 +2469,7 @@ app.get('/api/accounts/:id/search', async (req, res) => {
         });
       }
       mails.sort((a, b) => new Date(b.date) - new Date(a.date));
-      res.json(mails);
+      res.json({ mails, total: uids.length, offset, count });
     } finally {
       lock.release();
     }
@@ -2451,12 +2505,15 @@ app.delete('/api/accounts/:id/mails/:uid', async (req, res) => {
 app.post('/api/accounts/:id/send', async (req, res) => {
   const client = clients.get(parseInt(req.params.id, 10));
   if (!client) return res.status(404).json({ error: '账户不存在' });
-  const to = String(req.body?.to || '').trim();
+  const to = normalizeAddressList(req.body?.to);
+  const cc = normalizeAddressList(req.body?.cc);
+  const bcc = normalizeAddressList(req.body?.bcc);
   const subject = String(req.body?.subject || '').trim();
   const text = String(req.body?.text || '').trim();
   const html = String(req.body?.html || '').trim();
   const requestedFromName = String(req.body?.fromName || '').trim();
-  if (!to) return res.status(400).json({ error: '请填写收件人' });
+  const attachments = normalizeSendAttachments(req.body?.attachments);
+  if (!to.length) return res.status(400).json({ error: '请填写收件人' });
   if (!subject) return res.status(400).json({ error: '请填写主题' });
   if (!text && !html) return res.status(400).json({ error: '请填写邮件正文' });
 
@@ -2467,11 +2524,14 @@ app.post('/api/accounts/:id/send', async (req, res) => {
     || normalizeDisplayName(fromEmail.split('@')[0], fromEmail);
   const mailOptions = {
     from: fromName && fromName !== fromEmail ? `${fromName} <${fromEmail}>` : fromEmail,
-    to: to.split(',').map(item => item.trim()).filter(Boolean),
+    to,
+    cc,
+    bcc,
     subject,
     text,
     html,
     replyTo: fromEmail,
+    attachments,
   };
   let transport;
   try {

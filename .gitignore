@@ -20,6 +20,11 @@ env/
 node_modules/
 npm-debug.log*
 
+# .NET
+bin/
+obj/
+publish/
+
 # IDE
 .vscode/
 .idea/
