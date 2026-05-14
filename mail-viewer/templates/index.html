@@ -415,6 +415,9 @@
             }
             .mail-list-scroll {
                 scrollbar-color: rgba(76,91,99,0.48) rgba(255,255,255,0.88);
+                scrollbar-gutter: stable;
+                padding-left: 3px;
+                padding-right: 3px;
             }
             .mail-list-scroll::-webkit-scrollbar-track {
                 background: rgba(255,255,255,0.92);
@@ -445,15 +448,50 @@
             border: 1px solid var(--border-color);
             border-radius: var(--radius);
             box-shadow: none;
+            margin-left: 0;
+            margin-right: 0;
+        }
+        .mail-item .card-body {
+            padding-left: 0.45rem !important;
+            padding-right: 0.45rem !important;
         }
         .mail-item .mail-item-body {
             min-width: 0;
         }
+        .mail-item .d-flex.justify-content-between.align-items-start {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) 126px;
+            column-gap: 8px;
+            align-items: start !important;
+        }
+        .mail-item .d-flex.justify-content-between.align-items-start > .mail-sender,
+        .mail-item .d-flex.justify-content-between.align-items-start > strong {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .mail-item .d-flex.justify-content-between.align-items-start > small,
+        .mail-item .d-flex.justify-content-between.align-items-start > .mail-item-meta {
+            justify-self: end;
+            width: 126px;
+            min-width: 126px;
+            max-width: 126px;
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         .mail-item .mail-item-meta {
-            flex-shrink: 0;
             white-space: nowrap;
             opacity: 0.72;
             font-size: 0.74rem;
+        }
+        .mail-item .mail-item-meta small {
+            display: inline-block;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            vertical-align: top;
         }
         .mail-sender {
             font-size: 0.94rem;
