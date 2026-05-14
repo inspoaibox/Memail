@@ -333,7 +333,7 @@
                 overflow: hidden;
                 align-items: stretch;
                 display: grid;
-                grid-template-columns: minmax(220px, 285px) minmax(210px, 280px) minmax(390px, 510px) minmax(0, 1fr);
+                grid-template-columns: minmax(250px, 340px) minmax(210px, 280px) minmax(390px, 510px) minmax(0, 1fr);
                 gap: 4px;
             }
             .mail-col {
@@ -606,16 +606,19 @@
             border-color: var(--border-color);
         }
         .mail-client-shell {
-            gap: 0.75rem;
+            gap: 0.55rem;
             min-height: 0;
         }
         .mail-account-list {
             display: flex;
             flex-direction: column;
-            gap: 5px;
+            gap: 6px;
             flex: 1 1 auto;
             min-height: 0;
             overflow-y: auto;
+            overflow-x: hidden;
+            padding: 6px 5px 8px;
+            scrollbar-gutter: stable;
         }
         .mail-folder-list {
             display: flex;
@@ -628,6 +631,7 @@
         .mail-account-item,
         .mail-folder-item {
             width: 100%;
+            box-sizing: border-box;
             border: 0;
             background: transparent;
             color: var(--text-color);
@@ -642,6 +646,10 @@
         }
         .mail-account-item {
             cursor: grab;
+            min-width: 0;
+            min-height: 46px;
+            padding: 9px 8px;
+            gap: 9px;
         }
         .mail-account-item:active {
             cursor: grabbing;
@@ -653,8 +661,8 @@
             box-shadow: inset 3px 0 0 var(--accent-color), 0 0 0 1px rgba(183,130,47,0.28);
         }
         .mail-account-group {
-            margin: 8px 2px 4px;
-            padding: 0 4px;
+            margin: 10px 0 2px;
+            padding: 2px 3px;
             color: var(--muted-text);
             font-size: 0.72rem;
             font-weight: 800;
@@ -672,8 +680,9 @@
         }
         .mail-account-group-toggle {
             width: 100%;
-            margin: 8px 2px 4px;
-            padding: 2px 4px;
+            box-sizing: border-box;
+            margin: 10px 0 2px;
+            padding: 3px;
             border: 0;
             background: transparent;
             color: var(--muted-text);
@@ -697,6 +706,7 @@
             align-items: center;
             gap: 5px;
             min-width: 0;
+            max-width: 100%;
         }
         .mail-account-group-count {
             flex: 0 0 auto;
@@ -705,8 +715,8 @@
             text-transform: none;
         }
         .mail-account-aggregate {
-            min-height: 34px;
-            padding-left: 12px;
+            min-height: 42px;
+            padding-left: 8px;
         }
         .mail-account-aggregate .mail-account-title {
             font-size: 0.9rem;
@@ -748,9 +758,10 @@
             flex: 1 1 auto;
         }
         .mail-account-title-row {
-            display: flex;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
             min-width: 0;
         }
         .mail-account-title,
@@ -763,15 +774,29 @@
         }
         .mail-account-title {
             font-weight: 600;
+            font-size: 0.9rem;
+            line-height: 1.24;
         }
         .mail-account-title-row .mail-account-title {
-            flex: 1 1 auto;
             display: inline-block;
         }
         .mail-account-subtitle {
             color: var(--muted-text);
-            font-size: 0.72rem;
-            margin-top: 1px;
+            font-size: 0.76rem;
+            line-height: 1.22;
+            margin-top: 2px;
+        }
+        .mail-account-subtitle-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 8px;
+        }
+        .mail-account-subtitle-row > span:first-child {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .mail-sync-status {
             display: inline-flex;
@@ -785,7 +810,7 @@
         }
         .mail-sync-status.compact {
             flex: 0 0 auto;
-            max-width: 82px;
+            max-width: 58px;
             border: 1px solid var(--border-color);
             border-radius: 999px;
             padding: 1px 6px;
@@ -833,15 +858,15 @@
         }
         .mail-account-provider-icon {
             flex: 0 0 auto;
-            width: 20px;
-            height: 20px;
-            border-radius: 6px;
+            width: 24px;
+            height: 24px;
+            border-radius: 8px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             color: var(--primary-color);
             background: var(--primary-soft);
-            font-size: 0.85rem;
+            font-size: 0.92rem;
         }
         .mail-account-actions {
             display: grid;
@@ -1315,7 +1340,7 @@
                 --bs-gutter-x: 0;
                 --bs-gutter-y: 0;
                 display: grid;
-                grid-template-columns: minmax(180px, 260px) minmax(170px, 240px) minmax(315px, 465px) minmax(0, 1fr);
+                grid-template-columns: minmax(210px, 300px) minmax(170px, 240px) minmax(315px, 465px) minmax(0, 1fr);
                 gap: 8px;
                 align-items: stretch;
             }
@@ -3892,9 +3917,11 @@
                             <span class="mail-account-main">
                                 <span class="mail-account-title-row">
                                     <span class="mail-account-title">${_escapeHtml(displayName)}</span>
+                                </span>
+                                <span class="mail-account-subtitle mail-account-subtitle-row">
+                                    <span>${_escapeHtml(showSubtitle ? email : provider)}</span>
                                     ${_renderSyncStatus(account.syncStatus, true)}
                                 </span>
-                                ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
                             </span>
                         </button>`);
                     }
