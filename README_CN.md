@@ -211,34 +211,18 @@ docker-compose ps
 
 草稿、发送失败记录和已发送记录会和本地持久化配置一起保存。写邮件页面是右侧内嵌页面，发件账号来自当前选中的邮箱；点击“保存草稿”后会进入当前账号的“应用草稿”，发送失败会进入“发送失败”，本地账号和外部 SMTP 账号都可以在失败记录中重试。写邮件支持收件人、抄送、密送和附件；草稿和发送失败记录会保留这些字段。外部账号自身的远端 Drafts/Sent 文件夹仍然会作为普通 IMAP 文件夹显示。
 
-### Windows 桌面客户端
-
-仓库包含原生 Windows WPF 客户端：`Memail.Desktop`。它不是 Electron / WebView 套壳，主界面、账号树、文件夹、邮件列表、写信窗口都是原生 WPF；邮件正文使用 WebView2 渲染 HTML 邮件。
-
-本地构建：
-
-```powershell
-dotnet build .\Memail.Desktop\Memail.Desktop.csproj
-dotnet publish .\Memail.Desktop\Memail.Desktop.csproj -c Release -r win-x64 --self-contained false -o .\Memail.Desktop\publish\win-x64
-dotnet publish .\Memail.Desktop\Memail.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o .\Memail.Desktop\publish\win-x64-self-contained
-```
-
-GitHub 会通过 **Desktop** 工作流自动构建 Windows x64 包。构建完成后，到仓库 **Actions** 页面打开 Desktop 工作流，在 Artifacts 下载 `Memail.Desktop-win-x64-self-contained`，运行其中的 `Memail.Desktop.exe`。桌面端支持两种登录方式：管理员账号/密码/2FA 登录，或使用 `client:full` 设备 Token 登录。`Memail.Desktop-win-x64` 是轻量包，需要目标电脑安装 .NET 8 Desktop Runtime。
-
-桌面端内置设置中心，可以新增/编辑/删除本地邮箱和外部 IMAP/SMTP 账号，外部账号支持 Gmail、Outlook、QQ、163、MXRoute 和自定义服务器。AI 设置也可以在桌面端维护：新增 OpenAI / Gemini / OpenAI-compatible 渠道、拉取模型列表并保存默认翻译模型。安全设置里可以查看、创建、撤销设备 Token；新 Token 会复制到剪贴板且只显示一次。邮件侧支持分页、搜索、当前页批量已读/未读、删除、恢复、彻底删除、发送失败重试、收藏、置顶和 AI 翻译；写邮件支持抄送、密送和附件；HTML 邮件正文会禁用脚本执行。Gmail / Outlook OAuth 的 Client ID、Client Secret、公开回调地址属于系统级配置，仍在 Web 后台的系统设置中维护。
-
 ### 安全与多端同步
 
 Web UI 的设置页提供安全设置：
 
 - TOTP / 2FA：生成密钥后用认证器 App 验证并启用。
 - 登录设备：查看当前会话、IP、User-Agent，并可踢出指定会话。
-- 设备 Token：可生成 `client:full` 桌面客户端 Token 或同步 Token。Token 只显示一次，请妥善保存。
+- 设备 Token：可生成 API 或未来同步集成使用的 Token。Token 只显示一次，请妥善保存。
 - 审计日志：记录登录、敏感确认、设置修改、设备 Token、发信成功 / 失败等操作。
 
 敏感操作会触发二次确认，包括保存系统设置、删除本地邮箱、删除外部账号、彻底删除邮件、创建/撤销设备 Token、踢出登录设备。二次确认通过后台密码校验；如果已启用 TOTP，还需要同时输入 6 位验证码。
 
-多端同步 API 已预留，桌面端和手机端可以使用设备 Token 调用：
+多端同步 API 已预留，后续集成可以使用设备 Token 调用：
 
 ```http
 GET  /api/sync/bootstrap   # 初始同步：邮箱配置、草稿、发送失败记录、协议说明

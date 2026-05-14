@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Memail</title>
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -79,8 +79,11 @@
             font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
         }
 
-        .navbar-brand i {
-            color: var(--primary-color);
+        .brand-logo {
+            width: 30px;
+            height: 30px;
+            object-fit: contain;
+            margin-right: 8px;
         }
         
         .card {
@@ -1291,7 +1294,7 @@
     <nav class="navbar navbar-light sticky-top">
         <div class="container-fluid">
             <a class="navbar-brand" href="#">
-                <i class="bi bi-envelope me-2"></i>Memail
+                <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Memail">Memail
             </a>
             <div class="d-flex align-items-center gap-2">
                 <button class="btn btn-sm btn-outline-secondary" onclick="toggleLang()" id="btn-lang" title="Switch Language">
@@ -1514,6 +1517,11 @@
                         <li class="nav-item" role="presentation">
                             <button class="nav-link" id="settings-security-tab" data-bs-toggle="tab" data-bs-target="#settings-security-pane" type="button" role="tab">
                                 <i class="bi bi-shield-lock me-1"></i><span data-i18n="securitySettings">安全设置</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="settings-portable-tab" data-bs-toggle="tab" data-bs-target="#settings-portable-pane" type="button" role="tab">
+                                <i class="bi bi-box-arrow-up-right me-1"></i><span>导入导出</span>
                             </button>
                         </li>
                     </ul>
@@ -1786,6 +1794,40 @@
                                     <div id="session-list" class="account-settings-list mb-3"></div>
                                     <h6 class="mb-2"><i class="bi bi-journal-text me-1"></i><span data-i18n="auditLogs">审计日志</span></h6>
                                     <div id="audit-log-list" class="account-settings-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="tab-pane fade" id="settings-portable-pane" role="tabpanel" aria-labelledby="settings-portable-tab">
+                            <div id="portable-settings-alert" class="alert" style="display:none;" role="alert"></div>
+                            <div class="row g-4">
+                                <div class="col-12 col-lg-6">
+                                    <h6 class="mb-2"><i class="bi bi-download me-1"></i>导出便携包</h6>
+                                    <div class="small text-muted mb-3">导出账号档案、文件夹、邮件缓存、AI 渠道信息和关键词规则。不会导出邮箱密码、OAuth Token 或 AI API Key。</div>
+                                    <div class="row g-2 align-items-end">
+                                        <div class="col-7">
+                                            <label class="form-label" for="portable-export-limit">邮件上限</label>
+                                            <select class="form-select form-select-sm" id="portable-export-limit">
+                                                <option value="0">只导出配置</option>
+                                                <option value="200" selected>200 封</option>
+                                                <option value="500">500 封</option>
+                                                <option value="1000">1000 封</option>
+                                                <option value="2000">2000 封</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-5">
+                                            <button class="btn btn-primary btn-sm w-100" onclick="exportPortablePackage()">
+                                                <i class="bi bi-download me-1"></i>下载便携包
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-12 col-lg-6">
+                                    <h6 class="mb-2"><i class="bi bi-upload me-1"></i>导入便携包</h6>
+                                    <div class="small text-muted mb-3">可导入服务端导出的 <code>.memail.json</code>。外部账号导入后需要重新填写密码/授权码或重新 OAuth 授权。</div>
+                                    <input type="file" class="form-control form-control-sm mb-2" id="portable-import-file" accept=".json,.memail.json,application/json">
+                                    <button class="btn btn-outline-primary btn-sm" onclick="importPortablePackage()">
+                                        <i class="bi bi-upload me-1"></i>导入便携包
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -2200,7 +2242,7 @@
                 addMailbox: 'Add mailbox',
                 mailboxPlaceholder: 'name@example.com',
                 folders: 'Folders',
-                accountTip: 'Add multiple mailboxes and switch between them like a desktop mail client.',
+                accountTip: 'Add multiple mailboxes and switch between them like a mail client.',
                 globalMailbox: 'All Accounts',
                 globalMailboxHint: 'All cached mailboxes',
                 mailboxInvalid: 'Enter a full email address',
@@ -4869,6 +4911,21 @@
             alert.textContent = '';
         }
 
+        function _showPortableSettingsAlert(type, message) {
+            const alert = document.getElementById('portable-settings-alert');
+            if (!alert) return;
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+        }
+
+        function _clearPortableSettingsAlert() {
+            const alert = document.getElementById('portable-settings-alert');
+            if (!alert) return;
+            alert.style.display = 'none';
+            alert.textContent = '';
+        }
+
         function _switchSettingsTab(name = 'system') {
             const tabId = name === 'ai'
                 ? 'settings-ai-tab'
@@ -4878,7 +4935,9 @@
                         ? 'settings-keywords-tab'
                         : name === 'security'
                             ? 'settings-security-tab'
-                            : 'settings-system-tab';
+                            : name === 'portable'
+                                ? 'settings-portable-tab'
+                                : 'settings-system-tab';
             const tab = document.getElementById(tabId);
             if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
             _syncSettingsFooter();
@@ -4956,6 +5015,58 @@
                 renderAiSettings();
             } catch (e) {
                 _showAiSettingsAlert('danger', `${t('aiSettingsLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        async function exportPortablePackage() {
+            _clearPortableSettingsAlert();
+            const limit = document.getElementById('portable-export-limit')?.value || '200';
+            try {
+                const resp = await fetch(`/api/portable/export?messages=${limit === '0' ? '0' : '1'}&limit=${encodeURIComponent(limit)}`);
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    throw new Error(text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || `${resp.status}`);
+                }
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `memail-server-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.memail.json`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                _showPortableSettingsAlert('success', '便携包已开始下载');
+            } catch (e) {
+                _showPortableSettingsAlert('danger', `导出失败: ${e.message}`);
+            }
+        }
+
+        async function importPortablePackage() {
+            _clearPortableSettingsAlert();
+            const input = document.getElementById('portable-import-file');
+            const file = input?.files?.[0];
+            if (!file) {
+                _showPortableSettingsAlert('warning', '请选择 .memail.json 文件');
+                return;
+            }
+            try {
+                const payload = JSON.parse(await file.text());
+                const resp = await fetch('/api/portable/import', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || '导入失败');
+                _showPortableSettingsAlert('success', `${data.message || '导入完成'} ${JSON.stringify(data.imported || {})}`);
+                await Promise.all([
+                    loadMailboxes(),
+                    loadAiSettings(),
+                    loadKeywordRules(),
+                ]);
+            } catch (e) {
+                _showPortableSettingsAlert('danger', `导入失败: ${e.message}`);
             }
         }
 

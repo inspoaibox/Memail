@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 from bleach.css_sanitizer import CSSSanitizer
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from urllib.parse import urlparse, urljoin, quote
-from flask import Flask, render_template, jsonify, request, session, redirect, url_for, Response, stream_with_context
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for, Response, stream_with_context, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
@@ -907,7 +907,7 @@ def _normalize_keyword_rule(item: dict) -> dict | None:
     ]
     if not name or not keywords:
         return None
-    scope_type = str(item.get("scope_type", "all")).strip().lower()
+    scope_type = str(item.get("scope_type") or item.get("scopeType") or "all").strip().lower()
     if scope_type not in {"all", "group", "accounts"}:
         scope_type = "all"
     fields = item.get("fields", [])
@@ -917,10 +917,10 @@ def _normalize_keyword_rule(item: dict) -> dict | None:
         field for field in fields
         if field in {"subject", "from", "to", "intro", "body"}
     ] or ["subject", "from", "intro"]
-    match_mode = str(item.get("match_mode", "any")).strip().lower()
+    match_mode = str(item.get("match_mode") or item.get("matchMode") or "any").strip().lower()
     if match_mode not in {"any", "all"}:
         match_mode = "any"
-    raw_scope_accounts = item.get("scope_accounts", [])
+    raw_scope_accounts = item.get("scope_accounts", item.get("scopeAccounts", []))
     if isinstance(raw_scope_accounts, str):
         raw_scope_accounts = [part.strip() for part in raw_scope_accounts.split(",")]
     raw_enabled = item.get("enabled", True)
@@ -931,7 +931,7 @@ def _normalize_keyword_rule(item: dict) -> dict | None:
         "id": str(item.get("id") or _new_id("kw_")),
         "name": name[:80],
         "scope_type": scope_type,
-        "scope_group": _normalize_account_group(item.get("scope_group", "")),
+        "scope_group": _normalize_account_group(item.get("scope_group") or item.get("scopeGroup") or ""),
         "scope_accounts": [
             str(account).strip()
             for account in raw_scope_accounts
@@ -941,8 +941,8 @@ def _normalize_keyword_rule(item: dict) -> dict | None:
         "match_mode": match_mode,
         "fields": normalized_fields,
         "enabled": bool(enabled),
-        "created_at": item.get("created_at", _iso_now()),
-        "updated_at": item.get("updated_at", _iso_now()),
+        "created_at": item.get("created_at") or item.get("createdAt") or _iso_now(),
+        "updated_at": item.get("updated_at") or item.get("updatedAt") or _iso_now(),
     }
 
 
@@ -961,6 +961,241 @@ def _public_keyword_rule(item: dict) -> dict:
         "created_at": normalized.get("created_at", ""),
         "updated_at": normalized.get("updated_at", ""),
     }
+
+
+def _portable_keyword_rule(item: dict) -> dict:
+    normalized = _normalize_keyword_rule(item) or {}
+    return {
+        "id": normalized.get("id", ""),
+        "name": normalized.get("name", ""),
+        "scopeType": normalized.get("scope_type", "all"),
+        "scopeGroup": normalized.get("scope_group", ""),
+        "scopeAccounts": normalized.get("scope_accounts", []),
+        "keywords": normalized.get("keywords", []),
+        "matchMode": normalized.get("match_mode", "any"),
+        "fields": normalized.get("fields", ["subject", "from", "intro"]),
+        "enabled": bool(normalized.get("enabled", True)),
+        "createdAt": normalized.get("created_at", ""),
+        "updatedAt": normalized.get("updated_at", ""),
+    }
+
+
+def _portable_account_from_local_mailbox(item: dict) -> dict | None:
+    address = _normalize_mailbox_address(item.get("address", ""))
+    if not address:
+        return None
+    return {
+        "id": address,
+        "type": "local",
+        "address": address,
+        "displayName": _normalize_display_name(item.get("display_name", ""), address),
+        "sendName": _normalize_display_name(item.get("send_name", ""), ""),
+        "group": _normalize_account_group(item.get("group", "")),
+        "provider": "local",
+        "host": "",
+        "port": 993,
+        "secure": True,
+        "smtpHost": "",
+        "smtpPort": 465,
+        "smtpSecure": True,
+        "smtpRequireTls": False,
+        "unreadCount": 0,
+    }
+
+
+def _portable_account_from_external(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    email = _normalize_mailbox_address(item.get("email", ""))
+    if not email:
+        return None
+    smtp = item.get("smtp") if isinstance(item.get("smtp"), dict) else {}
+    return {
+        "id": str(item.get("id") or email),
+        "type": "external",
+        "address": email,
+        "displayName": _normalize_display_name(item.get("displayName", ""), email),
+        "sendName": _normalize_display_name(item.get("sendName", ""), ""),
+        "group": _normalize_account_group(item.get("group", "")),
+        "provider": str(item.get("name") or item.get("provider") or "custom"),
+        "unreadCount": _safe_int((item.get("syncStatus") or {}).get("unseen", item.get("unreadCount", 0))),
+        "host": str(item.get("host") or ""),
+        "port": _safe_int(item.get("port"), 993),
+        "secure": bool(item.get("secure", True)),
+        "smtpHost": str(smtp.get("host") or ""),
+        "smtpPort": _safe_int(smtp.get("port"), 465),
+        "smtpSecure": bool(smtp.get("secure", True)),
+        "smtpRequireTls": bool(smtp.get("requireTLS", False)),
+    }
+
+
+def _portable_folder(account: dict, key: str, title: str, count: int = 0) -> dict:
+    return {
+        "accountType": account.get("type", ""),
+        "accountId": account.get("id", ""),
+        "accountAddress": account.get("address", ""),
+        "key": key,
+        "title": title or key,
+        "count": _safe_int(count),
+    }
+
+
+def _portable_message_from_local(mail: dict, email: str, folder: str, label: str = "") -> dict:
+    sender = mail.get("from") if isinstance(mail.get("from"), dict) else {}
+    sender_text = ""
+    if sender:
+        sender_name = sender.get("name") or ""
+        sender_addr = sender.get("address") or ""
+        sender_text = f"{sender_name} <{sender_addr}>".strip() if sender_name else sender_addr
+    to_items = mail.get("to") if isinstance(mail.get("to"), list) else []
+    return {
+        "id": str(mail.get("id") or mail.get("msgid") or ""),
+        "accountType": "local",
+        "accountId": email,
+        "accountLabel": label or email,
+        "folder": folder,
+        "from": sender_text,
+        "to": ", ".join(item.get("address", "") for item in to_items if isinstance(item, dict)),
+        "cc": "",
+        "bcc": "",
+        "subject": mail.get("subject", ""),
+        "intro": mail.get("intro", ""),
+        "date": mail.get("createdAt") or mail.get("updatedAt") or "",
+        "seen": bool(mail.get("seen")),
+        "favorite": bool((mail.get("meta") or {}).get("favorite")),
+        "pinned": bool((mail.get("meta") or {}).get("pinned")),
+        "html": mail.get("html", ""),
+        "text": mail.get("text", ""),
+        "error": "",
+        "attachments": mail.get("attachments", []) if isinstance(mail.get("attachments"), list) else [],
+    }
+
+
+def _portable_message_from_external(mail: dict, account: dict) -> dict:
+    sender = mail.get("from") if isinstance(mail.get("from"), dict) else {}
+    sender_text = sender.get("address", "") if sender else str(mail.get("from") or "")
+    if sender and sender.get("name"):
+        sender_text = f"{sender.get('name')} <{sender.get('address', '')}>"
+    to_items = mail.get("to") if isinstance(mail.get("to"), list) else []
+    return {
+        "id": str(mail.get("uid") or mail.get("id") or ""),
+        "accountType": "external",
+        "accountId": str(account.get("id") or ""),
+        "accountLabel": account.get("displayName") or account.get("email") or "",
+        "folder": str(mail.get("folder") or "INBOX"),
+        "from": sender_text,
+        "to": ", ".join(item.get("address", "") for item in to_items if isinstance(item, dict)),
+        "cc": "",
+        "bcc": "",
+        "subject": mail.get("subject", ""),
+        "intro": mail.get("intro", ""),
+        "date": mail.get("date") or "",
+        "seen": bool(mail.get("seen")),
+        "favorite": bool((mail.get("meta") or {}).get("favorite")),
+        "pinned": bool((mail.get("meta") or {}).get("pinned")),
+        "html": mail.get("html", ""),
+        "text": mail.get("text", ""),
+        "error": "",
+        "attachments": mail.get("attachments", []) if isinstance(mail.get("attachments"), list) else [],
+    }
+
+
+def _public_ai_settings_for_portable() -> dict:
+    ai = _get_ai_settings()
+    channels = []
+    for item in ai.get("channels", []):
+        safe = _safe_ai_channel(item)
+        channels.append({
+            "id": safe.get("id", ""),
+            "name": safe.get("name", ""),
+            "provider": safe.get("provider", ""),
+            "baseUrl": safe.get("base_url", ""),
+            "models": safe.get("models", []),
+            "updatedAt": safe.get("updated_at", ""),
+        })
+    default_model = ai.get("default_model", {}) if isinstance(ai.get("default_model"), dict) else {}
+    return {
+        "channels": channels,
+        "defaultModel": {
+            "channelId": default_model.get("channel_id", ""),
+            "model": default_model.get("model", ""),
+        },
+    }
+
+
+def _normalize_portable_ai_settings(value: dict) -> dict:
+    if not isinstance(value, dict):
+        return {"channels": [], "default_model": {}}
+    channels = []
+    for item in value.get("channels", []):
+        if not isinstance(item, dict):
+            continue
+        channel_id = str(item.get("id") or _new_id("ai_"))
+        provider = _normalize_ai_provider(item.get("provider", ""))
+        if not provider:
+            continue
+        channel = {
+            "id": channel_id,
+            "name": str(item.get("name") or item.get("displayName") or "AI Channel")[:80],
+            "provider": provider,
+            "base_url": _normalize_ai_base_url(provider, item.get("base_url") or item.get("baseUrl") or ""),
+            "models": [str(model) for model in item.get("models", []) if str(model).strip()][:500],
+            "created_at": item.get("created_at") or item.get("createdAt") or _iso_now(),
+            "updated_at": item.get("updated_at") or item.get("updatedAt") or _iso_now(),
+        }
+        channels.append(channel)
+    default_model = value.get("default_model") or value.get("defaultModel") or {}
+    if isinstance(default_model, dict):
+        default_model = {
+            "channel_id": default_model.get("channel_id") or default_model.get("channelId") or "",
+            "model": default_model.get("model") or "",
+        }
+    else:
+        default_model = {}
+    return {"channels": channels, "default_model": default_model}
+
+
+def _portable_message_key(item: dict) -> str:
+    return "|".join([
+        str(item.get("accountType") or item.get("account_type") or "").strip().lower(),
+        str(item.get("accountId") or item.get("account_id") or "").strip().lower(),
+        str(item.get("folder") or "").strip(),
+        str(item.get("id") or item.get("message_id") or "").strip(),
+    ])
+
+
+def _portable_folder_key(item: dict) -> str:
+    return "|".join([
+        str(item.get("accountType") or item.get("account_type") or "").strip().lower(),
+        str(item.get("accountId") or item.get("account_id") or "").strip().lower(),
+        str(item.get("accountAddress") or item.get("account_address") or "").strip().lower(),
+        str(item.get("key") or "").strip(),
+    ])
+
+
+def _merge_portable_ai_settings(settings: dict, incoming: dict) -> int:
+    if not incoming.get("channels"):
+        return 0
+    existing_ai = settings.get("ai", {}) if isinstance(settings.get("ai"), dict) else {}
+    existing_channels = existing_ai.get("channels", []) if isinstance(existing_ai.get("channels"), list) else []
+    existing_by_id = {
+        str(item.get("id")): item
+        for item in existing_channels
+        if isinstance(item, dict) and item.get("id")
+    }
+    merged = []
+    for channel in incoming.get("channels", []):
+        if not isinstance(channel, dict):
+            continue
+        old = existing_by_id.get(str(channel.get("id")))
+        if old and old.get("api_key"):
+            channel["api_key"] = old["api_key"]
+        merged.append(channel)
+    settings["ai"] = {
+        "channels": merged,
+        "default_model": incoming.get("default_model", {}),
+    }
+    return len(merged)
 
 
 def _device_auth(required_scope: str | None = None) -> dict | None:
@@ -1431,6 +1666,11 @@ def logout():
 @login_required
 def index():
     return render_template("index.html", csrf_token=_csrf_token())
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(app.static_folder, "favicon.ico", mimetype="image/x-icon")
 
 
 @app.route("/imap")
@@ -3314,6 +3554,264 @@ def sync_push():
             applied.append({"id": draft_id, "type": ctype})
     _write_viewer_settings(settings)
     return jsonify({"success": True, "applied": applied, "conflicts": conflicts, "sync_seq": _safe_int(settings.get("sync_seq"), 0)})
+
+
+@app.route("/api/portable/export", methods=["GET"])
+@login_required
+def portable_export():
+    settings = _read_viewer_settings()
+    limit = min(max(_safe_int(request.args.get("limit"), 200), 0), 2000)
+    include_messages = request.args.get("messages", "1").strip().lower() not in {"0", "false", "no"}
+    accounts = []
+    folders = []
+    messages = []
+
+    mailboxes = settings.get("mailboxes", []) if isinstance(settings.get("mailboxes"), list) else []
+    local_accounts = []
+    for mailbox in mailboxes:
+        account = _portable_account_from_local_mailbox(mailbox)
+        if not account:
+            continue
+        local_accounts.append(account)
+        accounts.append(account)
+        folders.extend([
+            _portable_folder(account, "inbox", "收件箱"),
+            _portable_folder(account, "all", "所有邮件"),
+            _portable_folder(account, "unread", "未读邮件"),
+            _portable_folder(account, "sent", "已发送"),
+            _portable_folder(account, "drafts", "草稿箱"),
+            _portable_folder(account, "outbox", "发送失败"),
+            _portable_folder(account, "trash", "回收站"),
+        ])
+
+    external_accounts = []
+    try:
+        resp = http_session.get(urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/accounts"), timeout=10)
+        if resp.status_code == 200:
+            external_accounts = resp.json() if isinstance(resp.json(), list) else []
+    except Exception as exc:
+        app.logger.warning("便携导出读取外部账号失败: %s", exc)
+    for item in external_accounts:
+        account = _portable_account_from_external(item)
+        if not account:
+            continue
+        accounts.append(account)
+        folders.extend([
+            _portable_folder(account, "__memail_all__", "所有邮件"),
+            _portable_folder(account, "__memail_unread__", "未读邮件"),
+            _portable_folder(account, "INBOX", "收件箱", (item.get("syncStatus") or {}).get("messages", 0)),
+            _portable_folder(account, "Sent", "已发送"),
+            _portable_folder(account, "Drafts", "草稿箱"),
+            _portable_folder(account, "Trash", "已删除"),
+        ])
+
+    imported_external_accounts = [
+        item for item in _settings_list(settings, "portable_external_accounts")
+        if isinstance(item, dict)
+    ]
+    imported_folders = [
+        item for item in _settings_list(settings, "portable_folders")
+        if isinstance(item, dict)
+    ]
+    imported_messages = [
+        item for item in _settings_list(settings, "portable_messages")
+        if isinstance(item, dict)
+    ]
+    existing_account_refs = {
+        f"{account.get('type')}:{account.get('id')}".lower()
+        for account in accounts
+    }
+    for account in imported_external_accounts:
+        ref = f"{account.get('type')}:{account.get('id')}".lower()
+        if ref not in existing_account_refs:
+            accounts.append(account)
+            existing_account_refs.add(ref)
+    folder_keys = {_portable_folder_key(item) for item in folders}
+    for folder in imported_folders:
+        key = _portable_folder_key(folder)
+        if key and key not in folder_keys:
+            folders.append(folder)
+            folder_keys.add(key)
+
+    if include_messages and limit:
+        for account in local_accounts:
+            email = account["address"]
+            token, err = _get_mail_token(email, "")
+            if err:
+                continue
+            try:
+                resp = http_session.get(
+                    f"{DUCKMAIL_BASE_URL.rstrip('/')}/messages",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"offset": 0, "limit": limit},
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    for mail in payload.get("hydra:member", []) if isinstance(payload, dict) else []:
+                        messages.append(_portable_message_from_local(mail, email, "inbox", account.get("displayName", "")))
+            except Exception as exc:
+                app.logger.warning("便携导出读取本地邮件失败: %s %s", email, exc)
+
+        per_external_limit = min(limit, 500)
+        for item in external_accounts:
+            account = _portable_account_from_external(item)
+            if not account:
+                continue
+            try:
+                resp = http_session.get(
+                    urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{quote(str(account['id']), safe='')}/mails"),
+                    params={"folder": "__memail_all__", "count": per_external_limit, "offset": 0, "cacheOnly": 1},
+                    timeout=20,
+                )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    for mail in payload.get("mails", []) if isinstance(payload, dict) else []:
+                        messages.append(_portable_message_from_external(mail, account))
+            except Exception as exc:
+                app.logger.warning("便携导出读取外部邮件缓存失败: %s %s", account.get("address"), exc)
+        message_keys = {_portable_message_key(item) for item in messages}
+        for item in imported_messages[:limit]:
+            key = _portable_message_key(item)
+            if key and key not in message_keys:
+                messages.append(item)
+                message_keys.add(key)
+
+    package = {
+        "format": "memail.portable",
+        "version": 1,
+        "source": "server",
+        "exportedAt": _iso_now(),
+        "accounts": accounts,
+        "folders": folders,
+        "messages": messages,
+        "aiSettings": _public_ai_settings_for_portable(),
+        "keywordRules": [
+            _portable_keyword_rule(item)
+            for item in _settings_list(settings, "keyword_rules")
+            if _normalize_keyword_rule(item)
+        ],
+    }
+    return jsonify(package)
+
+
+@app.route("/api/portable/import", methods=["POST"])
+@login_required
+def portable_import():
+    data = request.get_json(silent=True) or {}
+    if data.get("format") != "memail.portable":
+        return jsonify({"success": False, "message": "不是 Memail 便携数据包"}), 400
+    if _safe_int(data.get("version"), 1) > 1:
+        return jsonify({"success": False, "message": "暂不支持该便携包版本"}), 400
+
+    settings = _read_viewer_settings()
+    imported = {
+        "local_accounts": 0,
+        "external_account_profiles": 0,
+        "folders": 0,
+        "messages": 0,
+        "keyword_rules": 0,
+        "ai_channels": 0,
+    }
+    mailboxes = settings.get("mailboxes", []) if isinstance(settings.get("mailboxes"), list) else []
+    by_address = {
+        _normalize_mailbox_address(item.get("address", "")): item
+        for item in mailboxes
+        if isinstance(item, dict) and _normalize_mailbox_address(item.get("address", ""))
+    }
+
+    for account in data.get("accounts", []):
+        if not isinstance(account, dict):
+            continue
+        account_type = str(account.get("type") or "").strip().lower()
+        if account_type == "local":
+            address = _normalize_mailbox_address(account.get("address", ""))
+            if not address:
+                continue
+            item = by_address.get(address) or {"address": address, "created_at": _iso_now()}
+            item.update({
+                "display_name": _normalize_display_name(account.get("displayName") or account.get("display_name"), address),
+                "send_name": _normalize_display_name(account.get("sendName") or account.get("send_name"), ""),
+                "group": _normalize_account_group(account.get("group", "")),
+                "updated_at": _iso_now(),
+            })
+            by_address[address] = item
+            imported["local_accounts"] += 1
+        elif account_type == "external":
+            external_profiles = _settings_list(settings, "portable_external_accounts")
+            external_profiles = [item for item in external_profiles if isinstance(item, dict)]
+            normalized = {
+                **account,
+                "protectedPassword": "",
+            }
+            ref = f"external:{normalized.get('id') or normalized.get('address')}".lower()
+            external_profiles = [
+                item for item in external_profiles
+                if f"external:{item.get('id') or item.get('address')}".lower() != ref
+            ]
+            external_profiles.append(normalized)
+            settings["portable_external_accounts"] = external_profiles[-500:]
+            imported["external_account_profiles"] += 1
+
+    settings["mailboxes"] = list(by_address.values())
+    order = _normalize_account_order(settings.get("account_order", []))
+    for address in by_address:
+        key = f"local:{address}"
+        if key not in order:
+            order.append(key)
+    settings["account_order"] = order
+
+    ai_settings = _normalize_portable_ai_settings(data.get("aiSettings") or data.get("ai_settings") or {})
+    imported["ai_channels"] = _merge_portable_ai_settings(settings, ai_settings)
+
+    rules = [
+        _normalize_keyword_rule(item)
+        for item in data.get("keywordRules", data.get("keyword_rules", []))
+        if isinstance(item, dict)
+    ]
+    rules = [item for item in rules if item]
+    if rules:
+        settings["keyword_rules"] = rules[-200:]
+        imported["keyword_rules"] = len(rules)
+
+    folder_items = [
+        item for item in data.get("folders", [])
+        if isinstance(item, dict) and _portable_folder_key(item)
+    ]
+    if folder_items:
+        stored = [
+            item for item in _settings_list(settings, "portable_folders")
+            if isinstance(item, dict)
+        ]
+        by_key = {_portable_folder_key(item): item for item in stored if _portable_folder_key(item)}
+        for item in folder_items:
+            by_key[_portable_folder_key(item)] = item
+        settings["portable_folders"] = list(by_key.values())[-2000:]
+        imported["folders"] = len(folder_items)
+
+    message_items = [
+        item for item in data.get("messages", [])
+        if isinstance(item, dict) and _portable_message_key(item)
+    ]
+    if message_items:
+        stored = [
+            item for item in _settings_list(settings, "portable_messages")
+            if isinstance(item, dict)
+        ]
+        by_key = {_portable_message_key(item): item for item in stored if _portable_message_key(item)}
+        for item in message_items:
+            by_key[_portable_message_key(item)] = item
+        settings["portable_messages"] = list(by_key.values())[-5000:]
+        imported["messages"] = len(message_items)
+
+    _append_audit(settings, "portable.imported", imported)
+    _touch_sync_event(settings, "portable.imported", imported)
+    _write_viewer_settings(settings)
+    return jsonify({
+        "success": True,
+        "imported": imported,
+        "message": "便携包已导入。外部账号密码/OAuth Token 不在便携包内，需要在账号设置中重新填写或重新授权。",
+    })
 
 
 # ---- 发送邮件 API（通过 Resend） ----
