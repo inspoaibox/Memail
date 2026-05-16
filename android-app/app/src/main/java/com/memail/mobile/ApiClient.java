@@ -57,7 +57,7 @@ final class ApiClient {
         URL url = new URL(baseUrl + normalizePath(path));
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(12000);
-        conn.setReadTimeout(30000);
+        conn.setReadTimeout(75000);
         conn.setRequestMethod(method);
         conn.setRequestProperty("Accept", "application/json");
         conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");

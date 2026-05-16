@@ -4343,6 +4343,20 @@ def retry_outbox(message_id):
     return _send_local_email(payload, retry_item=item)
 
 
+@app.route("/api/outbox/<message_id>", methods=["DELETE"])
+@login_required
+def delete_outbox(message_id):
+    settings = _read_viewer_settings()
+    outbox = _settings_list(settings, "outbox")
+    before = len(outbox)
+    settings["outbox"] = [item for item in outbox if item.get("id") != message_id]
+    if len(settings["outbox"]) == before:
+        return jsonify({"success": False, "message": "发送失败记录不存在"}), 404
+    _touch_sync_event(settings, "outbox.deleted", {"id": message_id})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True})
+
+
 # ---- 安全管理 / 多端同步 API ----
 
 @app.route("/api/security/confirm", methods=["POST"])
