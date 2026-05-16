@@ -20,6 +20,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.EditText;
@@ -34,7 +35,12 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.URLEncoder;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -61,7 +67,7 @@ public class MainActivity extends Activity {
     private static final int NAV_INACTIVE = Color.rgb(87, 107, 116);
     private static final String PREFS = "memail_mobile";
     private static final String CHANNEL_MAIL = "memail_mail";
-    private static final long REFRESH_INTERVAL_MS = 300_000L;
+    private static final long EVENT_RECONNECT_MS = 4_000L;
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final ApiClient api = new ApiClient();
@@ -72,7 +78,8 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private LocalStore store;
     private Handler mainHandler;
-    private Runnable refreshLoop;
+    private Thread eventThread;
+    private volatile boolean eventStreamRunning = false;
     private LinearLayout root;
     private LinearLayout content;
     private LinearLayout navBar;
@@ -100,17 +107,9 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         store = new LocalStore(this);
         mainHandler = new Handler(Looper.getMainLooper());
-        refreshLoop = () -> {
-            if (!token.isEmpty()) {
-                fetchBootstrapThenAccounts(false);
-                if ("list".equals(currentScreen) && (selectedAccount != null || !selectedVirtualMode.isEmpty())) {
-                    currentPage = 1;
-                    loadMails(true);
-                }
-                scheduleAutoRefresh();
-            }
-        };
         if (Build.VERSION.SDK_INT >= 21) {
+            Window window = getWindow();
+            window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
             getWindow().setStatusBarColor(Color.WHITE);
             getWindow().setNavigationBarColor(Color.WHITE);
         }
@@ -127,13 +126,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        scheduleAutoRefresh();
+        startEventStream();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        mainHandler.removeCallbacks(refreshLoop);
+        stopEventStream();
     }
 
     @Override
@@ -167,7 +166,7 @@ public class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(16), dp(10), dp(16), dp(8));
+        header.setPadding(dp(16), statusBarInset() + dp(8), dp(16), dp(8));
         header.setBackgroundColor(Color.WHITE);
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
         View headerLine = new View(this);
@@ -184,7 +183,7 @@ public class MainActivity extends Activity {
         titleBox.setPadding(0, 0, 0, 0);
         header.addView(titleBox, new LinearLayout.LayoutParams(0, -2, 1));
 
-        title = text("Memail", 19, TEXT, false);
+        title = text("Memail", 18, TEXT, true);
         title.setGravity(Gravity.CENTER);
         subtitle = text("", 1, Color.TRANSPARENT, false);
         subtitle.setGravity(Gravity.CENTER);
@@ -270,34 +269,42 @@ public class MainActivity extends Activity {
     private void showLogin() {
         currentScreen = "login";
         navIndex = 0;
-        setHeader("Memail", "连接你的邮件服务端");
+        setHeader("Memail", "");
         if (navBar != null) navBar.setVisibility(View.GONE);
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
-        LinearLayout box = column(dp(14));
-        box.setPadding(dp(8), dp(8), dp(8), dp(20));
+        LinearLayout box = column(dp(12));
+        box.setPadding(dp(20), dp(10), dp(20), dp(22));
         scroll.addView(box);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
 
-        LinearLayout hero = panel(dp(20), dp(20));
-        hero.setBackground(bg(Color.rgb(228, 241, 239), 22, Color.rgb(190, 216, 213), 1));
-        TextView heroTitle = text("连接 Memail", 26, TEXT, true);
-        TextView heroText = text("输入服务端地址和管理员账号后进入移动邮箱。未连接前不会展示邮件、写信和设置入口。", 14, MUTED, false);
+        LinearLayout hero = new LinearLayout(this);
+        hero.setOrientation(LinearLayout.VERTICAL);
+        hero.setPadding(dp(4), dp(8), dp(4), dp(10));
+        TextView heroTitle = text("连接邮件服务", 28, TEXT, true);
+        TextView heroText = text("首次连接后会在手机本地保存账号和邮件缓存；以后打开先显示本地数据，服务端有更新再通知手机增量同步。", 14, MUTED, false);
+        heroText.setPadding(0, dp(8), 0, 0);
         hero.addView(heroTitle);
         hero.addView(heroText);
         box.addView(hero);
 
-        EditText serverInput = input("服务端地址", server, false);
+        LinearLayout form = panel(dp(16), dp(14));
+        form.setBackground(bg(Color.WHITE, 20, Color.rgb(222, 231, 232), 1));
+        EditText serverInput = input("服务端地址，例如 https://mail.example.com", server, false);
         EditText userInput = input("管理员账号", prefs.getString("username", "admin"), false);
         EditText passInput = input("访问密码", "", true);
         EditText totpInput = input("2FA 验证码（启用时填写）", "", false);
         totpInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        box.addView(serverInput);
-        box.addView(userInput);
-        box.addView(passInput);
-        box.addView(totpInput);
+        form.addView(serverInput);
+        form.addView(userInput);
+        form.addView(passInput);
+        form.addView(totpInput);
+        box.addView(form);
 
-        TextView login = primaryButton("连接并进入邮箱");
+        TextView login = primaryButton("连接");
+        LinearLayout.LayoutParams loginLp = new LinearLayout.LayoutParams(-1, dp(54));
+        loginLp.setMargins(0, dp(8), 0, 0);
+        login.setLayoutParams(loginLp);
         login.setOnClickListener(v -> runAsync("正在连接...", () -> {
             JSONObject resp = api.login(
                 serverInput.getText().toString(),
@@ -326,7 +333,7 @@ public class MainActivity extends Activity {
     private void loadHome() {
         navIndex = 0;
         requestNotificationPermission();
-        scheduleAutoRefresh();
+        startEventStream();
         accounts.clear();
         accounts.addAll(store.readAccounts());
         if (accounts.isEmpty()) {
@@ -336,12 +343,6 @@ public class MainActivity extends Activity {
             checkNotifications();
             fetchBootstrapThenAccounts(false);
         }
-    }
-
-    private void scheduleAutoRefresh() {
-        if (mainHandler == null || token.isEmpty()) return;
-        mainHandler.removeCallbacks(refreshLoop);
-        mainHandler.postDelayed(refreshLoop, REFRESH_INTERVAL_MS);
     }
 
     private void fetchBootstrapThenAccounts(boolean render) {
@@ -822,8 +823,8 @@ public class MainActivity extends Activity {
             return;
         }
         if ("external".equals(selectedAccount.type)) {
-            runAsync("同步账号...", () -> api.post("/imap/api/accounts/" + encode(selectedAccount.id) + "/sync",
-                new JSONObject().put("force", true).put("folder", selectedFolder == null ? "INBOX" : selectedFolder.path)), result -> {
+        runAsync("同步账号...", () -> api.post("/imap/api/accounts/" + encode(selectedAccount.id) + "/sync",
+            new JSONObject().put("force", true).put("folder", selectedFolder == null ? "INBOX" : selectedFolder.path)), result -> {
                 currentPage = 1;
                 loadFolders(selectedAccount);
                 toast("同步已触发");
@@ -833,6 +834,73 @@ public class MainActivity extends Activity {
         fetchBootstrapThenAccounts(false);
         currentPage = 1;
         loadMails(false);
+    }
+
+    private void handleServerEvent(JSONObject event) {
+        int seq = event.optInt("seq", 0);
+        if (seq > 0) prefs.edit().putInt("sync_seq", seq).apply();
+        String type = Json.str(event, "type");
+        if (type.startsWith("mail.") || type.startsWith("draft.") || type.startsWith("outbox.") || type.startsWith("message.")) {
+            fetchBootstrapThenAccounts(false);
+            if ("list".equals(currentScreen) && (selectedAccount != null || !selectedVirtualMode.isEmpty())) {
+                currentPage = 1;
+                loadMails(true);
+            }
+        }
+    }
+
+    private void startEventStream() {
+        if (token.isEmpty() || eventStreamRunning) return;
+        eventStreamRunning = true;
+        eventThread = new Thread(this::eventStreamLoop, "memail-mobile-events");
+        eventThread.start();
+    }
+
+    private void stopEventStream() {
+        eventStreamRunning = false;
+        if (eventThread != null) eventThread.interrupt();
+        eventThread = null;
+    }
+
+    private void eventStreamLoop() {
+        while (eventStreamRunning && !token.isEmpty()) {
+            HttpURLConnection conn = null;
+            try {
+                int since = prefs.getInt("sync_seq", 0);
+                URL url = new URL(api.baseUrl() + "/api/mobile/events?since=" + since);
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(12000);
+                conn.setReadTimeout(0);
+                conn.setRequestProperty("Accept", "text/event-stream");
+                conn.setRequestProperty("Authorization", "Bearer " + api.token());
+                int code = conn.getResponseCode();
+                if (code >= 400) throw new Exception("events HTTP " + code);
+                readEventStream(conn.getInputStream());
+            } catch (Exception ignored) {
+                sleepQuietly(EVENT_RECONNECT_MS);
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }
+    }
+
+    private void readEventStream(InputStream input) throws Exception {
+        StringBuilder data = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            String line;
+            while (eventStreamRunning && (line = reader.readLine()) != null) {
+                if (line.isEmpty()) {
+                    if (data.length() > 0) {
+                        String raw = data.toString();
+                        data.setLength(0);
+                        JSONObject event = new JSONObject(raw);
+                        runOnUiThread(() -> handleServerEvent(event));
+                    }
+                    continue;
+                }
+                if (line.startsWith("data:")) data.append(line.substring(5).trim());
+            }
+        }
     }
 
     private View mailRow(Models.Mail mail) {
@@ -1232,7 +1300,7 @@ public class MainActivity extends Activity {
             prefs.edit().remove("token").apply();
             token = "";
             api.configure(server, "");
-            mainHandler.removeCallbacks(refreshLoop);
+            stopEventStream();
             if (navBar != null) navBar.setVisibility(View.GONE);
             showLogin();
         });
@@ -1581,6 +1649,19 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private int statusBarInset() {
+        int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        return id > 0 ? getResources().getDimensionPixelSize(id) : 0;
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private GradientDrawable bg(int color, int radiusDp, int strokeColor, int strokeWidthDp) {

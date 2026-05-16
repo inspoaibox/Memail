@@ -25,6 +25,10 @@ final class ApiClient {
         return baseUrl;
     }
 
+    String token() {
+        return token;
+    }
+
     JSONObject get(String path) throws Exception {
         return request("GET", path, null);
     }

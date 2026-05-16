@@ -6,6 +6,7 @@ import hashlib
 import html as html_lib
 import mimetypes
 import os
+import queue
 import threading
 import re
 import secrets
@@ -73,6 +74,12 @@ AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS",
 TRANSLATION_SERVICE_TIMEOUT_SECONDS = int(os.getenv("TRANSLATION_SERVICE_TIMEOUT_SECONDS", "12"))
 TRANSLATION_CACHE_LIMIT = int(os.getenv("TRANSLATION_CACHE_LIMIT", "500"))
 TRANSLATION_CACHE_MAX_CHARS = int(os.getenv("TRANSLATION_CACHE_MAX_CHARS", str(2 * 1024 * 1024)))
+MOBILE_PUSH_POLL_SECONDS = int(os.getenv("MOBILE_PUSH_POLL_SECONDS", "20"))
+_MOBILE_EVENT_SUBSCRIBERS: set[queue.Queue] = set()
+_MOBILE_EVENT_LOCK = threading.Lock()
+_MOBILE_EVENT_MONITOR_STARTED = False
+_MOBILE_EVENT_LAST_SEQ = 0
+_MOBILE_EVENT_LAST_FINGERPRINT = ""
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
     "colgroup", "div", "em", "font",
@@ -1573,7 +1580,75 @@ def _touch_sync_event(settings: dict, event_type: str, payload: dict | None = No
     events = _settings_list(settings, "sync_events")
     events.append(event)
     settings["sync_events"] = events[-1000:]
+    _publish_mobile_event(event)
     return event
+
+
+def _publish_mobile_event(event: dict):
+    with _MOBILE_EVENT_LOCK:
+        subscribers = list(_MOBILE_EVENT_SUBSCRIBERS)
+    for subscriber in subscribers:
+        try:
+            subscriber.put_nowait(event)
+        except Exception:
+            pass
+
+
+def _mail_state_fingerprint() -> str:
+    parts = []
+    try:
+        resp = http_session.get(urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/accounts"), timeout=8)
+        if resp.status_code == 200:
+            payload = resp.json()
+            accounts = payload if isinstance(payload, list) else payload.get("accounts", [])
+            if isinstance(accounts, list):
+                for item in accounts:
+                    if not isinstance(item, dict):
+                        continue
+                    sync = item.get("syncStatus") if isinstance(item.get("syncStatus"), dict) else {}
+                    parts.append(
+                        "external:{id}:{messages}:{unseen}:{synced}".format(
+                            id=item.get("id", ""),
+                            messages=sync.get("messages", 0),
+                            unseen=sync.get("unseen", 0),
+                            synced=sync.get("syncedAt", ""),
+                        )
+                    )
+    except Exception as exc:
+        app.logger.debug("移动端邮件事件检测读取外部账号失败: %s", exc)
+
+    settings = _read_viewer_settings()
+    for mailbox in settings.get("mailboxes", []) if isinstance(settings.get("mailboxes"), list) else []:
+        address = str(mailbox.get("address") or "").strip().lower()
+        if address:
+            parts.append(f"local:{address}:{mailbox.get('updated_at', '')}:{mailbox.get('created_at', '')}")
+
+    return hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()
+
+
+def _mobile_event_monitor_loop():
+    global _MOBILE_EVENT_LAST_SEQ, _MOBILE_EVENT_LAST_FINGERPRINT
+    while True:
+        try:
+            fingerprint = _mail_state_fingerprint()
+            if fingerprint and fingerprint != _MOBILE_EVENT_LAST_FINGERPRINT:
+                _MOBILE_EVENT_LAST_FINGERPRINT = fingerprint
+                settings = _read_viewer_settings()
+                event = _touch_sync_event(settings, "mail.changed", {"source": "mail-state-monitor"})
+                _MOBILE_EVENT_LAST_SEQ = _safe_int(event.get("seq"), _MOBILE_EVENT_LAST_SEQ)
+                _write_viewer_settings(settings)
+        except Exception as exc:
+            app.logger.warning("移动端邮件事件检测失败: %s", exc)
+        time.sleep(max(5, MOBILE_PUSH_POLL_SECONDS))
+
+
+def _ensure_mobile_event_monitor():
+    global _MOBILE_EVENT_MONITOR_STARTED
+    with _MOBILE_EVENT_LOCK:
+        if _MOBILE_EVENT_MONITOR_STARTED:
+            return
+        _MOBILE_EVENT_MONITOR_STARTED = True
+    threading.Thread(target=_mobile_event_monitor_loop, name="mobile-event-monitor", daemon=True).start()
 
 
 def _append_audit(settings: dict, action: str, detail: dict | None = None, success: bool = True):
@@ -4627,6 +4702,43 @@ def sync_changes():
         "events": events[:limit],
         "has_more": len(events) > limit,
     })
+
+
+@app.route("/api/mobile/events", methods=["GET"])
+@device_or_login_required
+def mobile_events():
+    _ensure_mobile_event_monitor()
+    since = _safe_int(request.args.get("since"), 0)
+    settings = _read_viewer_settings()
+    backlog = [event for event in _settings_list(settings, "sync_events") if _safe_int(event.get("seq"), 0) > since]
+
+    def stream():
+        subscriber: queue.Queue = queue.Queue(maxsize=100)
+        with _MOBILE_EVENT_LOCK:
+            _MOBILE_EVENT_SUBSCRIBERS.add(subscriber)
+        try:
+            yield ": connected\n\n"
+            for event in backlog[-100:]:
+                yield f"id: {_safe_int(event.get('seq'), 0)}\n"
+                yield "event: sync\n"
+                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+            while True:
+                try:
+                    event = subscriber.get(timeout=25)
+                    yield f"id: {_safe_int(event.get('seq'), 0)}\n"
+                    yield "event: sync\n"
+                    yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                except queue.Empty:
+                    yield ": heartbeat\n\n"
+        finally:
+            with _MOBILE_EVENT_LOCK:
+                _MOBILE_EVENT_SUBSCRIBERS.discard(subscriber)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+    return Response(stream_with_context(stream()), headers=headers, mimetype="text/event-stream")
 
 
 @app.route("/api/sync/push", methods=["POST"])
