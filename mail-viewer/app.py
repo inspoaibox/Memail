@@ -4499,6 +4499,58 @@ def create_device_token():
     return jsonify({"success": True, "token": token, "device": public})
 
 
+@app.route("/api/mobile/login", methods=["POST"])
+def mobile_login():
+    data = request.json or {}
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
+    totp_code = str(data.get("totp_code") or data.get("totpCode") or "").strip()
+    device_name = str(data.get("device_name") or data.get("deviceName") or "Android").strip()[:80] or "Android"
+    if not _admin_auth_enabled():
+        return jsonify({"success": False, "message": "服务端未启用管理员登录，无法签发移动端 Token"}), 403
+    if _is_login_locked(username):
+        return jsonify({"success": False, "message": "登录失败次数过多，请稍后再试"}), 429
+    if not _verify_admin_credentials(username, password):
+        _register_login_failure(username)
+        settings = _read_viewer_settings()
+        _append_audit(settings, "mobile.login.failed", {"username": username}, success=False)
+        _write_viewer_settings(settings)
+        return jsonify({"success": False, "message": "用户名或密码错误"}), 401
+
+    settings = _read_viewer_settings()
+    if _totp_enabled(settings) and not _verify_totp_code(_decrypt_setting(settings.get("totp_secret")), totp_code):
+        _register_login_failure(username)
+        _append_audit(settings, "mobile.login.totp_failed", {"username": username}, success=False)
+        _write_viewer_settings(settings)
+        return jsonify({"success": False, "message": "二次验证码错误", "totp_required": True}), 401
+
+    _clear_login_failures(username)
+    token = DEVICE_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    now = _iso_now()
+    item = {
+        "id": _new_id("dev_"),
+        "name": device_name,
+        "token_hash": _hash_token(token),
+        "scopes": ["client:full"],
+        "created_at": now,
+        "last_seen": now,
+        "last_ip": _client_ip(),
+        "revoked": False,
+    }
+    tokens = _settings_list(settings, "device_tokens")
+    tokens.append(item)
+    settings["device_tokens"] = tokens[-100:]
+    _append_audit(settings, "mobile.login", {"id": item["id"], "name": device_name, "username": username})
+    _touch_sync_event(settings, "device.token.created", {"id": item["id"]})
+    _write_viewer_settings(settings)
+    return jsonify({
+        "success": True,
+        "token": token,
+        "device": {k: v for k, v in item.items() if k != "token_hash"},
+        "server_time": now,
+    })
+
+
 @app.route("/api/devices/tokens/<token_id>", methods=["DELETE"])
 @login_required
 def revoke_device_token(token_id):
