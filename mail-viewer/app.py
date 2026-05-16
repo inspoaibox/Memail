@@ -71,6 +71,8 @@ IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_CONNECT_TIMEO
 IMAGE_PROXY_READ_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_READ_TIMEOUT_SECONDS", "8"))
 AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "45"))
 TRANSLATION_SERVICE_TIMEOUT_SECONDS = int(os.getenv("TRANSLATION_SERVICE_TIMEOUT_SECONDS", "12"))
+TRANSLATION_CACHE_LIMIT = int(os.getenv("TRANSLATION_CACHE_LIMIT", "500"))
+TRANSLATION_CACHE_MAX_CHARS = int(os.getenv("TRANSLATION_CACHE_MAX_CHARS", str(2 * 1024 * 1024)))
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
     "colgroup", "div", "em", "font",
@@ -347,6 +349,97 @@ def _write_translation_settings(data: dict) -> dict:
     settings["translation"] = current
     _write_viewer_settings(settings)
     return current
+
+
+def _translation_request_identity(data: dict) -> dict:
+    return {
+        "account_type": str(data.get("account_type") or data.get("accountType") or "").strip().lower(),
+        "account_id": str(data.get("account_id") or data.get("accountId") or "").strip().lower(),
+        "folder": str(data.get("folder") or "").strip() or "inbox",
+        "message_id": str(data.get("message_id") or data.get("messageId") or data.get("id") or "").strip(),
+    }
+
+
+def _translation_source_hash(subject: str, html_content: str, text_content: str) -> str:
+    payload = {
+        "subject": subject or "",
+        "html": html_content or "",
+        "text": text_content or "",
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _translation_cache_variant(provider: str) -> str:
+    provider = (provider or "ai").strip().lower()
+    if provider != "ai":
+        return provider
+    ai = _get_ai_settings()
+    default_model = ai.get("default_model", {}) if isinstance(ai.get("default_model"), dict) else {}
+    return "ai:%s:%s" % (
+        str(default_model.get("channel_id") or "").strip(),
+        str(default_model.get("model") or "").strip(),
+    )
+
+
+def _translation_cache_key(identity: dict, provider: str, source_hash: str) -> str:
+    payload = {
+        "v": 1,
+        "variant": _translation_cache_variant(provider),
+        "source_hash": source_hash,
+        "account_type": identity.get("account_type", ""),
+        "account_id": identity.get("account_id", ""),
+        "folder": identity.get("folder", ""),
+        "message_id": identity.get("message_id", ""),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _translation_cache_items(settings: dict) -> dict:
+    cache = settings.get("translation_cache", {})
+    if not isinstance(cache, dict):
+        return {}
+    items = cache.get("items", {})
+    return items if isinstance(items, dict) else {}
+
+
+def _read_translation_cache_item(settings: dict, cache_key: str) -> dict | None:
+    item = _translation_cache_items(settings).get(cache_key)
+    if not isinstance(item, dict) or not item.get("translation"):
+        return None
+    return item
+
+
+def _write_translation_cache_item(settings: dict, cache_key: str, item: dict) -> bool:
+    if len(item.get("translation", "")) > TRANSLATION_CACHE_MAX_CHARS:
+        app.logger.info(
+            "邮件翻译缓存跳过: output_chars=%s max_chars=%s",
+            len(item.get("translation", "")),
+            TRANSLATION_CACHE_MAX_CHARS,
+        )
+        return False
+    cache = settings.get("translation_cache", {})
+    if not isinstance(cache, dict):
+        cache = {}
+    items = cache.get("items", {})
+    if not isinstance(items, dict):
+        items = {}
+    items[cache_key] = item
+    if TRANSLATION_CACHE_LIMIT > 0 and len(items) > TRANSLATION_CACHE_LIMIT:
+        sorted_items = sorted(
+            items.items(),
+            key=lambda kv: str((kv[1] or {}).get("last_used_at") or (kv[1] or {}).get("created_at") or ""),
+            reverse=True,
+        )
+        items = dict(sorted_items[:TRANSLATION_CACHE_LIMIT])
+    settings["translation_cache"] = {
+        "version": 1,
+        "limit": TRANSLATION_CACHE_LIMIT,
+        "items": items,
+    }
+    _write_viewer_settings(settings)
+    return True
 
 
 def _list_openai_models(base_url: str, api_key: str) -> list[str]:
@@ -3146,19 +3239,23 @@ def save_translation_settings():
 @login_required
 def translate_mail_to_chinese():
     started_at = time.time()
+    provider = ""
+    meta = {}
     try:
         data = request.get_json(silent=True) or {}
         html_content = (data.get("html", "") or "").strip()
         text_content = (data.get("text", "") or "").strip()
         subject_raw = (data.get("subject", "") or "").strip()
+        force_refresh = bool(data.get("force_refresh") or data.get("forceRefresh"))
         html_detected = bool(html_content)
         subject = _extract_plain_text(subject_raw)
         app.logger.info(
-            "邮件翻译开始: subject=%s html_detected=%s html_chars=%s text_chars=%s",
+            "邮件翻译开始: subject=%s html_detected=%s html_chars=%s text_chars=%s force_refresh=%s",
             subject[:120],
             html_detected,
             len(html_content),
             len(text_content),
+            force_refresh,
         )
         if not html_content and not text_content and not subject:
             return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
@@ -3166,6 +3263,43 @@ def translate_mail_to_chinese():
         translation_settings = _get_translation_settings()
         provider = translation_settings.get("default_provider", "ai")
         fallback_to_ai = bool(translation_settings.get("fallback_to_ai", True))
+        identity = _translation_request_identity(data)
+        source_hash = _translation_source_hash(subject_raw, html_content, text_content)
+        cache_key = _translation_cache_key(identity, provider, source_hash)
+        if not force_refresh:
+            settings_for_cache = _read_viewer_settings()
+            cached = _read_translation_cache_item(settings_for_cache, cache_key)
+            if cached:
+                try:
+                    cached["last_used_at"] = _iso_now()
+                    cached["hits"] = int(cached.get("hits", 0)) + 1
+                    _write_translation_cache_item(settings_for_cache, cache_key, cached)
+                except Exception as cache_error:
+                    app.logger.warning("邮件翻译缓存命中后更新失败: %s", cache_error, exc_info=True)
+                elapsed_ms = int((time.time() - started_at) * 1000)
+                app.logger.info(
+                    "邮件翻译缓存命中: key=%s provider=%s identity=%s elapsed_ms=%s",
+                    cache_key[:12],
+                    provider,
+                    identity,
+                    elapsed_ms,
+                )
+                return jsonify({
+                    "success": True,
+                    "translation": cached.get("translation", ""),
+                    "format": cached.get("format", "text"),
+                    "engine": cached.get("engine", ""),
+                    "provider": cached.get("provider", ""),
+                    "model": cached.get("model", ""),
+                    "fallback_from": cached.get("fallback_from", ""),
+                    "elapsed_ms": elapsed_ms,
+                    "input_chars": cached.get("input_chars", 0),
+                    "original_chars": cached.get("input_chars", 0),
+                    "truncated": False,
+                    "cached": True,
+                    "cache_saved": True,
+                    "cache_created_at": cached.get("created_at", ""),
+                })
         try:
             translated, meta = _call_configured_translation_engine(provider, html_content, text_content, subject, translation_settings)
         except Exception as primary_error:
@@ -3188,8 +3322,8 @@ def translate_mail_to_chinese():
     except (requests.Timeout, requests.ConnectionError) as e:
         app.logger.warning(
             "邮件翻译网络超时/连接失败: provider=%s chars=%s ai_timeout=%s translation_timeout=%s error=%s",
-            provider if "provider" in locals() else "",
-            meta.get("input_chars", 0) if "meta" in locals() and isinstance(meta, dict) else 0,
+            provider,
+            meta.get("input_chars", 0) if isinstance(meta, dict) else 0,
             AI_TRANSLATION_TIMEOUT_SECONDS,
             TRANSLATION_SERVICE_TIMEOUT_SECONDS,
             e,
@@ -3211,8 +3345,33 @@ def translate_mail_to_chinese():
         return jsonify({"success": False, "message": "翻译返回空内容，请更换翻译渠道后重试"}), 502
     response_format = meta.get("format", "text") if isinstance(meta, dict) else "text"
     elapsed_ms = int((time.time() - started_at) * 1000)
+    cache_saved = False
+    if isinstance(meta, dict) and not meta.get("fallback_from"):
+        try:
+            now = _iso_now()
+            cache_item = {
+                "translation": translated,
+                "format": response_format,
+                "engine": meta.get("engine", ""),
+                "provider": meta.get("provider", ""),
+                "model": meta.get("model", ""),
+                "fallback_from": meta.get("fallback_from", ""),
+                "input_chars": meta.get("input_chars", 0),
+                "output_chars": len(translated),
+                "requested_provider": provider,
+                "identity": identity,
+                "source_hash": source_hash,
+                "created_at": now,
+                "last_used_at": now,
+                "hits": 0,
+            }
+            cache_saved = _write_translation_cache_item(_read_viewer_settings(), cache_key, cache_item)
+        except Exception as cache_error:
+            app.logger.warning("邮件翻译缓存保存失败: %s", cache_error, exc_info=True)
+    elif isinstance(meta, dict):
+        app.logger.info("邮件翻译缓存跳过: fallback_from=%s", meta.get("fallback_from", ""))
     app.logger.info(
-        "邮件翻译完成: engine=%s provider=%s model=%s format=%s input_chars=%s output_chars=%s elapsed_ms=%s preview=%s",
+        "邮件翻译完成: engine=%s provider=%s model=%s format=%s input_chars=%s output_chars=%s elapsed_ms=%s cache_saved=%s preview=%s",
         meta.get("engine", ""),
         meta.get("provider", ""),
         meta.get("model", ""),
@@ -3220,6 +3379,7 @@ def translate_mail_to_chinese():
         meta.get("input_chars", 0),
         len(translated),
         elapsed_ms,
+        cache_saved,
         _translation_preview(translated),
     )
     return jsonify({
@@ -3234,6 +3394,8 @@ def translate_mail_to_chinese():
         "input_chars": meta.get("input_chars", 0),
         "original_chars": meta.get("input_chars", 0),
         "truncated": False,
+        "cached": False,
+        "cache_saved": cache_saved,
     })
 
 

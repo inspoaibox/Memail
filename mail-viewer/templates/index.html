@@ -2213,6 +2213,8 @@
                 translationFailed: '翻译失败',
                 translationTimeout: '翻译请求超时，请稍后重试或换一个更快的默认模型',
                 translationTruncated: '邮件内容较长，已截取前半部分发送给 AI 翻译。',
+                translationCached: '已使用缓存',
+                retranslate: '重新翻译',
                 mailboxControls: '邮箱控件',
                 localMailboxHint: '本地邮箱用于接收当前系统托管域名的邮件。',
                 externalMailboxHint: '外部账号用于接入 Gmail、Outlook 或其它 IMAP 邮箱。',
@@ -2538,6 +2540,8 @@
                 translationFailed: 'Translation failed',
                 translationTimeout: 'Translation timed out. Try again later or choose a faster default model.',
                 translationTruncated: 'This email is long, so only the first part was sent for AI translation.',
+                translationCached: 'Cached',
+                retranslate: 'Retranslate',
                 mailboxControls: 'Mailbox Controls',
                 localMailboxHint: 'Local mailboxes receive mail for domains hosted by this system.',
                 externalMailboxHint: 'External accounts connect Gmail, Outlook, or other IMAP mailboxes.',
@@ -3273,14 +3277,19 @@
         }
 
         function _buildTranslationPayload(msg) {
+            const ref = _getCurrentDetailRef() || _messageRefFromMessage(msg);
             return {
                 subject: msg.subject || '',
                 text: msg.text || '',
                 html: msg.html || '',
+                account_type: ref.accountType || '',
+                account_id: ref.accountId || '',
+                folder: ref.folder || '',
+                message_id: ref.messageId || '',
             };
         }
 
-        async function translateCurrentMail() {
+        async function translateCurrentMail(forceRefresh = false) {
             const msg = window._currentDetailMsg;
             if (!msg) return;
             if (translationAbortController) {
@@ -3302,7 +3311,10 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     signal: controller.signal,
-                    body: JSON.stringify(_buildTranslationPayload(msg)),
+                    body: JSON.stringify({
+                        ..._buildTranslationPayload(msg),
+                        force_refresh: Boolean(forceRefresh),
+                    }),
                 });
                 const contentType = resp.headers.get('content-type') || '';
                 const data = contentType.includes('application/json')
@@ -3311,7 +3323,12 @@
                 if (!data.success) throw new Error(data.message || t('translationFailed'));
                 panel.innerHTML = `
                     ${data.truncated ? `<div class="small text-warning mb-2">${t('translationTruncated')}</div>` : ''}
-                    <div class="fw-semibold mb-2"><i class="bi bi-translate me-1"></i>${t('translationResult')}</div>
+                    <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+                        <div class="fw-semibold"><i class="bi bi-translate me-1"></i>${t('translationResult')} ${data.cached ? `<span class="badge rounded-pill text-bg-light ms-1">${t('translationCached')}</span>` : ''}</div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="translateCurrentMail(true)">
+                            <i class="bi bi-arrow-clockwise me-1"></i>${t('retranslate')}
+                        </button>
+                    </div>
                     <iframe id="mail-translation-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`;
                 const frame = document.getElementById('mail-translation-frame');
                 const translated = data.format === 'html'
