@@ -416,6 +416,336 @@ def _translation_text_content(html_content: str, text_content: str, subject: str
     return body.strip()
 
 
+def _html_text_needs_translation(value: str) -> bool:
+    value = (value or "").strip()
+    if not value:
+        return False
+    if re.fullmatch(r"[\W\d_]+", value, flags=re.UNICODE):
+        return False
+    if re.fullmatch(r"https?://\S+|mailto:\S+|[\w.+-]+@[\w.-]+\.\w+", value, flags=re.IGNORECASE):
+        return False
+    return any(ch.isalpha() for ch in value)
+
+
+def _split_translation_chunks(value: str, max_chars: int = 1800) -> list[str]:
+    text = value or ""
+    if len(text) <= max_chars:
+        return [text] if text else []
+    chunks: list[str] = []
+    current = ""
+    parts = re.split(r"(?<=[。！？.!?；;])(\s+)", text)
+    merged_parts = []
+    for index in range(0, len(parts), 2):
+        piece = parts[index]
+        if index + 1 < len(parts):
+            piece += parts[index + 1]
+        if piece:
+            merged_parts.append(piece)
+    if not merged_parts:
+        merged_parts = [text]
+    for piece in merged_parts:
+        if len(piece) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            for start in range(0, len(piece), max_chars):
+                chunks.append(piece[start:start + max_chars])
+            continue
+        if current and len(current) + len(piece) > max_chars:
+            chunks.append(current)
+            current = piece
+        else:
+            current += piece
+    if current:
+        chunks.append(current)
+    return [chunk for chunk in chunks if chunk]
+
+
+def _translate_text_with_chunks(value: str, translate_text) -> str:
+    chunks = _split_translation_chunks(value)
+    if not chunks:
+        return ""
+    if len(chunks) == 1:
+        return translate_text(chunks[0])
+    translated = [translate_text(chunk) for chunk in chunks]
+    separator = "\n" if "\n" in value else " "
+    return separator.join(part.strip() for part in translated if part.strip()).strip()
+
+
+class _HtmlTextNodeMasker(HTMLParser):
+    SKIP_TAGS = {"script", "style", "noscript", "svg", "canvas", "iframe"}
+    VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.nodes: list[dict] = []
+        self.skip_depth = 0
+
+    def _is_hidden_start(self, raw: str) -> bool:
+        raw_lower = (raw or "").lower()
+        if re.search(r"\shidden(?:[\s=>/]|$)", raw_lower):
+            return True
+        style_match = re.search(r"\bstyle\s*=\s*(['\"])(.*?)\1", raw, flags=re.IGNORECASE | re.DOTALL)
+        if not style_match:
+            return False
+        style = re.sub(r"\s+", "", html_lib.unescape(style_match.group(2)).lower())
+        return "display:none" in style or "visibility:hidden" in style
+
+    def _append_raw_start(self, tag: str, is_void: bool = False) -> None:
+        raw = self.get_starttag_text() or f"<{tag}>"
+        self.parts.append(raw)
+        if self.skip_depth and not is_void:
+            self.skip_depth += 1
+            return
+        if tag in self.SKIP_TAGS or self._is_hidden_start(raw):
+            if not is_void:
+                self.skip_depth = 1
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        tag = tag.lower()
+        self._append_raw_start(tag, tag in self.VOID_TAGS)
+
+    def handle_startendtag(self, tag: str, attrs) -> None:
+        raw = self.get_starttag_text() or f"<{tag}/>"
+        self.parts.append(raw)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        self.parts.append(f"</{tag}>")
+        if self.skip_depth:
+            self.skip_depth = max(0, self.skip_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            self.parts.append(html_lib.escape(data, quote=False))
+            return
+        if not data or not data.strip():
+            self.parts.append(data or "")
+            return
+        leading = re.match(r"^\s*", data).group(0)
+        trailing = re.search(r"\s*$", data).group(0)
+        core = data[len(leading):len(data) - len(trailing) if trailing else len(data)]
+        if not _html_text_needs_translation(core):
+            self.parts.append(html_lib.escape(data, quote=False))
+            return
+        token = f"\ue000{len(self.nodes)}\ue001"
+        self.nodes.append({"token": token, "text": core})
+        self.parts.append(f"{leading}{token}{trailing}")
+
+    def handle_comment(self, data: str) -> None:
+        return
+
+    def masked_html(self) -> str:
+        return "".join(self.parts)
+
+
+class _HtmlSemanticBlockMasker(HTMLParser):
+    BLOCK_TAGS = {
+        "p", "li", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
+        "blockquote", "caption", "dt", "dd", "pre", "a", "button",
+    }
+    CONTAINER_TAGS = {"div", "section", "article", "header", "footer", "center"}
+    SKIP_TAGS = _HtmlTextNodeMasker.SKIP_TAGS
+    VOID_TAGS = _HtmlTextNodeMasker.VOID_TAGS
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.blocks: list[dict] = []
+        self.skip_depth = 0
+        self.stack: list[dict] = []
+
+    def _is_hidden_start(self, raw: str) -> bool:
+        return _HtmlTextNodeMasker()._is_hidden_start(raw)
+
+    def _append(self, value: str) -> None:
+        if self.stack:
+            self.stack[-1]["parts"].append(value)
+        else:
+            self.parts.append(value)
+
+    def _start_block(self, tag: str, raw: str, attrs) -> None:
+        self.stack.append({
+            "tag": tag,
+            "parts": [raw],
+            "text": [],
+            "link_href": dict((str(k).lower(), str(v or "")) for k, v in attrs).get("href", ""),
+        })
+
+    def _finish_block(self, tag: str) -> bool:
+        if not self.stack or self.stack[-1]["tag"] != tag:
+            return False
+        block = self.stack.pop()
+        block["parts"].append(f"</{tag}>")
+        html = "".join(block["parts"])
+        text = _normalize_translation_source_text(" ".join(block["text"]))
+        if _html_text_needs_translation(text):
+            token = f"\ue100{len(self.blocks)}\ue101"
+            self.blocks.append({"token": token, "html": html, "text": text, "tag": tag, "href": block.get("link_href", "")})
+            self._append(token)
+        else:
+            self._append(html)
+        return True
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        tag = tag.lower()
+        raw = self.get_starttag_text() or f"<{tag}>"
+        is_void = tag in self.VOID_TAGS
+        if self.skip_depth:
+            self._append(raw)
+            if not is_void:
+                self.skip_depth += 1
+            return
+        if tag in self.SKIP_TAGS or self._is_hidden_start(raw):
+            self._append(raw)
+            if not is_void:
+                self.skip_depth = 1
+            return
+        if self.stack:
+            self.stack[-1]["parts"].append(raw)
+            return
+        if tag in self.BLOCK_TAGS:
+            self._start_block(tag, raw, attrs)
+            return
+        self.parts.append(raw)
+
+    def handle_startendtag(self, tag: str, attrs) -> None:
+        raw = self.get_starttag_text() or f"<{tag}/>"
+        self._append(raw)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self.skip_depth:
+            self._append(f"</{tag}>")
+            self.skip_depth = max(0, self.skip_depth - 1)
+            return
+        if self._finish_block(tag):
+            return
+        self._append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            self._append(html_lib.escape(data, quote=False))
+            return
+        if self.stack:
+            self.stack[-1]["parts"].append(html_lib.escape(data, quote=False))
+            if _html_text_needs_translation(data):
+                self.stack[-1]["text"].append(data)
+            return
+        self._append(html_lib.escape(data, quote=False))
+
+    def handle_comment(self, data: str) -> None:
+        return
+
+    def masked_html(self) -> str:
+        while self.stack:
+            block = self.stack.pop(0)
+            self.parts.extend(block.get("parts", []))
+        return "".join(self.parts)
+
+
+def _mask_html_text_nodes(html: str) -> tuple[str, list[dict]]:
+    sanitized = _sanitize_email_html(html)
+    if not sanitized:
+        return "", []
+    parser = _HtmlTextNodeMasker()
+    try:
+        parser.feed(sanitized)
+        parser.close()
+    except Exception:
+        app.logger.warning("HTML 文本节点提取失败，退回纯文本翻译", exc_info=True)
+        return "", []
+    return parser.masked_html(), parser.nodes
+
+
+def _mask_html_semantic_blocks(html: str) -> tuple[str, list[dict]]:
+    sanitized = _sanitize_email_html(html)
+    if not sanitized:
+        return "", []
+    parser = _HtmlSemanticBlockMasker()
+    try:
+        parser.feed(sanitized)
+        parser.close()
+    except Exception:
+        app.logger.warning("HTML 语义块提取失败，退回文字节点翻译", exc_info=True)
+        return "", []
+    return parser.masked_html(), parser.blocks
+
+
+def _block_translation_to_html(block: dict, translated: str) -> str:
+    tag = block.get("tag", "")
+    text = html_lib.escape((translated or "").strip(), quote=False)
+    if not text:
+        return block.get("html", "")
+    if tag == "a":
+        href = html_lib.escape(block.get("href", ""), quote=True)
+        return f'<a href="{href}" target="_blank" rel="noopener noreferrer">{text}</a>' if href else f"<a>{text}</a>"
+    if tag == "pre":
+        return f"<pre>{text}</pre>"
+    return f"<{tag}>{text}</{tag}>" if tag else text
+
+
+def _translate_html_semantic_blocks(html: str, translate_text, provider: str) -> tuple[str, int, int]:
+    masked_html, blocks = _mask_html_semantic_blocks(html)
+    if not masked_html or not blocks:
+        return "", 0, 0
+    translated_cache: dict[str, str] = {}
+    replacements = {}
+    started_at = time.time()
+    for block in blocks:
+        source = block["text"]
+        if source not in translated_cache:
+            translated_cache[source] = _translate_text_with_chunks(source, translate_text)
+        replacements[block["token"]] = _block_translation_to_html(block, translated_cache[source])
+    translated_html = masked_html
+    for token, translated in replacements.items():
+        translated_html = translated_html.replace(token, translated)
+    missing = [token for token in replacements if token in translated_html]
+    if missing:
+        raise RuntimeError(f"HTML 语义块回填失败，仍有 {len(missing)} 个本地占位未替换")
+    output = _prepare_html_for_render(translated_html)
+    app.logger.info(
+        "HTML 语义块翻译完成: provider=%s blocks=%s unique_blocks=%s output_chars=%s elapsed_ms=%s",
+        provider,
+        len(blocks),
+        len(translated_cache),
+        len(output),
+        int((time.time() - started_at) * 1000),
+    )
+    return output, len(blocks), sum(len(block.get("text", "")) for block in blocks)
+
+
+def _translate_html_text_nodes(html: str, translate_text, provider: str) -> tuple[str, int, int]:
+    masked_html, nodes = _mask_html_text_nodes(html)
+    if not masked_html or not nodes:
+        return "", 0, 0
+    translated_cache: dict[str, str] = {}
+    replacements = {}
+    started_at = time.time()
+    for node in nodes:
+        source = node["text"]
+        if source not in translated_cache:
+            translated_cache[source] = _translate_text_with_chunks(source, translate_text)
+        replacements[node["token"]] = html_lib.escape(translated_cache[source], quote=False)
+    translated_html = masked_html
+    for token, translated in replacements.items():
+        translated_html = translated_html.replace(token, translated)
+    missing = [token for token in replacements if token in translated_html]
+    if missing:
+        raise RuntimeError(f"HTML 翻译回填失败，仍有 {len(missing)} 个本地占位未替换")
+    output = _prepare_html_for_render(translated_html)
+    app.logger.info(
+        "HTML 保壳翻译完成: provider=%s nodes=%s unique_nodes=%s output_chars=%s elapsed_ms=%s",
+        provider,
+        len(nodes),
+        len(translated_cache),
+        len(output),
+        int((time.time() - started_at) * 1000),
+    )
+    return output, len(nodes), sum(len(node.get("text", "")) for node in nodes)
+
+
 def _call_baidu_translate(text: str, settings: dict) -> str:
     baidu = settings.get("baidu", {}) if isinstance(settings.get("baidu"), dict) else {}
     appid = (baidu.get("appid") or "").strip()
@@ -953,8 +1283,23 @@ def _call_configured_translation_engine(
     settings: dict,
 ) -> tuple[str, dict]:
     if provider == "baidu":
+        if html_content:
+            def translator(text: str) -> str:
+                return _call_baidu_translate(text, settings)
+            translated_html, node_count, input_chars = _translate_html_semantic_blocks(html_content, translator, "baidu")
+            if not translated_html:
+                translated_html, node_count, input_chars = _translate_html_text_nodes(html_content, translator, "baidu")
+            if translated_html:
+                return translated_html, {
+                    "engine": "baidu",
+                    "provider": "baidu",
+                    "model": "baidu-general",
+                    "format": "html",
+                    "input_chars": input_chars,
+                    "nodes": node_count,
+                }
         text = _translation_text_content(html_content, text_content, subject)
-        translated = _call_baidu_translate(text, settings)
+        translated = _translate_text_with_chunks(text, lambda chunk: _call_baidu_translate(chunk, settings))
         return translated, {
             "engine": "baidu",
             "provider": "baidu",
@@ -963,8 +1308,23 @@ def _call_configured_translation_engine(
             "input_chars": len(text),
         }
     if provider == "tencent":
+        if html_content:
+            def translator(text: str) -> str:
+                return _call_tencent_translate(text, settings)
+            translated_html, node_count, input_chars = _translate_html_semantic_blocks(html_content, translator, "tencent")
+            if not translated_html:
+                translated_html, node_count, input_chars = _translate_html_text_nodes(html_content, translator, "tencent")
+            if translated_html:
+                return translated_html, {
+                    "engine": "tencent",
+                    "provider": "tencent",
+                    "model": "TextTranslate",
+                    "format": "html",
+                    "input_chars": input_chars,
+                    "nodes": node_count,
+                }
         text = _translation_text_content(html_content, text_content, subject)
-        translated = _call_tencent_translate(text, settings)
+        translated = _translate_text_with_chunks(text, lambda chunk: _call_tencent_translate(chunk, settings))
         return translated, {
             "engine": "tencent",
             "provider": "tencent",
