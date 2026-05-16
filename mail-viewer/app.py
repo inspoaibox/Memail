@@ -70,6 +70,7 @@ MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 10
 IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS", "3"))
 IMAGE_PROXY_READ_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_READ_TIMEOUT_SECONDS", "8"))
 AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "45"))
+TRANSLATION_SERVICE_TIMEOUT_SECONDS = int(os.getenv("TRANSLATION_SERVICE_TIMEOUT_SECONDS", "12"))
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
     "colgroup", "div", "em", "font",
@@ -276,6 +277,78 @@ def _write_ai_settings(ai: dict):
     _write_viewer_settings(settings)
 
 
+def _safe_translation_settings(translation: dict) -> dict:
+    baidu = translation.get("baidu", {}) if isinstance(translation.get("baidu"), dict) else {}
+    tencent = translation.get("tencent", {}) if isinstance(translation.get("tencent"), dict) else {}
+    return {
+        "default_provider": translation.get("default_provider", "ai"),
+        "fallback_to_ai": bool(translation.get("fallback_to_ai", True)),
+        "baidu": {
+            "appid": baidu.get("appid", ""),
+            "secret_configured": bool(_decrypt_setting(baidu.get("secret"))),
+        },
+        "tencent": {
+            "secret_id": tencent.get("secret_id", ""),
+            "secret_key_configured": bool(_decrypt_setting(tencent.get("secret_key"))),
+            "region": tencent.get("region", "ap-guangzhou"),
+        },
+    }
+
+
+def _get_translation_settings() -> dict:
+    settings = _read_viewer_settings()
+    translation = settings.get("translation", {})
+    if not isinstance(translation, dict):
+        translation = {}
+    default_provider = (translation.get("default_provider") or "ai").strip().lower()
+    if default_provider not in {"ai", "baidu", "tencent"}:
+        default_provider = "ai"
+    baidu = translation.get("baidu", {}) if isinstance(translation.get("baidu"), dict) else {}
+    tencent = translation.get("tencent", {}) if isinstance(translation.get("tencent"), dict) else {}
+    translation["default_provider"] = default_provider
+    translation["fallback_to_ai"] = bool(translation.get("fallback_to_ai", True))
+    translation["baidu"] = baidu
+    translation["tencent"] = {
+        **tencent,
+        "region": (tencent.get("region") or "ap-guangzhou").strip() or "ap-guangzhou",
+    }
+    return translation
+
+
+def _write_translation_settings(data: dict) -> dict:
+    settings = _read_viewer_settings()
+    current = settings.get("translation", {}) if isinstance(settings.get("translation"), dict) else {}
+    default_provider = (data.get("default_provider") or current.get("default_provider") or "ai").strip().lower()
+    if default_provider not in {"ai", "baidu", "tencent"}:
+        raise ValueError("请选择有效翻译渠道")
+    current["default_provider"] = default_provider
+    current["fallback_to_ai"] = bool(data.get("fallback_to_ai", current.get("fallback_to_ai", True)))
+
+    baidu = current.get("baidu", {}) if isinstance(current.get("baidu"), dict) else {}
+    if "baidu_appid" in data:
+        baidu["appid"] = (data.get("baidu_appid") or "").strip()
+    if data.get("clear_baidu_secret"):
+        baidu.pop("secret", None)
+    elif data.get("baidu_secret"):
+        baidu["secret"] = _encrypt_setting((data.get("baidu_secret") or "").strip())
+    current["baidu"] = baidu
+
+    tencent = current.get("tencent", {}) if isinstance(current.get("tencent"), dict) else {}
+    if "tencent_secret_id" in data:
+        tencent["secret_id"] = (data.get("tencent_secret_id") or "").strip()
+    if "tencent_region" in data:
+        tencent["region"] = (data.get("tencent_region") or "ap-guangzhou").strip() or "ap-guangzhou"
+    if data.get("clear_tencent_secret_key"):
+        tencent.pop("secret_key", None)
+    elif data.get("tencent_secret_key"):
+        tencent["secret_key"] = _encrypt_setting((data.get("tencent_secret_key") or "").strip())
+    current["tencent"] = tencent
+
+    settings["translation"] = current
+    _write_viewer_settings(settings)
+    return current
+
+
 def _list_openai_models(base_url: str, api_key: str) -> list[str]:
     resp = http_session.get(
         f"{base_url.rstrip('/')}/models",
@@ -331,6 +404,139 @@ def _extract_plain_text(value: str) -> str:
     value = re.sub(r"[ \t\r\f\v]+", " ", value)
     value = re.sub(r"\n\s*\n+", "\n\n", value)
     return value.strip()
+
+
+def _translation_text_content(html_content: str, text_content: str, subject: str) -> str:
+    if html_content:
+        body = _extract_visible_text_from_html(html_content)
+    else:
+        body = _normalize_translation_source_text(text_content)
+    if subject:
+        body = f"邮件主题：{subject}\n\n{body}"
+    return body.strip()
+
+
+def _call_baidu_translate(text: str, settings: dict) -> str:
+    baidu = settings.get("baidu", {}) if isinstance(settings.get("baidu"), dict) else {}
+    appid = (baidu.get("appid") or "").strip()
+    secret = _decrypt_setting(baidu.get("secret"))
+    if not appid or not secret:
+        raise RuntimeError("百度翻译未配置 APPID 或密钥")
+    salt = str(int(time.time() * 1000)) + secrets.token_hex(4)
+    sign = hashlib.md5(f"{appid}{text}{salt}{secret}".encode("utf-8")).hexdigest()
+    started_at = time.time()
+    resp = fast_http_session.post(
+        "https://fanyi-api.baidu.com/api/trans/vip/translate",
+        data={
+            "q": text,
+            "from": "auto",
+            "to": "zh",
+            "appid": appid,
+            "salt": salt,
+            "sign": sign,
+        },
+        timeout=TRANSLATION_SERVICE_TIMEOUT_SECONDS,
+    )
+    app.logger.info(
+        "百度翻译响应: status=%s input_chars=%s elapsed_ms=%s",
+        resp.status_code,
+        len(text),
+        int((time.time() - started_at) * 1000),
+    )
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise RuntimeError(f"百度翻译返回非 JSON: {_translation_preview(resp.text, 300)}") from exc
+    if resp.status_code >= 400 or payload.get("error_code"):
+        raise RuntimeError(payload.get("error_msg") or payload.get("error_code") or f"百度翻译 HTTP {resp.status_code}")
+    items = payload.get("trans_result") or []
+    translated = "\n".join(str(item.get("dst") or "") for item in items if isinstance(item, dict)).strip()
+    if not translated:
+        raise RuntimeError("百度翻译返回空内容")
+    return translated
+
+
+def _tencent_hmac_sha256(key: bytes, msg: str) -> bytes:
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def _call_tencent_translate(text: str, settings: dict) -> str:
+    tencent = settings.get("tencent", {}) if isinstance(settings.get("tencent"), dict) else {}
+    secret_id = (tencent.get("secret_id") or "").strip()
+    secret_key = _decrypt_setting(tencent.get("secret_key"))
+    region = (tencent.get("region") or "ap-guangzhou").strip() or "ap-guangzhou"
+    if not secret_id or not secret_key:
+        raise RuntimeError("腾讯翻译未配置 SecretId 或 SecretKey")
+    service = "tmt"
+    host = "tmt.tencentcloudapi.com"
+    action = "TextTranslate"
+    version = "2018-03-21"
+    timestamp = int(time.time())
+    date = datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d")
+    payload = json.dumps({
+        "SourceText": text,
+        "Source": "auto",
+        "Target": "zh",
+        "ProjectId": 0,
+    }, ensure_ascii=False, separators=(",", ":"))
+    canonical_request = "\n".join([
+        "POST",
+        "/",
+        "",
+        f"content-type:application/json; charset=utf-8\nhost:{host}\n",
+        "content-type;host",
+        hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+    ])
+    credential_scope = f"{date}/{service}/tc3_request"
+    string_to_sign = "\n".join([
+        "TC3-HMAC-SHA256",
+        str(timestamp),
+        credential_scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    secret_date = _tencent_hmac_sha256(("TC3" + secret_key).encode("utf-8"), date)
+    secret_service = _tencent_hmac_sha256(secret_date, service)
+    secret_signing = _tencent_hmac_sha256(secret_service, "tc3_request")
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    authorization = (
+        "TC3-HMAC-SHA256 "
+        f"Credential={secret_id}/{credential_scope}, "
+        "SignedHeaders=content-type;host, "
+        f"Signature={signature}"
+    )
+    started_at = time.time()
+    resp = fast_http_session.post(
+        f"https://{host}",
+        data=payload.encode("utf-8"),
+        headers={
+            "Authorization": authorization,
+            "Content-Type": "application/json; charset=utf-8",
+            "Host": host,
+            "X-TC-Action": action,
+            "X-TC-Timestamp": str(timestamp),
+            "X-TC-Version": version,
+            "X-TC-Region": region,
+        },
+        timeout=TRANSLATION_SERVICE_TIMEOUT_SECONDS,
+    )
+    app.logger.info(
+        "腾讯翻译响应: status=%s input_chars=%s elapsed_ms=%s",
+        resp.status_code,
+        len(text),
+        int((time.time() - started_at) * 1000),
+    )
+    try:
+        payload_data = resp.json()
+    except ValueError as exc:
+        raise RuntimeError(f"腾讯翻译返回非 JSON: {_translation_preview(resp.text, 300)}") from exc
+    response = payload_data.get("Response", {}) if isinstance(payload_data, dict) else {}
+    if resp.status_code >= 400 or response.get("Error"):
+        error = response.get("Error") or {}
+        raise RuntimeError(error.get("Message") or error.get("Code") or f"腾讯翻译 HTTP {resp.status_code}")
+    translated = (response.get("TargetText") or "").strip()
+    if not translated:
+        raise RuntimeError("腾讯翻译返回空内容")
+    return translated
 
 
 class _MailVisibleTextParser(HTMLParser):
@@ -479,6 +685,128 @@ def _normalize_ai_translation(value: str, wants_html: bool) -> str:
     return value
 
 
+def _read_openai_chat_stream(resp: requests.Response, base_url: str, model: str, wants_html: bool, input_chars: int, started_at: float) -> str:
+    chunks: list[str] = []
+    first_delta_ms: int | None = None
+    event_count = 0
+    for raw_line in resp.iter_lines(decode_unicode=True):
+        if not raw_line:
+            continue
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        event_count += 1
+        try:
+            payload = json.loads(data)
+        except ValueError:
+            app.logger.warning("AI 流式响应非 JSON 行: %s", _translation_preview(data, 240))
+            continue
+        choices = payload.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        content = delta.get("content")
+        if content:
+            if first_delta_ms is None:
+                first_delta_ms = int((time.time() - started_at) * 1000)
+                app.logger.info(
+                    "AI 流式首包(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s first_delta_ms=%s",
+                    base_url,
+                    model,
+                    wants_html,
+                    input_chars,
+                    first_delta_ms,
+                )
+            chunks.append(content)
+    output = "".join(chunks).strip()
+    app.logger.info(
+        "AI 流式完成(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s output_chars=%s events=%s first_delta_ms=%s elapsed_ms=%s",
+        base_url,
+        model,
+        wants_html,
+        input_chars,
+        len(output),
+        event_count,
+        first_delta_ms,
+        int((time.time() - started_at) * 1000),
+    )
+    return output
+
+
+def _read_openai_chat_json_response(resp: requests.Response) -> str:
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        snippet = re.sub(r"\s+", " ", (resp.text or "").replace("\r", " ").replace("\n", " ")).strip()[:500]
+        raise RuntimeError(f"AI 服务返回了非 JSON 内容: {snippet}") from exc
+    return (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+
+def _openai_chat_payload(system_prompt: str, content: str, model: str, stream: bool) -> dict:
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content},
+        ],
+        "temperature": 0,
+        "stream": stream,
+    }
+
+
+def _response_mentions_unsupported_stream(resp: requests.Response) -> bool:
+    try:
+        body = resp.text or ""
+    except Exception:
+        body = ""
+    value = body.lower()
+    return resp.status_code in {400, 404, 422} and "stream" in value and any(
+        marker in value
+        for marker in ("not support", "unsupported", "not implemented", "invalid", "不能", "不支持")
+    )
+
+
+def _call_openai_chat_blocking(
+    base_url: str,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    content: str,
+    wants_html: bool,
+    input_chars: int,
+) -> str:
+    started_at = time.time()
+    app.logger.info(
+        "AI 非流式请求发送(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s timeout=%s",
+        base_url,
+        model,
+        wants_html,
+        input_chars,
+        AI_TRANSLATION_TIMEOUT_SECONDS,
+    )
+    resp = fast_http_session.post(
+        f"{base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=_openai_chat_payload(system_prompt, content, model, stream=False),
+        timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
+    )
+    app.logger.info(
+        "AI 非流式响应完成(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s status=%s elapsed_ms=%s",
+        base_url,
+        model,
+        wants_html,
+        input_chars,
+        resp.status_code,
+        int((time.time() - started_at) * 1000),
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
+    return _read_openai_chat_json_response(resp)
+
+
 def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
     base_url = channel.get("base_url", "").rstrip("/")
     if not base_url:
@@ -492,36 +820,51 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wan
         "保留段落、列表、金额、日期、订单号、邮箱、链接文本、品牌名和专有名词；不要解释，只输出译文。"
     )
     request_started_at = time.time()
-    resp = fast_http_session.post(
-        f"{base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content},
-            ],
-            "temperature": 0,
-        },
-        timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
-    )
+    input_chars = len(content or "")
     app.logger.info(
-        "AI 请求完成(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s status=%s elapsed_ms=%s",
+        "AI 请求发送(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s stream=true timeout=%s",
         base_url,
         model,
         wants_html,
-        len(content or ""),
-        resp.status_code,
-        int((time.time() - request_started_at) * 1000),
+        input_chars,
+        AI_TRANSLATION_TIMEOUT_SECONDS,
     )
-    if resp.status_code >= 400:
-        raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
-    try:
-        payload = resp.json()
-    except ValueError as exc:
-        snippet = re.sub(r"\s+", " ", (resp.text or "").replace("\r", " ").replace("\n", " ")).strip()[:500]
-        raise RuntimeError(f"AI 服务返回了非 JSON 内容: {snippet}") from exc
-    return (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    with fast_http_session.post(
+        f"{base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=_openai_chat_payload(system_prompt, content, model, stream=True),
+        timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
+        stream=True,
+    ) as resp:
+        app.logger.info(
+            "AI 响应已建立(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s status=%s elapsed_ms=%s",
+            base_url,
+            model,
+            wants_html,
+            input_chars,
+            resp.status_code,
+            int((time.time() - request_started_at) * 1000),
+        )
+        if resp.status_code >= 400:
+            if _response_mentions_unsupported_stream(resp):
+                app.logger.info(
+                    "AI 渠道不支持流式，自动切换非流式(openai_compatible/openai): base_url=%s model=%s status=%s",
+                    base_url,
+                    model,
+                    resp.status_code,
+                )
+                return _call_openai_chat_blocking(base_url, api_key, model, system_prompt, content, wants_html, input_chars)
+            raise RuntimeError(_response_error(resp, f"翻译失败 HTTP {resp.status_code}"))
+        content_type = (resp.headers.get("Content-Type") or "").lower()
+        if "text/event-stream" not in content_type:
+            app.logger.info(
+                "AI 响应不是 SSE，按普通 JSON 解析(openai_compatible/openai): base_url=%s model=%s content_type=%s",
+                base_url,
+                model,
+                content_type,
+            )
+            return _read_openai_chat_json_response(resp)
+        return _read_openai_chat_stream(resp, base_url, model, wants_html, input_chars, request_started_at)
 
 
 def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
@@ -570,6 +913,74 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_ht
     candidates = payload.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
     return "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
+
+
+def _call_ai_translation_engine(content: str, wants_html: bool) -> tuple[str, dict]:
+    ai = _get_ai_settings()
+    default_model = ai.get("default_model", {})
+    channel = next((item for item in ai.get("channels", []) if item.get("id") == default_model.get("channel_id")), None)
+    model = default_model.get("model", "")
+    if not channel or not model:
+        raise RuntimeError("请先在 AI 设置中配置默认模型")
+    api_key = _decrypt_setting(channel.get("api_key"))
+    if not api_key:
+        raise RuntimeError("默认渠道 API Key 不可用，请重新新增渠道")
+    app.logger.info(
+        "邮件翻译准备请求: engine=ai provider=%s model=%s base_url=%s wants_html=%s input_chars=%s",
+        channel.get("provider"),
+        model,
+        channel.get("base_url", ""),
+        wants_html,
+        len(content),
+    )
+    if channel.get("provider") == "gemini":
+        translated = _call_gemini(channel, api_key, model, content, wants_html)
+    else:
+        translated = _call_openai_chat(channel, api_key, model, content, wants_html)
+    return translated, {
+        "engine": "ai",
+        "provider": channel.get("provider", ""),
+        "model": model,
+        "format": "html" if wants_html else "text",
+    }
+
+
+def _call_configured_translation_engine(
+    provider: str,
+    html_content: str,
+    text_content: str,
+    subject: str,
+    settings: dict,
+) -> tuple[str, dict]:
+    if provider == "baidu":
+        text = _translation_text_content(html_content, text_content, subject)
+        translated = _call_baidu_translate(text, settings)
+        return translated, {
+            "engine": "baidu",
+            "provider": "baidu",
+            "model": "baidu-general",
+            "format": "text",
+            "input_chars": len(text),
+        }
+    if provider == "tencent":
+        text = _translation_text_content(html_content, text_content, subject)
+        translated = _call_tencent_translate(text, settings)
+        return translated, {
+            "engine": "tencent",
+            "provider": "tencent",
+            "model": "TextTranslate",
+            "format": "text",
+            "input_chars": len(text),
+        }
+    wants_html = bool(html_content)
+    content = _strip_layout_html_for_translation(html_content) if html_content else _normalize_translation_source_text(text_content)
+    if subject:
+        content = f"邮件主题：{subject}\n\n{content}"
+    if not content.strip():
+        raise RuntimeError("没有可翻译的邮件内容")
+    translated, meta = _call_ai_translation_engine(content, wants_html)
+    meta["input_chars"] = len(content)
+    return _normalize_ai_translation(translated, wants_html), meta
 
 
 def _normalize_mailbox_address(address: str) -> str:
@@ -1220,6 +1631,23 @@ def _public_ai_settings_for_portable() -> dict:
     }
 
 
+def _public_translation_settings_for_portable() -> dict:
+    settings = _safe_translation_settings(_get_translation_settings())
+    return {
+        "defaultProvider": settings.get("default_provider", "ai"),
+        "fallbackToAi": bool(settings.get("fallback_to_ai", True)),
+        "baidu": {
+            "appid": (settings.get("baidu") or {}).get("appid", ""),
+            "secretConfigured": bool((settings.get("baidu") or {}).get("secret_configured")),
+        },
+        "tencent": {
+            "secretId": (settings.get("tencent") or {}).get("secret_id", ""),
+            "secretKeyConfigured": bool((settings.get("tencent") or {}).get("secret_key_configured")),
+            "region": (settings.get("tencent") or {}).get("region", "ap-guangzhou"),
+        },
+    }
+
+
 def _normalize_portable_ai_settings(value: dict) -> dict:
     if not isinstance(value, dict):
         return {"channels": [], "default_model": {}}
@@ -1250,6 +1678,26 @@ def _normalize_portable_ai_settings(value: dict) -> dict:
     else:
         default_model = {}
     return {"channels": channels, "default_model": default_model}
+
+
+def _normalize_portable_translation_settings(value: dict) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    default_provider = (value.get("default_provider") or value.get("defaultProvider") or "").strip().lower()
+    result = {}
+    if default_provider in {"ai", "baidu", "tencent"}:
+        result["default_provider"] = default_provider
+    if "fallback_to_ai" in value or "fallbackToAi" in value:
+        result["fallback_to_ai"] = bool(value.get("fallback_to_ai", value.get("fallbackToAi")))
+    baidu = value.get("baidu") if isinstance(value.get("baidu"), dict) else {}
+    if baidu.get("appid"):
+        result["baidu_appid"] = str(baidu.get("appid")).strip()
+    tencent = value.get("tencent") if isinstance(value.get("tencent"), dict) else {}
+    if tencent.get("secretId") or tencent.get("secret_id"):
+        result["tencent_secret_id"] = str(tencent.get("secretId") or tencent.get("secret_id")).strip()
+    if tencent.get("region"):
+        result["tencent_region"] = str(tencent.get("region")).strip()
+    return result
 
 
 def _portable_message_key(item: dict) -> str:
@@ -2317,6 +2765,23 @@ def save_ai_default_model():
     return jsonify({"success": True, "default_model": ai["default_model"]})
 
 
+@app.route("/api/translation/settings", methods=["GET"])
+@login_required
+def get_translation_settings():
+    return jsonify({"success": True, "settings": _safe_translation_settings(_get_translation_settings())})
+
+
+@app.route("/api/translation/settings", methods=["POST"])
+@login_required
+def save_translation_settings():
+    data = request.get_json(silent=True) or {}
+    try:
+        translation = _write_translation_settings(data)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    return jsonify({"success": True, "settings": _safe_translation_settings(translation)})
+
+
 @app.route("/api/ai/translate", methods=["POST"])
 @login_required
 def translate_mail_to_chinese():
@@ -2328,61 +2793,50 @@ def translate_mail_to_chinese():
         subject_raw = (data.get("subject", "") or "").strip()
         html_detected = bool(html_content)
         subject = _extract_plain_text(subject_raw)
-        wants_html = bool(html_content)
-        if html_content:
-            content = _strip_layout_html_for_translation(html_content)
-        else:
-            content = _normalize_translation_source_text(text_content)
-        if subject:
-            prefix = f"邮件主题：{subject}\n\n"
-            content = prefix + content
         app.logger.info(
-            "邮件翻译开始: subject=%s html_detected=%s html_chars=%s text_chars=%s wants_html=%s input_chars=%s preview=%s",
+            "邮件翻译开始: subject=%s html_detected=%s html_chars=%s text_chars=%s",
             subject[:120],
             html_detected,
             len(html_content),
             len(text_content),
-            wants_html,
-            len(content),
-            _translation_preview(content),
         )
-        if not content.strip():
+        if not html_content and not text_content and not subject:
             return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
 
-        ai = _get_ai_settings()
-        default_model = ai.get("default_model", {})
-        channel = next((item for item in ai.get("channels", []) if item.get("id") == default_model.get("channel_id")), None)
-        model = default_model.get("model", "")
-        if not channel or not model:
-            return jsonify({"success": False, "message": "请先在 AI 设置中配置默认模型"}), 400
-        api_key = _decrypt_setting(channel.get("api_key"))
-        if not api_key:
-            return jsonify({"success": False, "message": "默认渠道 API Key 不可用，请重新新增渠道"}), 400
-
-        app.logger.info(
-            "邮件翻译准备请求: provider=%s model=%s base_url=%s wants_html=%s input_chars=%s",
-            channel.get("provider"),
-            model,
-            channel.get("base_url", ""),
-            wants_html,
-            len(content),
-        )
-        if channel.get("provider") == "gemini":
-            translated = _call_gemini(channel, api_key, model, content, wants_html)
-        else:
-            translated = _call_openai_chat(channel, api_key, model, content, wants_html)
+        translation_settings = _get_translation_settings()
+        provider = translation_settings.get("default_provider", "ai")
+        fallback_to_ai = bool(translation_settings.get("fallback_to_ai", True))
+        try:
+            translated, meta = _call_configured_translation_engine(provider, html_content, text_content, subject, translation_settings)
+        except Exception as primary_error:
+            if provider != "ai" and fallback_to_ai:
+                app.logger.warning(
+                    "专用翻译失败，切换 AI 兜底: provider=%s error=%s",
+                    provider,
+                    primary_error,
+                    exc_info=True,
+                )
+                ai_content = _strip_layout_html_for_translation(html_content) if html_content else _normalize_translation_source_text(text_content)
+                if subject:
+                    ai_content = f"邮件主题：{subject}\n\n{ai_content}"
+                translated, meta = _call_ai_translation_engine(ai_content, bool(html_content))
+                translated = _normalize_ai_translation(translated, bool(html_content))
+                meta["fallback_from"] = provider
+                meta["input_chars"] = len(ai_content)
+            else:
+                raise
     except (requests.Timeout, requests.ConnectionError) as e:
         app.logger.warning(
-            "邮件翻译网络超时/连接失败: provider=%s model=%s chars=%s timeout=%s error=%s",
-            channel.get("provider") if "channel" in locals() and isinstance(channel, dict) else "",
-            model if "model" in locals() else "",
-            len(content) if "content" in locals() else 0,
+            "邮件翻译网络超时/连接失败: provider=%s chars=%s ai_timeout=%s translation_timeout=%s error=%s",
+            provider if "provider" in locals() else "",
+            meta.get("input_chars", 0) if "meta" in locals() and isinstance(meta, dict) else 0,
             AI_TRANSLATION_TIMEOUT_SECONDS,
+            TRANSLATION_SERVICE_TIMEOUT_SECONDS,
             e,
         )
         return jsonify({
             "success": False,
-            "message": f"翻译请求超时（{AI_TRANSLATION_TIMEOUT_SECONDS} 秒），请稍后重试或换一个更快的默认模型",
+            "message": "翻译请求超时，请稍后重试或切换翻译渠道",
         }), 504
     except Exception as e:
         elapsed_ms = int((time.time() - started_at) * 1000)
@@ -2393,17 +2847,17 @@ def translate_mail_to_chinese():
             "elapsed_ms": elapsed_ms,
         }), 502
     if not (translated or "").strip():
-        app.logger.warning("邮件翻译失败: 模型返回空内容 provider=%s model=%s input_chars=%s", channel.get("provider"), model, len(content))
-        return jsonify({"success": False, "message": "模型返回空内容，请更换模型或稍后重试"}), 502
-    translated = _normalize_ai_translation(translated, wants_html)
-    response_format = "html" if wants_html else "text"
+        app.logger.warning("邮件翻译失败: 返回空内容 provider=%s input_chars=%s", meta.get("provider", ""), meta.get("input_chars", 0))
+        return jsonify({"success": False, "message": "翻译返回空内容，请更换翻译渠道后重试"}), 502
+    response_format = meta.get("format", "text") if isinstance(meta, dict) else "text"
     elapsed_ms = int((time.time() - started_at) * 1000)
     app.logger.info(
-        "邮件翻译完成: provider=%s model=%s format=%s input_chars=%s output_chars=%s elapsed_ms=%s preview=%s",
-        channel.get("provider"),
-        model,
+        "邮件翻译完成: engine=%s provider=%s model=%s format=%s input_chars=%s output_chars=%s elapsed_ms=%s preview=%s",
+        meta.get("engine", ""),
+        meta.get("provider", ""),
+        meta.get("model", ""),
         response_format,
-        len(content),
+        meta.get("input_chars", 0),
         len(translated),
         elapsed_ms,
         _translation_preview(translated),
@@ -2412,9 +2866,13 @@ def translate_mail_to_chinese():
         "success": True,
         "translation": translated,
         "format": response_format,
+        "engine": meta.get("engine", ""),
+        "provider": meta.get("provider", ""),
+        "model": meta.get("model", ""),
+        "fallback_from": meta.get("fallback_from", ""),
         "elapsed_ms": elapsed_ms,
-        "input_chars": len(content),
-        "original_chars": len(content),
+        "input_chars": meta.get("input_chars", 0),
+        "original_chars": meta.get("input_chars", 0),
         "truncated": False,
     })
 
@@ -3764,6 +4222,7 @@ def portable_export():
         "folders": folders,
         "messages": messages,
         "aiSettings": _public_ai_settings_for_portable(),
+        "translationSettings": _public_translation_settings_for_portable(),
         "keywordRules": [
             _portable_keyword_rule(item)
             for item in _settings_list(settings, "keyword_rules")
@@ -3790,6 +4249,7 @@ def portable_import():
         "messages": 0,
         "keyword_rules": 0,
         "ai_channels": 0,
+        "translation_settings": 0,
     }
     mailboxes = settings.get("mailboxes", []) if isinstance(settings.get("mailboxes"), list) else []
     by_address = {
@@ -3841,6 +4301,14 @@ def portable_import():
 
     ai_settings = _normalize_portable_ai_settings(data.get("aiSettings") or data.get("ai_settings") or {})
     imported["ai_channels"] = _merge_portable_ai_settings(settings, ai_settings)
+
+    translation_settings = _normalize_portable_translation_settings(
+        data.get("translationSettings") or data.get("translation_settings") or {}
+    )
+    if translation_settings:
+        _write_translation_settings(translation_settings)
+        settings = _read_viewer_settings()
+        imported["translation_settings"] = 1
 
     rules = [
         _normalize_keyword_rule(item)

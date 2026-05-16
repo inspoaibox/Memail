@@ -1573,6 +1573,11 @@
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="settings-translation-tab" data-bs-toggle="tab" data-bs-target="#settings-translation-pane" type="button" role="tab">
+                                <i class="bi bi-translate me-1"></i><span data-i18n="translationSettings">翻译设置</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
                             <button class="nav-link" id="settings-keywords-tab" data-bs-toggle="tab" data-bs-target="#settings-keywords-pane" type="button" role="tab">
                                 <i class="bi bi-funnel me-1"></i><span data-i18n="keywordRules">关键词规则</span>
                             </button>
@@ -1787,6 +1792,84 @@
                                         <i class="bi bi-save me-1"></i><span data-i18n="saveDefaultModel">保存默认模型</span>
                                     </button>
                                     <div class="ai-channel-list" id="ai-channel-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="tab-pane fade" id="settings-translation-pane" role="tabpanel" aria-labelledby="settings-translation-tab">
+                            <div id="translation-settings-alert" class="alert" style="display:none;" role="alert"></div>
+                            <div class="row g-4">
+                                <div class="col-12 col-lg-5">
+                                    <h6 class="mb-2"><i class="bi bi-sliders me-1"></i><span data-i18n="translationEngine">翻译引擎</span></h6>
+                                    <div class="mb-2">
+                                        <label class="form-label" for="translation-default-provider" data-i18n="defaultTranslationProvider">默认翻译渠道</label>
+                                        <select class="form-select form-select-sm" id="translation-default-provider">
+                                            <option value="baidu">百度翻译</option>
+                                            <option value="tencent">腾讯翻译</option>
+                                            <option value="ai">AI 翻译</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-check mb-3">
+                                        <input class="form-check-input" type="checkbox" id="translation-fallback-ai" checked>
+                                        <label class="form-check-label" for="translation-fallback-ai" data-i18n="fallbackToAi">专用翻译失败时使用 AI 兜底</label>
+                                    </div>
+                                    <button class="btn btn-primary btn-sm w-100" onclick="saveTranslationSettings()" id="btn-save-translation-settings">
+                                        <i class="bi bi-save me-1"></i><span data-i18n="saveTranslationSettings">保存翻译设置</span>
+                                    </button>
+                                    <div class="small text-muted mt-2" data-i18n="translationProviderHint">百度/腾讯适合快速正文翻译；AI 适合保留 HTML 格式和复杂邮件。</div>
+                                </div>
+                                <div class="col-12 col-lg-7">
+                                    <div class="row g-3">
+                                        <div class="col-12">
+                                            <section class="settings-account-panel">
+                                                <div class="settings-account-panel-header">
+                                                    <div class="settings-account-panel-title"><i class="bi bi-baidu"></i><span>百度翻译</span></div>
+                                                    <span class="badge text-bg-light" id="baidu-translation-status">未配置</span>
+                                                </div>
+                                                <div class="settings-account-panel-body">
+                                                    <div class="mb-2">
+                                                        <label class="form-label" for="baidu-translation-appid">APPID</label>
+                                                        <input type="text" class="form-control form-control-sm" id="baidu-translation-appid" autocomplete="off">
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="form-label" for="baidu-translation-secret">Secret Key</label>
+                                                        <input type="password" class="form-control form-control-sm" id="baidu-translation-secret" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值" autocomplete="new-password">
+                                                    </div>
+                                                    <label class="form-check-label small">
+                                                        <input class="form-check-input" type="checkbox" id="clear-baidu-translation-secret">
+                                                        <span data-i18n="clearBaiduTranslationSecret">清除百度翻译密钥</span>
+                                                    </label>
+                                                </div>
+                                            </section>
+                                        </div>
+                                        <div class="col-12">
+                                            <section class="settings-account-panel">
+                                                <div class="settings-account-panel-header">
+                                                    <div class="settings-account-panel-title"><i class="bi bi-cloud"></i><span>腾讯翻译</span></div>
+                                                    <span class="badge text-bg-light" id="tencent-translation-status">未配置</span>
+                                                </div>
+                                                <div class="settings-account-panel-body">
+                                                    <div class="row g-2">
+                                                        <div class="col-12 col-md-6">
+                                                            <label class="form-label" for="tencent-translation-secret-id">SecretId</label>
+                                                            <input type="text" class="form-control form-control-sm" id="tencent-translation-secret-id" autocomplete="off">
+                                                        </div>
+                                                        <div class="col-12 col-md-6">
+                                                            <label class="form-label" for="tencent-translation-region">Region</label>
+                                                            <input type="text" class="form-control form-control-sm" id="tencent-translation-region" placeholder="ap-guangzhou">
+                                                        </div>
+                                                    </div>
+                                                    <div class="mt-2">
+                                                        <label class="form-label" for="tencent-translation-secret-key">SecretKey</label>
+                                                        <input type="password" class="form-control form-control-sm" id="tencent-translation-secret-key" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值" autocomplete="new-password">
+                                                    </div>
+                                                    <label class="form-check-label small mt-2">
+                                                        <input class="form-check-input" type="checkbox" id="clear-tencent-translation-secret-key">
+                                                        <span data-i18n="clearTencentTranslationSecret">清除腾讯翻译 SecretKey</span>
+                                                    </label>
+                                                </div>
+                                            </section>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -2050,6 +2133,17 @@
                 accountSettings: '邮箱账号设置',
                 systemSettings: '系统设置',
                 aiSettings: 'AI 设置',
+                translationSettings: '翻译设置',
+                translationEngine: '翻译引擎',
+                defaultTranslationProvider: '默认翻译渠道',
+                fallbackToAi: '专用翻译失败时使用 AI 兜底',
+                saveTranslationSettings: '保存翻译设置',
+                translationProviderHint: '百度/腾讯适合快速正文翻译；AI 适合保留 HTML 格式和复杂邮件。',
+                translationSettingsLoadFailed: '翻译设置加载失败',
+                translationSettingsSaved: '翻译设置已保存',
+                translationSettingsSaveFailed: '翻译设置保存失败',
+                clearBaiduTranslationSecret: '清除百度翻译密钥',
+                clearTencentTranslationSecret: '清除腾讯翻译 SecretKey',
                 keywordRules: '关键词规则',
                 keywordGroups: '关键词分组',
                 keywordRuleForm: '规则配置',
@@ -2364,6 +2458,17 @@
                 accountSettings: 'Mailbox Settings',
                 systemSettings: 'System Settings',
                 aiSettings: 'AI Settings',
+                translationSettings: 'Translation Settings',
+                translationEngine: 'Translation Engine',
+                defaultTranslationProvider: 'Default provider',
+                fallbackToAi: 'Use AI fallback when dedicated translation fails',
+                saveTranslationSettings: 'Save translation settings',
+                translationProviderHint: 'Baidu/Tencent are faster for plain text; AI is better for HTML layout and complex emails.',
+                translationSettingsLoadFailed: 'Failed to load translation settings',
+                translationSettingsSaved: 'Translation settings saved',
+                translationSettingsSaveFailed: 'Failed to save translation settings',
+                clearBaiduTranslationSecret: 'Clear Baidu translation secret',
+                clearTencentTranslationSecret: 'Clear Tencent translation SecretKey',
                 keywordRules: 'Keyword Rules',
                 keywordGroups: 'Keyword Groups',
                 keywordRuleForm: 'Rule Config',
@@ -2647,6 +2752,7 @@
         };
 
         let currentLang = localStorage.getItem('manymail-lang') || 'zh';
+        let translationSettings = {};
 
         function t(key, params) {
             let s = (LANGS[currentLang] || LANGS.zh)[key] || key;
@@ -5008,6 +5114,21 @@
             alert.style.display = 'block';
         }
 
+        function _showTranslationSettingsAlert(type, message) {
+            const alert = document.getElementById('translation-settings-alert');
+            if (!alert) return;
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+        }
+
+        function _clearTranslationSettingsAlert() {
+            const alert = document.getElementById('translation-settings-alert');
+            if (!alert) return;
+            alert.style.display = 'none';
+            alert.textContent = '';
+        }
+
         function _showSecurityAlert(type, message) {
             const alert = document.getElementById('security-settings-alert');
             if (!alert) return;
@@ -5065,13 +5186,15 @@
                 ? 'settings-ai-tab'
                 : name === 'accounts'
                     ? 'settings-accounts-tab'
-                    : name === 'keywords'
-                        ? 'settings-keywords-tab'
-                        : name === 'security'
-                            ? 'settings-security-tab'
-                            : name === 'portable'
-                                ? 'settings-portable-tab'
-                                : 'settings-system-tab';
+                    : name === 'translation'
+                        ? 'settings-translation-tab'
+                        : name === 'keywords'
+                            ? 'settings-keywords-tab'
+                            : name === 'security'
+                                ? 'settings-security-tab'
+                                : name === 'portable'
+                                    ? 'settings-portable-tab'
+                                    : 'settings-system-tab';
             const tab = document.getElementById(tabId);
             if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
             _syncSettingsFooter();
@@ -5149,6 +5272,92 @@
                 renderAiSettings();
             } catch (e) {
                 _showAiSettingsAlert('danger', `${t('aiSettingsLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        function renderTranslationSettings() {
+            const settings = translationSettings || {};
+            const baidu = settings.baidu || {};
+            const tencent = settings.tencent || {};
+            const defaultProvider = document.getElementById('translation-default-provider');
+            const fallback = document.getElementById('translation-fallback-ai');
+            const baiduAppid = document.getElementById('baidu-translation-appid');
+            const baiduSecret = document.getElementById('baidu-translation-secret');
+            const baiduClear = document.getElementById('clear-baidu-translation-secret');
+            const baiduStatus = document.getElementById('baidu-translation-status');
+            const tencentSecretId = document.getElementById('tencent-translation-secret-id');
+            const tencentRegion = document.getElementById('tencent-translation-region');
+            const tencentSecretKey = document.getElementById('tencent-translation-secret-key');
+            const tencentClear = document.getElementById('clear-tencent-translation-secret-key');
+            const tencentStatus = document.getElementById('tencent-translation-status');
+            if (defaultProvider) defaultProvider.value = settings.default_provider || 'ai';
+            if (fallback) fallback.checked = settings.fallback_to_ai !== false;
+            if (baiduAppid) baiduAppid.value = baidu.appid || '';
+            if (baiduSecret) baiduSecret.value = '';
+            if (baiduClear) baiduClear.checked = false;
+            if (baiduStatus) {
+                baiduStatus.textContent = baidu.secret_configured ? t('configured') : t('notConfigured');
+                baiduStatus.className = `badge ${baidu.secret_configured ? 'text-bg-success' : 'text-bg-light'}`;
+            }
+            if (tencentSecretId) tencentSecretId.value = tencent.secret_id || '';
+            if (tencentRegion) tencentRegion.value = tencent.region || 'ap-guangzhou';
+            if (tencentSecretKey) tencentSecretKey.value = '';
+            if (tencentClear) tencentClear.checked = false;
+            if (tencentStatus) {
+                tencentStatus.textContent = tencent.secret_key_configured ? t('configured') : t('notConfigured');
+                tencentStatus.className = `badge ${tencent.secret_key_configured ? 'text-bg-success' : 'text-bg-light'}`;
+            }
+        }
+
+        async function loadTranslationSettings() {
+            _clearTranslationSettingsAlert();
+            try {
+                const resp = await fetch('/api/translation/settings');
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('translationSettingsLoadFailed'));
+                translationSettings = data.settings || {};
+                renderTranslationSettings();
+            } catch (e) {
+                _showTranslationSettingsAlert('danger', `${t('translationSettingsLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        async function saveTranslationSettings() {
+            _clearTranslationSettingsAlert();
+            const btn = document.getElementById('btn-save-translation-settings');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('saveTranslationSettings')}`;
+            }
+            try {
+                const payload = {
+                    default_provider: document.getElementById('translation-default-provider')?.value || 'ai',
+                    fallback_to_ai: document.getElementById('translation-fallback-ai')?.checked !== false,
+                    baidu_appid: document.getElementById('baidu-translation-appid')?.value.trim() || '',
+                    baidu_secret: document.getElementById('baidu-translation-secret')?.value.trim() || '',
+                    clear_baidu_secret: document.getElementById('clear-baidu-translation-secret')?.checked || false,
+                    tencent_secret_id: document.getElementById('tencent-translation-secret-id')?.value.trim() || '',
+                    tencent_region: document.getElementById('tencent-translation-region')?.value.trim() || 'ap-guangzhou',
+                    tencent_secret_key: document.getElementById('tencent-translation-secret-key')?.value.trim() || '',
+                    clear_tencent_secret_key: document.getElementById('clear-tencent-translation-secret-key')?.checked || false,
+                };
+                const resp = await fetch('/api/translation/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('translationSettingsSaveFailed'));
+                translationSettings = data.settings || {};
+                renderTranslationSettings();
+                _showTranslationSettingsAlert('success', t('translationSettingsSaved'));
+            } catch (e) {
+                _showTranslationSettingsAlert('danger', `${t('translationSettingsSaveFailed')}: ${e.message}`);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = `<i class="bi bi-save me-1"></i>${t('saveTranslationSettings')}`;
+                }
             }
         }
 
@@ -5726,7 +5935,7 @@
             _getSettingsModal().show();
             _switchSettingsTab(tab);
             _updateBrowserNotificationStatus();
-            await Promise.all([loadSettings(), loadAiSettings(), loadSecuritySettings(), loadKeywordRules()]);
+            await Promise.all([loadSettings(), loadAiSettings(), loadTranslationSettings(), loadSecuritySettings(), loadKeywordRules()]);
             renderAccountSettingsLists();
             renderBrowserNotificationGroups();
             handleAiProviderChange();
