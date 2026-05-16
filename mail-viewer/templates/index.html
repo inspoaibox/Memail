@@ -1616,6 +1616,25 @@
                                 </div>
                                 <div class="col-12"><hr></div>
                                 <div class="col-12">
+                                    <h6 class="mb-2"><i class="bi bi-bell me-1"></i><span data-i18n="browserNotifications">浏览器通知</span></h6>
+                                    <div class="small text-muted mb-2" data-i18n="browserNotificationHint">浏览器打开时，自动刷新发现新邮件会弹出系统通知。</div>
+                                    <div class="d-flex flex-wrap align-items-center gap-3">
+                                        <div class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox" id="settings-browser-notifications" onchange="setBrowserNotificationsEnabled(this.checked)">
+                                            <label class="form-check-label" for="settings-browser-notifications" data-i18n="enableBrowserNotifications">收到新邮件时通知</label>
+                                        </div>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-request-notification-permission" onclick="requestBrowserNotificationPermission()">
+                                            <i class="bi bi-bell me-1"></i><span data-i18n="requestNotificationPermission">授权通知</span>
+                                        </button>
+                                    </div>
+                                    <div class="small text-muted mt-2" id="settings-browser-notification-status"></div>
+                                    <div class="mt-3">
+                                        <div class="small fw-semibold mb-2" data-i18n="notificationGroups">通知分组</div>
+                                        <div class="account-settings-list" id="settings-notification-groups"></div>
+                                    </div>
+                                </div>
+                                <div class="col-12"><hr></div>
+                                <div class="col-12">
                                     <h6 class="mb-2">Gmail OAuth2</h6>
                                     <div class="small text-muted mb-2" data-i18n="gmailOAuthSetupHint">Gmail OAuth 使用 https://mail.google.com/ 权限；如果不想申请 OAuth，可直接添加 Gmail 并填写 16 位应用专用密码。</div>
                                 </div>
@@ -2271,6 +2290,20 @@
                 editorPlaceholder: '输入邮件正文...',
                 time: '时间',
                 autoRefreshTitle: '每 15 秒自动刷新',
+                browserNotifications: '浏览器通知',
+                browserNotificationHint: '浏览器打开时，自动刷新发现新邮件会弹出系统通知。',
+                enableBrowserNotifications: '收到新邮件时通知',
+                requestNotificationPermission: '授权通知',
+                notificationsUnsupported: '当前浏览器或当前访问环境不支持系统通知，请使用 HTTPS 访问。',
+                notificationsEnabled: '浏览器通知已开启',
+                notificationsDisabled: '浏览器通知已关闭',
+                notificationsDenied: '浏览器通知权限被拒绝，请在浏览器地址栏权限设置里重新允许。',
+                notificationsNeedPermission: '需要先授权浏览器通知权限',
+                notificationGroups: '通知分组',
+                notificationGroupHint: '关闭后，该分组收到新邮件不会弹通知。',
+                noNotificationGroups: '暂无邮箱分组',
+                newMailNotificationTitle: '收到新邮件',
+                newMailNotificationBody: '{account} 有 {n} 封新邮件',
                 disableDomain: '停用此域名',
                 verifyCode: '验证码',
                 sendConfig: '发信配置',
@@ -2571,6 +2604,20 @@
                 editorPlaceholder: 'Enter email body...',
                 time: 'Time',
                 autoRefreshTitle: 'Auto-refresh every 15s',
+                browserNotifications: 'Browser Notifications',
+                browserNotificationHint: 'When the browser is open, Memail shows a system notification after auto-refresh detects new mail.',
+                enableBrowserNotifications: 'Notify me about new mail',
+                requestNotificationPermission: 'Allow Notifications',
+                notificationsUnsupported: 'System notifications are not supported in this browser or access context. Use HTTPS.',
+                notificationsEnabled: 'Browser notifications enabled',
+                notificationsDisabled: 'Browser notifications disabled',
+                notificationsDenied: 'Browser notification permission was denied. Allow it in the browser site permissions.',
+                notificationsNeedPermission: 'Notification permission is required first',
+                notificationGroups: 'Notification Groups',
+                notificationGroupHint: 'Disabled groups will still receive mail, but will not show browser notifications.',
+                noNotificationGroups: 'No account groups',
+                newMailNotificationTitle: 'New mail received',
+                newMailNotificationBody: '{account} has {n} new email(s)',
                 disableDomain: 'Disable this domain',
                 verifyCode: 'Code',
                 sendConfig: 'Sending',
@@ -2621,6 +2668,7 @@
             });
             document.getElementById('lang-label').textContent = currentLang === 'zh' ? 'EN' : '中';
             document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
+            _updateBrowserNotificationStatus();
         }
 
         function toggleLang() {
@@ -2637,6 +2685,7 @@
             if (currentAccountType === 'local' && currentMessages.length > 0 && [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER, 'inbox'].includes(currentTab)) renderMessages(currentMessages);
             if (currentAccountType === 'local' && currentSentMessages.length > 0 && currentTab === 'sent') renderSentMessages(currentSentMessages);
             if (currentAccountType === 'local' && currentTrashMessages.length > 0 && currentTab === 'trash') renderTrashMessages(currentTrashMessages);
+            renderBrowserNotificationGroups();
             if (!currentEmail) resetMailDetail();
             _updateFolderChrome();
         }
@@ -2696,6 +2745,11 @@
         let editingExternalAccountId = null;
         let externalStatusTimer = null;
         let autoRefreshEnabled = true;
+        let browserNotificationsEnabled = false;
+        let browserNotificationKnownKeys = new Set();
+        let browserNotificationExternalUnread = {};
+        let browserNotificationBaselineReady = false;
+        let browserNotificationGroupPrefs = {};
         let lastBackgroundExternalSyncAt = 0;
         let currentPageSize = 30;
         const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -3112,6 +3166,14 @@
             }
         }
 
+        function _buildTranslationPayload(msg) {
+            return {
+                subject: msg.subject || '',
+                text: msg.text || '',
+                html: msg.html || '',
+            };
+        }
+
         async function translateCurrentMail() {
             const msg = window._currentDetailMsg;
             if (!msg) return;
@@ -3120,7 +3182,6 @@
             }
             const controller = new AbortController();
             translationAbortController = controller;
-            const timeoutId = window.setTimeout(() => controller.abort(), 60000);
             const btn = document.getElementById('btn-translate-mail');
             const panel = document.getElementById('mail-translation-panel');
             if (!panel) return;
@@ -3135,11 +3196,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     signal: controller.signal,
-                    body: JSON.stringify({
-                        subject: msg.subject || '',
-                        text: msg.text || '',
-                        html: msg.html || '',
-                    }),
+                    body: JSON.stringify(_buildTranslationPayload(msg)),
                 });
                 const contentType = resp.headers.get('content-type') || '';
                 const data = contentType.includes('application/json')
@@ -3159,7 +3216,6 @@
                 const message = e.name === 'AbortError' ? t('translationTimeout') : e.message;
                 panel.innerHTML = `<div class="text-danger">${t('translationFailed')}: ${_escapeHtml(message)}</div>`;
             } finally {
-                window.clearTimeout(timeoutId);
                 if (translationAbortController === controller) {
                     translationAbortController = null;
                 }
@@ -3274,6 +3330,16 @@
         function _groupAccountCount(group) {
             const accounts = _groupAccounts(group);
             return accounts.local.length + accounts.external.length;
+        }
+
+        function _accountGroupForRef(accountType, accountId) {
+            if (accountType === 'external') {
+                const account = externalAccounts.find(item => String(item.id) === String(accountId))
+                    || externalAccounts.find(item => String(item.email || '').toLowerCase() === String(accountId || '').toLowerCase());
+                return _accountGroupName(account || {});
+            }
+            const mailbox = mailboxes.find(item => String(item.address || '').toLowerCase() === String(accountId || '').toLowerCase());
+            return _accountGroupName(mailbox || {});
         }
 
         function _accountSettingsSearchText(account, fallbackEmail = '') {
@@ -3766,6 +3832,7 @@
             try {
                 const accounts = await _imapApi('/accounts');
                 externalAccounts = Array.isArray(accounts) ? accounts : [];
+                _trackExternalAccountUnreadNotifications(externalAccounts, false);
                 if (currentExternalAccountId) {
                     currentExternalAccount = _externalAccountById(currentExternalAccountId) || currentExternalAccount;
                 }
@@ -3811,6 +3878,7 @@
             try {
                 const accounts = await _imapApi('/accounts');
                 externalAccounts = Array.isArray(accounts) ? accounts : [];
+                _trackExternalAccountUnreadNotifications(externalAccounts, true);
                 if (currentExternalAccountId) {
                     currentExternalAccount = _externalAccountById(currentExternalAccountId) || currentExternalAccount;
                 }
@@ -3936,6 +4004,7 @@
             list.innerHTML = parts.join('');
             bindAccountDragSorting();
             renderAccountSettingsLists();
+            renderBrowserNotificationGroups();
         }
 
         function renderAccountSettingsLists() {
@@ -5656,9 +5725,12 @@
         async function openSettings(tab = 'system') {
             _getSettingsModal().show();
             _switchSettingsTab(tab);
+            _updateBrowserNotificationStatus();
             await Promise.all([loadSettings(), loadAiSettings(), loadSecuritySettings(), loadKeywordRules()]);
             renderAccountSettingsLists();
+            renderBrowserNotificationGroups();
             handleAiProviderChange();
+            _updateBrowserNotificationStatus();
         }
 
         async function saveSettings() {
@@ -5721,6 +5793,7 @@
             applyLang();
             _loadGroupCollapseState();
             _loadAutoRefreshPreference();
+            _loadBrowserNotificationPreference();
             _loadPageSizePreference();
             document.addEventListener('click', event => {
                 const target = event.target.closest('[data-mail-action]');
@@ -5755,6 +5828,191 @@
                 });
             }
         });
+
+        // ---- 浏览器新邮件通知 ----
+        function _browserNotificationsSupported() {
+            return 'Notification' in window && (window.isSecureContext || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+        }
+
+        function _browserNotificationStatusEl() {
+            return document.getElementById('settings-browser-notification-status');
+        }
+
+        function _browserNotificationToggleEl() {
+            return document.getElementById('settings-browser-notifications');
+        }
+
+        function _updateBrowserNotificationStatus() {
+            const toggle = _browserNotificationToggleEl();
+            const button = document.getElementById('btn-request-notification-permission');
+            const status = _browserNotificationStatusEl();
+            const supported = _browserNotificationsSupported();
+            if (toggle) toggle.checked = browserNotificationsEnabled;
+            if (toggle) toggle.disabled = !supported;
+            if (button) button.disabled = !supported;
+            if (!status) return;
+            if (!supported) {
+                status.textContent = t('notificationsUnsupported');
+            } else if (Notification.permission === 'denied') {
+                status.textContent = t('notificationsDenied');
+            } else if (browserNotificationsEnabled && Notification.permission === 'granted') {
+                status.textContent = t('notificationsEnabled');
+            } else if (browserNotificationsEnabled) {
+                status.textContent = t('notificationsNeedPermission');
+            } else {
+                status.textContent = t('notificationsDisabled');
+            }
+        }
+
+        function _loadBrowserNotificationPreference() {
+            browserNotificationsEnabled = localStorage.getItem('memail-browser-notifications') === '1';
+            try {
+                browserNotificationGroupPrefs = JSON.parse(localStorage.getItem('memail-browser-notification-groups') || '{}') || {};
+            } catch (e) {
+                browserNotificationGroupPrefs = {};
+            }
+            _updateBrowserNotificationStatus();
+        }
+
+        function _persistBrowserNotificationPreference() {
+            localStorage.setItem('memail-browser-notifications', browserNotificationsEnabled ? '1' : '0');
+            localStorage.setItem('memail-browser-notification-groups', JSON.stringify(browserNotificationGroupPrefs || {}));
+            _updateBrowserNotificationStatus();
+        }
+
+        function _isBrowserNotificationGroupEnabled(group) {
+            const key = String(group || t('defaultAccountGroup'));
+            return browserNotificationGroupPrefs[key] !== false;
+        }
+
+        function toggleBrowserNotificationGroup(encodedGroup, enabled) {
+            const group = decodeURIComponent(String(encodedGroup || ''));
+            browserNotificationGroupPrefs[group] = Boolean(enabled);
+            _persistBrowserNotificationPreference();
+            renderBrowserNotificationGroups();
+        }
+
+        function renderBrowserNotificationGroups() {
+            const holder = document.getElementById('settings-notification-groups');
+            if (!holder) return;
+            const groups = _accountGroups();
+            if (!groups.length) {
+                holder.innerHTML = `<div class="account-settings-empty">${t('noNotificationGroups')}</div>`;
+                return;
+            }
+            holder.innerHTML = `
+                <div class="small text-muted mb-2">${t('notificationGroupHint')}</div>
+                ${groups.map(group => {
+                    const id = `notify-group-${btoa(unescape(encodeURIComponent(group))).replace(/=+$/g, '')}`;
+                    const count = _groupAccountCount(group);
+                    return `
+                        <div class="account-settings-row">
+                            <span class="mail-account-provider-icon"><i class="bi bi-collection"></i></span>
+                            <span class="mail-account-main">
+                                <span class="mail-account-title">${_escapeHtml(group)}</span>
+                                <span class="mail-account-subtitle">${count} ${currentLang === 'zh' ? '个账号' : 'accounts'}</span>
+                            </span>
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="${_escapeAttr(id)}" ${_isBrowserNotificationGroupEnabled(group) ? 'checked' : ''} onchange="toggleBrowserNotificationGroup('${encodeURIComponent(group)}', this.checked)">
+                            </div>
+                        </div>`;
+                }).join('')}`;
+        }
+
+        async function requestBrowserNotificationPermission() {
+            if (!_browserNotificationsSupported()) {
+                _updateBrowserNotificationStatus();
+                return false;
+            }
+            if (Notification.permission === 'granted') {
+                browserNotificationsEnabled = true;
+                _persistBrowserNotificationPreference();
+                return true;
+            }
+            if (Notification.permission === 'denied') {
+                browserNotificationsEnabled = false;
+                _persistBrowserNotificationPreference();
+                return false;
+            }
+            const result = await Notification.requestPermission();
+            browserNotificationsEnabled = result === 'granted';
+            _persistBrowserNotificationPreference();
+            return browserNotificationsEnabled;
+        }
+
+        async function setBrowserNotificationsEnabled(enabled) {
+            browserNotificationsEnabled = Boolean(enabled);
+            if (browserNotificationsEnabled) {
+                const allowed = await requestBrowserNotificationPermission();
+                browserNotificationsEnabled = allowed;
+            }
+            _persistBrowserNotificationPreference();
+        }
+
+        function _showBrowserMailNotification(account, count = 1, tag = 'memail-new-mail') {
+            if (!browserNotificationsEnabled || !_browserNotificationsSupported() || Notification.permission !== 'granted') return;
+            const safeCount = Math.max(Number(count) || 1, 1);
+            try {
+                const notification = new Notification(t('newMailNotificationTitle'), {
+                    body: t('newMailNotificationBody', { account: account || 'Memail', n: safeCount }),
+                    icon: '/static/logo.png',
+                    tag,
+                    renotify: true,
+                });
+                notification.onclick = () => {
+                    window.focus();
+                    notification.close();
+                };
+            } catch (e) {
+                // Browser notifications are optional; never block mail refresh.
+            }
+        }
+
+        function _messageNotificationKey(msg, fallback = {}) {
+            const ref = _messageRefFromMessage(msg, fallback);
+            if (!ref.accountId || !ref.messageId) return '';
+            return _messageMetaKey(ref.accountType, ref.accountId, ref.folder, ref.messageId);
+        }
+
+        function _messageNotificationGroup(msg, fallback = {}) {
+            const ref = _messageRefFromMessage(msg, fallback);
+            return _accountGroupForRef(ref.accountType, ref.accountId);
+        }
+
+        function _trackBrowserMailNotifications(messages, label = '', silent = false, fallback = {}) {
+            const list = Array.isArray(messages) ? messages : [];
+            const newKeys = [];
+            list.forEach(msg => {
+                const key = _messageNotificationKey(msg, fallback);
+                if (!key) return;
+                const unseen = msg.seen === false || msg.unseen === true;
+                const groupEnabled = _isBrowserNotificationGroupEnabled(_messageNotificationGroup(msg, fallback));
+                if (silent && browserNotificationBaselineReady && unseen && groupEnabled && !browserNotificationKnownKeys.has(key)) {
+                    newKeys.push(key);
+                }
+                browserNotificationKnownKeys.add(key);
+            });
+            if (!browserNotificationBaselineReady) {
+                browserNotificationBaselineReady = true;
+                return;
+            }
+            if (newKeys.length) {
+                _showBrowserMailNotification(label || 'Memail', newKeys.length, `memail-mail-${newKeys[0]}`);
+            }
+        }
+
+        function _trackExternalAccountUnreadNotifications(accounts, silent = false) {
+            (accounts || []).forEach(account => {
+                const key = String(account.id ?? account.email ?? '');
+                if (!key) return;
+                const unseen = Number(account.syncStatus?.unseen ?? 0);
+                const previous = browserNotificationExternalUnread[key];
+                browserNotificationExternalUnread[key] = unseen;
+                if (silent && previous !== undefined && unseen > previous && _isBrowserNotificationGroupEnabled(_accountGroupName(account))) {
+                    _showBrowserMailNotification(_accountDisplayName(account, account.email || '') || account.email || t('externalMailbox'), unseen - previous, `memail-account-${key}`);
+                }
+            });
+        }
 
         // ---- 自动刷新 ----
         let autoRefreshTimer = null;
@@ -5808,6 +6066,7 @@
                 });
                 if (Array.isArray(sync.accounts)) {
                     externalAccounts = sync.accounts;
+                    _trackExternalAccountUnreadNotifications(externalAccounts, true);
                     renderMailboxes();
                     renderFolderList();
                     _updateFolderChrome();
@@ -6220,6 +6479,7 @@
                 currentSentMessages = merged.filter(msg => msg._source === 'sent');
                 currentTrashMessages = merged.filter(msg => msg._source === 'trash');
                 currentTotal = currentTab === LOCAL_UNREAD_FOLDER ? unreadResult.total : currentFolderCounts.localAll;
+                _trackBrowserMailNotifications(currentMessages, email || currentEmail || t('localMailbox'), silent, { accountType: 'local', accountId: email || currentEmail });
                 await loadMessageMetaFor(currentMessages, { accountType: 'local', accountId: currentEmail });
                 renderMessages(currentMessages);
             } catch (e) {
@@ -6427,6 +6687,7 @@
                 currentGlobalPage = safePage;
                 currentGlobalMessages = merged;
                 currentGlobalTotal = Math.max(externalData.total || 0, merged.length);
+                _trackBrowserMailNotifications(currentGlobalMessages, t('globalMailbox'), silent);
                 _updateFolderCounts({
                     globalAll: currentGlobalTotal,
                     globalUnread: currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? currentGlobalTotal : merged.filter(msg => !msg.seen).length,
@@ -6473,6 +6734,7 @@
                 currentGlobalPage = safePage;
                 currentGlobalMessages = merged;
                 currentGlobalTotal = Math.max(externalData.total || 0, merged.length);
+                _trackBrowserMailNotifications(currentGlobalMessages, currentGroupName || t('defaultAccountGroup'), silent);
                 _updateFolderCounts({
                     groupAll: unreadOnly ? (currentFolderCounts.groupAll || 0) : currentGlobalTotal,
                     groupUnread: unreadOnly ? currentGlobalTotal : merged.filter(msg => !msg.seen).length,
@@ -6514,6 +6776,7 @@
                     .slice(0, currentPageSize);
                 currentGlobalMessages = merged;
                 currentGlobalTotal = merged.length;
+                _trackBrowserMailNotifications(currentGlobalMessages, keywordRules.find(item => item.id === currentKeywordRuleId)?.name || t('keywordRules'), silent);
                 _updateFolderCounts({ keywordMatches: merged.length });
                 await loadMessageMetaFor(merged);
                 renderGlobalMessages(merged);
@@ -7208,6 +7471,7 @@
                 
                 currentPage = safePage;
                 currentMessages = data.messages;
+                _trackBrowserMailNotifications(currentMessages, email, silent, { accountType: 'local', accountId: email, folder: 'inbox' });
                 await loadMessageMetaFor(currentMessages, { accountType: 'local', accountId: email, folder: 'inbox' });
                 
                 document.getElementById('btn-refresh-mail').disabled = false;
@@ -7401,6 +7665,12 @@
                 }
                 const mails = data.mails || [];
                 currentExternalMessages = mails;
+                _trackBrowserMailNotifications(
+                    currentExternalMessages,
+                    _accountDisplayName(currentExternalAccount, currentExternalAccount?.email || '') || currentExternalAccount?.email || t('externalMailbox'),
+                    silent,
+                    { accountType: 'external', accountId, folder: folderPath }
+                );
                 await loadMessageMetaFor(currentExternalMessages, { accountType: 'external', accountId });
                 document.getElementById('btn-refresh-mail').disabled = false;
                 const searchBar = document.getElementById('search-bar');
