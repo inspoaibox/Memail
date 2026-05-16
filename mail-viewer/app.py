@@ -70,8 +70,6 @@ MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 10
 IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS", "3"))
 IMAGE_PROXY_READ_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_READ_TIMEOUT_SECONDS", "8"))
 AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "45"))
-AI_TRANSLATION_BATCH_CHARS = int(os.getenv("AI_TRANSLATION_BATCH_CHARS", "6000"))
-AI_TRANSLATION_BATCH_ITEMS = int(os.getenv("AI_TRANSLATION_BATCH_ITEMS", "80"))
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
     "colgroup", "div", "em", "font",
@@ -467,198 +465,6 @@ def _normalize_translation_source_text(value: str) -> str:
     return "\n".join(compact_lines).strip()
 
 
-def _html_tag_is_hidden(tag_html: str) -> bool:
-    tag_lower = tag_html.lower()
-    if re.search(r"\shidden(?:[\s=>/]|$)", tag_lower):
-        return True
-    style_match = re.search(r"\bstyle\s*=\s*(['\"])(.*?)\1", tag_html, flags=re.IGNORECASE | re.DOTALL)
-    if not style_match:
-        return False
-    style = re.sub(r"\s+", "", html_lib.unescape(style_match.group(2)).lower())
-    return "display:none" in style or "visibility:hidden" in style
-
-
-def _translation_text_needed(value: str) -> bool:
-    return any(ch.isalpha() for ch in value)
-
-
-class _HiddenHtmlStripper(HTMLParser):
-    SKIP_TAGS = {"script", "style", "noscript", "svg", "canvas", "iframe"}
-    VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=False)
-        self.parts: list[str] = []
-        self.skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs) -> None:
-        tag = tag.lower()
-        raw = self.get_starttag_text() or ""
-        is_void = tag in self.VOID_TAGS
-        if self.skip_depth:
-            if not is_void:
-                self.skip_depth += 1
-            return
-        if tag in self.SKIP_TAGS or _html_tag_is_hidden(raw):
-            if not is_void:
-                self.skip_depth = 1
-            return
-        self.parts.append(raw)
-
-    def handle_startendtag(self, tag: str, attrs) -> None:
-        raw = self.get_starttag_text() or ""
-        if self.skip_depth or tag.lower() in self.SKIP_TAGS or _html_tag_is_hidden(raw):
-            return
-        self.parts.append(raw)
-
-    def handle_endtag(self, tag: str) -> None:
-        if self.skip_depth:
-            self.skip_depth = max(0, self.skip_depth - 1)
-            return
-        self.parts.append(f"</{tag}>")
-
-    def handle_data(self, data: str) -> None:
-        if not self.skip_depth:
-            self.parts.append(data)
-
-    def handle_entityref(self, name: str) -> None:
-        if not self.skip_depth:
-            self.parts.append(f"&{name};")
-
-    def handle_charref(self, name: str) -> None:
-        if not self.skip_depth:
-            self.parts.append(f"&#{name};")
-
-    def handle_comment(self, data: str) -> None:
-        return
-
-    def html(self) -> str:
-        return "".join(self.parts)
-
-
-def _strip_non_visible_html(html: str) -> str:
-    html = re.sub(r"(?is)<(script|style|noscript|svg|canvas|iframe)\b.*?>.*?</\1>", " ", html or "")
-    parser = _HiddenHtmlStripper()
-    try:
-        parser.feed(html)
-        parser.close()
-        return parser.html()
-    except Exception:
-        return html
-
-
-def _translation_text_nodes_from_html(html: str) -> tuple[str, list[dict], int]:
-    """Replace visible text nodes with stable placeholders so translations can be merged back into original HTML."""
-    html = _strip_non_visible_html(html)
-    sanitized = _sanitize_email_html(html)
-    if not sanitized:
-        return "", [], 0
-    token_pattern = re.compile(r"(<[^>]+>)")
-    void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
-    skip_depth = 0
-    nodes: list[dict] = []
-    parts: list[str] = []
-    visible_chars = 0
-    for chunk in token_pattern.split(sanitized):
-        if not chunk:
-            continue
-        if chunk.startswith("<"):
-            tag_match = re.match(r"</?\s*([a-zA-Z0-9]+)", chunk)
-            tag = tag_match.group(1).lower() if tag_match else ""
-            is_end = chunk.startswith("</")
-            is_void = tag in void_tags or chunk.rstrip().endswith("/>")
-            if skip_depth:
-                if is_end:
-                    skip_depth = max(0, skip_depth - 1)
-                elif not is_void:
-                    skip_depth += 1
-            elif tag in {"script", "style", "noscript", "svg", "canvas", "iframe"} or (not is_end and _html_tag_is_hidden(chunk)):
-                if not is_end and not is_void:
-                    skip_depth = 1
-            parts.append(chunk)
-            continue
-        if skip_depth:
-            parts.append(chunk)
-            continue
-        text = html_lib.unescape(chunk)
-        if not text.strip():
-            parts.append(chunk)
-            continue
-        normalized = re.sub(r"[ \t\r\f\v]+", " ", text).strip()
-        if not normalized:
-            parts.append(chunk)
-            continue
-        if not _translation_text_needed(normalized):
-            parts.append(chunk)
-            visible_chars += len(normalized)
-            continue
-        node_id = len(nodes)
-        placeholder = f"[[MEMAIL_T_{node_id}]]"
-        nodes.append({"id": node_id, "text": normalized})
-        visible_chars += len(normalized)
-        leading = re.match(r"^\s*", chunk).group(0)
-        trailing = re.search(r"\s*$", chunk).group(0)
-        parts.append(f"{leading}{placeholder}{trailing}")
-    return "".join(parts), nodes, visible_chars
-
-
-def _translation_batches(nodes: list[dict]) -> list[list[dict]]:
-    batches: list[list[dict]] = []
-    current: list[dict] = []
-    current_chars = 0
-    for node in nodes:
-        text_len = len(node.get("text", ""))
-        if current and (len(current) >= AI_TRANSLATION_BATCH_ITEMS or current_chars + text_len > AI_TRANSLATION_BATCH_CHARS):
-            batches.append(current)
-            current = []
-            current_chars = 0
-        current.append(node)
-        current_chars += text_len
-    if current:
-        batches.append(current)
-    return batches
-
-
-def _translation_batch_payload(nodes: list[dict]) -> str:
-    return json.dumps(
-        [{"id": node["id"], "text": node["text"]} for node in nodes],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-def _parse_translation_json_map(value: str) -> dict[int, str]:
-    raw = (value or "").strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-    raw = re.sub(r"\s*```$", "", raw)
-    try:
-        payload = json.loads(raw)
-    except ValueError as exc:
-        start = raw.find("[")
-        end = raw.rfind("]")
-        if start >= 0 and end > start:
-            try:
-                payload = json.loads(raw[start:end + 1])
-            except ValueError:
-                raise RuntimeError(f"AI 翻译返回不是有效 JSON: {_translation_preview(raw, 500)}") from exc
-        else:
-            raise RuntimeError(f"AI 翻译返回不是有效 JSON: {_translation_preview(raw, 500)}") from exc
-    result: dict[int, str] = {}
-    if isinstance(payload, list):
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            if "id" not in item or "text" not in item:
-                continue
-            result[int(item["id"])] = str(item["text"])
-    elif isinstance(payload, dict):
-        items = payload.get("items") if isinstance(payload.get("items"), list) else []
-        for item in items:
-            if isinstance(item, dict) and "id" in item and "text" in item:
-                result[int(item["id"])] = str(item["text"])
-    return result
-
-
 def _translation_preview(value: str, limit: int = 320) -> str:
     text = re.sub(r"\s+", " ", (value or "").replace("\r", " ").replace("\n", " ")).strip()
     return text[:limit]
@@ -673,17 +479,17 @@ def _normalize_ai_translation(value: str, wants_html: bool) -> str:
     return value
 
 
-def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, mode: str = "text") -> str:
+def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
     base_url = channel.get("base_url", "").rstrip("/")
     if not base_url:
         raise RuntimeError("AI 渠道 Base URL 为空，请重新配置渠道")
     system_prompt = (
-        "你是专业邮件翻译助手。用户会提供 JSON 数组，每项包含 id 和 text。"
-        "请把每个 text 翻译为简体中文，保持 id 不变，只返回 JSON 数组。"
-        "输出格式必须是 [{\"id\":1,\"text\":\"译文\"}]，不要 Markdown，不要解释，不要代码块。"
-        "保留金额、日期、订单号、邮箱、链接文本、品牌名和专有名词；不要增加原文没有的内容。"
-        if mode == "json_items" else
-        "你是专业邮件翻译助手。请翻译为简体中文，只输出译文；保留段落、列表、表格行列关系、金额、日期、订单号、邮箱、链接文本等关键信息；不要解释。"
+        "你是专业邮件翻译助手。请把用户提供的邮件 HTML 翻译为简体中文。"
+        "必须保留原始 HTML 标签结构、表格、链接、图片、样式和布局；只翻译可见文字。"
+        "不要解释，不要 Markdown，不要代码块，只输出翻译后的完整 HTML。"
+        if wants_html else
+        "你是专业邮件翻译助手。请把用户提供的邮件正文翻译为简体中文。"
+        "保留段落、列表、金额、日期、订单号、邮箱、链接文本、品牌名和专有名词；不要解释，只输出译文。"
     )
     request_started_at = time.time()
     resp = fast_http_session.post(
@@ -700,10 +506,10 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, mod
         timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
     )
     app.logger.info(
-        "AI 请求完成(openai_compatible/openai): base_url=%s model=%s mode=%s input_chars=%s status=%s elapsed_ms=%s",
+        "AI 请求完成(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s status=%s elapsed_ms=%s",
         base_url,
         model,
-        mode,
+        wants_html,
         len(content or ""),
         resp.status_code,
         int((time.time() - request_started_at) * 1000),
@@ -718,17 +524,17 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, mod
     return (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
 
-def _call_gemini(channel: dict, api_key: str, model: str, content: str, mode: str = "text") -> str:
+def _call_gemini(channel: dict, api_key: str, model: str, content: str, wants_html: bool = False) -> str:
     base_url = channel.get("base_url", "").rstrip("/")
     if not base_url:
         raise RuntimeError("AI 渠道 Base URL 为空，请重新配置渠道")
     model_name = model if model.startswith("models/") else f"models/{model}"
     prompt = (
-        "用户会提供 JSON 数组，每项包含 id 和 text。请把每个 text 翻译为简体中文，保持 id 不变，只返回 JSON 数组。"
-        "输出格式必须是 [{\"id\":1,\"text\":\"译文\"}]，不要 Markdown，不要解释，不要代码块。"
-        "保留金额、日期、订单号、邮箱、链接文本、品牌名和专有名词；不要增加原文没有的内容。\n\n"
-        if mode == "json_items" else
-        "请翻译为简体中文，只输出译文；保留段落、列表、表格行列关系、金额、日期、订单号、邮箱、链接文本等关键信息；不要解释。\n\n"
+        "请把下面邮件 HTML 翻译为简体中文。必须保留原始 HTML 标签结构、表格、链接、图片、样式和布局；"
+        "只翻译可见文字。不要解释，不要 Markdown，不要代码块，只输出翻译后的完整 HTML。\n\n"
+        if wants_html else
+        "请把下面邮件正文翻译为简体中文。保留段落、列表、金额、日期、订单号、邮箱、链接文本、品牌名和专有名词；"
+        "不要解释，只输出译文。\n\n"
     )
     request_started_at = time.time()
     resp = fast_http_session.post(
@@ -746,10 +552,10 @@ def _call_gemini(channel: dict, api_key: str, model: str, content: str, mode: st
         timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
     )
     app.logger.info(
-        "AI 请求完成(gemini): base_url=%s model=%s mode=%s input_chars=%s status=%s elapsed_ms=%s",
+        "AI 请求完成(gemini): base_url=%s model=%s wants_html=%s input_chars=%s status=%s elapsed_ms=%s",
         base_url,
         model_name,
-        mode,
+        wants_html,
         len(content or ""),
         resp.status_code,
         int((time.time() - request_started_at) * 1000),
@@ -1701,7 +1507,6 @@ def _strip_layout_html_for_translation(html: str) -> str:
     html = _sanitize_email_html(html)
     if not html:
         return ""
-    html = re.sub(r"(?is)<img\b[^>]*>", " ", html)
     html = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
     html = re.sub(r"(?i)</?(html|head|body|meta|title)\b[^>]*>", " ", html)
     return html.strip()
@@ -2522,30 +2327,26 @@ def translate_mail_to_chinese():
         text_content = (data.get("text", "") or "").strip()
         subject_raw = (data.get("subject", "") or "").strip()
         html_detected = bool(html_content)
-        html_length = len(html_content)
-        text_length = len(text_content)
         subject = _extract_plain_text(subject_raw)
-        translated_html_shell = ""
-        translation_nodes: list[dict] = []
-        visible_chars = 0
+        wants_html = bool(html_content)
         if html_content:
-            translated_html_shell, translation_nodes, visible_chars = _translation_text_nodes_from_html(html_content)
-        if not translation_nodes:
-            source_text = _normalize_translation_source_text(text_content or _extract_visible_text_from_html(html_content))
-            if source_text:
-                translation_nodes = [{"id": 0, "text": source_text}]
-                visible_chars = len(source_text)
+            content = _strip_layout_html_for_translation(html_content)
+        else:
+            content = _normalize_translation_source_text(text_content)
+        if subject:
+            prefix = f"邮件主题：{subject}\n\n"
+            content = prefix + content
         app.logger.info(
-            "邮件翻译开始: subject=%s html_detected=%s html_chars=%s text_chars=%s mode=html_nodes nodes=%s visible_chars=%s preview=%s",
+            "邮件翻译开始: subject=%s html_detected=%s html_chars=%s text_chars=%s wants_html=%s input_chars=%s preview=%s",
             subject[:120],
             html_detected,
-            html_length,
-            text_length,
-            len(translation_nodes),
-            visible_chars,
-            _translation_preview(" ".join(node.get("text", "") for node in translation_nodes[:8])),
+            len(html_content),
+            len(text_content),
+            wants_html,
+            len(content),
+            _translation_preview(content),
         )
-        if not translation_nodes:
+        if not content.strip():
             return jsonify({"success": False, "message": "没有可翻译的邮件内容"}), 400
 
         ai = _get_ai_settings()
@@ -2558,45 +2359,21 @@ def translate_mail_to_chinese():
         if not api_key:
             return jsonify({"success": False, "message": "默认渠道 API Key 不可用，请重新新增渠道"}), 400
 
-        translations: dict[int, str] = {}
-        batches = _translation_batches(translation_nodes)
         app.logger.info(
-            "邮件翻译准备请求: provider=%s model=%s base_url=%s batches=%s nodes=%s visible_chars=%s batch_chars=%s batch_items=%s",
+            "邮件翻译准备请求: provider=%s model=%s base_url=%s wants_html=%s input_chars=%s",
             channel.get("provider"),
             model,
             channel.get("base_url", ""),
-            len(batches),
-            len(translation_nodes),
-            visible_chars,
-            AI_TRANSLATION_BATCH_CHARS,
-            AI_TRANSLATION_BATCH_ITEMS,
+            wants_html,
+            len(content),
         )
-        for index, batch in enumerate(batches, start=1):
-            content = _translation_batch_payload(batch)
-            app.logger.info(
-                "邮件翻译批次开始: batch=%s/%s nodes=%s payload_chars=%s preview=%s",
-                index,
-                len(batches),
-                len(batch),
-                len(content),
-                _translation_preview(content),
-            )
-            if channel.get("provider") == "gemini":
-                batch_result = _call_gemini(channel, api_key, model, content, "json_items")
-            else:
-                batch_result = _call_openai_chat(channel, api_key, model, content, "json_items")
-            parsed = _parse_translation_json_map(batch_result)
-            translations.update(parsed)
-            app.logger.info(
-                "邮件翻译批次完成: batch=%s/%s returned=%s preview=%s",
-                index,
-                len(batches),
-                len(parsed),
-                _translation_preview(batch_result),
-            )
+        if channel.get("provider") == "gemini":
+            translated = _call_gemini(channel, api_key, model, content, wants_html)
+        else:
+            translated = _call_openai_chat(channel, api_key, model, content, wants_html)
     except (requests.Timeout, requests.ConnectionError) as e:
         app.logger.warning(
-            "邮件翻译网络超时/连接失败: provider=%s model=%s batch_chars=%s timeout=%s error=%s",
+            "邮件翻译网络超时/连接失败: provider=%s model=%s chars=%s timeout=%s error=%s",
             channel.get("provider") if "channel" in locals() and isinstance(channel, dict) else "",
             model if "model" in locals() else "",
             len(content) if "content" in locals() else 0,
@@ -2615,33 +2392,18 @@ def translate_mail_to_chinese():
             "message": str(e) or "翻译服务异常，请查看 mail-viewer 日志",
             "elapsed_ms": elapsed_ms,
         }), 502
-    if not translations:
-        return jsonify({"success": False, "message": "模型没有返回翻译内容"}), 502
-    if translated_html_shell:
-        translated = translated_html_shell
-        missing_nodes = 0
-        for node in translation_nodes:
-            node_id = int(node["id"])
-            if node_id not in translations:
-                missing_nodes += 1
-            translated_text = html_lib.escape(translations.get(node_id) or node.get("text", ""))
-            translated = translated.replace(f"[[MEMAIL_T_{node_id}]]", translated_text)
-        translated = _prepare_html_for_render(translated)
-        response_format = "html"
-    else:
-        missing_nodes = 0 if 0 in translations else 1
-        translated = translations.get(0, "")
-        response_format = "text"
+    if not (translated or "").strip():
+        app.logger.warning("邮件翻译失败: 模型返回空内容 provider=%s model=%s input_chars=%s", channel.get("provider"), model, len(content))
+        return jsonify({"success": False, "message": "模型返回空内容，请更换模型或稍后重试"}), 502
+    translated = _normalize_ai_translation(translated, wants_html)
+    response_format = "html" if wants_html else "text"
     elapsed_ms = int((time.time() - started_at) * 1000)
     app.logger.info(
-        "邮件翻译完成: provider=%s model=%s format=%s batches=%s nodes=%s missing_nodes=%s visible_chars=%s output_chars=%s elapsed_ms=%s preview=%s",
+        "邮件翻译完成: provider=%s model=%s format=%s input_chars=%s output_chars=%s elapsed_ms=%s preview=%s",
         channel.get("provider"),
         model,
         response_format,
-        len(batches),
-        len(translation_nodes),
-        missing_nodes,
-        visible_chars,
+        len(content),
         len(translated),
         elapsed_ms,
         _translation_preview(translated),
@@ -2651,12 +2413,9 @@ def translate_mail_to_chinese():
         "translation": translated,
         "format": response_format,
         "elapsed_ms": elapsed_ms,
-        "input_chars": visible_chars,
-        "original_chars": visible_chars,
+        "input_chars": len(content),
+        "original_chars": len(content),
         "truncated": False,
-        "batches": len(batches),
-        "nodes": len(translation_nodes),
-        "missing_nodes": missing_nodes,
     })
 
 
