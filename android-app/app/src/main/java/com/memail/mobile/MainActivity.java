@@ -21,6 +21,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.webkit.WebViewClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.EditText;
@@ -42,6 +43,7 @@ import java.net.HttpURLConnection;
 import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HashMap;
@@ -54,7 +56,7 @@ import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 public class MainActivity extends Activity {
-    private static final int BG = Color.rgb(244, 247, 247);
+    private static final int BG = Color.rgb(245, 248, 248);
     private static final int CARD = Color.WHITE;
     private static final int SURFACE = Color.rgb(248, 251, 251);
     private static final int TEXT = Color.rgb(18, 35, 42);
@@ -64,6 +66,7 @@ public class MainActivity extends Activity {
     private static final int PRIMARY_SOFT = Color.rgb(224, 241, 239);
     private static final int ACCENT = Color.rgb(178, 124, 65);
     private static final int LINE = Color.rgb(214, 226, 228);
+    private static final int SOFT_LINE = Color.rgb(234, 240, 241);
     private static final int NAV_INACTIVE = Color.rgb(87, 107, 116);
     private static final String PREFS = "memail_mobile";
     private static final String CHANNEL_MAIL = "memail_mail";
@@ -100,6 +103,7 @@ public class MainActivity extends Activity {
     private boolean hasMore = false;
     private String currentScreen = "boot";
     private Models.Mail currentDetailMail;
+    private JSONObject currentDetailSource;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -139,8 +143,13 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if ("detail".equals(currentScreen) || "translation".equals(currentScreen) || "compose".equals(currentScreen)) {
             navIndex = 1;
-            if (selectedAccount != null || !selectedVirtualMode.isEmpty()) renderFoldersOrMails();
-            else renderMailHub();
+            if ("translation".equals(currentScreen) && currentDetailMail != null && currentDetailSource != null) {
+                renderDetail(currentDetailMail, currentDetailSource);
+            } else if (selectedAccount != null || !selectedVirtualMode.isEmpty()) {
+                renderFoldersOrMails();
+            } else {
+                renderMailHub();
+            }
             rebuildBottomNav();
             return;
         }
@@ -205,18 +214,18 @@ public class MainActivity extends Activity {
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
 
         navBar = bottomNav();
-        root.addView(navBar, new LinearLayout.LayoutParams(-1, dp(74)));
+        root.addView(navBar, new LinearLayout.LayoutParams(-1, dp(88)));
     }
 
     private LinearLayout bottomNav() {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER);
-        bar.setPadding(dp(14), dp(8), dp(14), dp(10));
-        bar.setBackgroundColor(Color.WHITE);
+        bar.setPadding(dp(14), dp(9), dp(14), dp(14));
+        bar.setBackgroundColor(BG);
         bar.setVisibility(token.isEmpty() ? View.GONE : View.VISIBLE);
         String[] labels = {"账户", "邮件", "写信", "设置"};
-        String[] icons = {"◇", "✉", "＋", "⚙"};
+        String[] icons = {"⌂", "✉", "✎", "⚙"};
         for (int i = 0; i < labels.length; i++) {
             final int idx = i;
             View item = navItem(icons[i], labels[i], idx == navIndex);
@@ -250,19 +259,21 @@ public class MainActivity extends Activity {
 
     private View navItem(String icon, String label, boolean active) {
         LinearLayout item = new LinearLayout(this);
-        item.setOrientation(LinearLayout.VERTICAL);
+        item.setOrientation(active ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
         item.setGravity(Gravity.CENTER);
-        item.setPadding(0, dp(4), 0, dp(4));
-        item.setBackground(bg(active ? PRIMARY : Color.TRANSPARENT, 24, active ? PRIMARY : Color.TRANSPARENT, 0));
+        item.setPadding(active ? dp(12) : dp(4), dp(6), active ? dp(14) : dp(4), dp(6));
+        item.setBackground(active
+            ? bg(PRIMARY, 24, PRIMARY, 0)
+            : bg(Color.WHITE, 22, Color.rgb(232, 239, 240), 1));
 
-        TextView iconView = text(icon, 22, active ? Color.WHITE : NAV_INACTIVE, true);
+        TextView iconView = text(icon, active ? 20 : 22, active ? Color.WHITE : NAV_INACTIVE, true);
         iconView.setGravity(Gravity.CENTER);
-        TextView labelView = text(label, 11, active ? Color.WHITE : NAV_INACTIVE, true);
+        TextView labelView = text(label, active ? 13 : 11, active ? Color.WHITE : NAV_INACTIVE, true);
         labelView.setGravity(Gravity.CENTER);
-        labelView.setPadding(0, dp(1), 0, 0);
+        labelView.setPadding(active ? dp(7) : 0, active ? 0 : dp(1), 0, 0);
 
-        item.addView(iconView, new LinearLayout.LayoutParams(-1, dp(28)));
-        item.addView(labelView, new LinearLayout.LayoutParams(-1, dp(18)));
+        item.addView(iconView, new LinearLayout.LayoutParams(active ? dp(24) : -1, active ? -1 : dp(28)));
+        item.addView(labelView, new LinearLayout.LayoutParams(active ? -2 : -1, active ? -2 : dp(18)));
         return item;
     }
 
@@ -907,7 +918,7 @@ public class MainActivity extends Activity {
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.HORIZONTAL);
         shell.setGravity(Gravity.TOP);
-        shell.setPadding(dp(16), dp(10), dp(12), 0);
+        shell.setPadding(dp(16), dp(12), dp(14), 0);
         shell.setBackgroundColor(Color.WHITE);
         LinearLayout.LayoutParams shellLp = new LinearLayout.LayoutParams(-1, -2);
         shellLp.setMargins(0, 0, 0, 0);
@@ -929,18 +940,18 @@ public class MainActivity extends Activity {
             TextView dot = text("●", 12, Color.rgb(59, 159, 225), true);
             senderWrap.addView(dot, new LinearLayout.LayoutParams(dp(16), -2));
         }
-        TextView sender = text((mail.favorite ? "★ " : "") + nonEmpty(mail.sender, "未知发件人"), 17, TEXT, !mail.seen);
+        TextView sender = text((mail.favorite ? "★ " : "") + nonEmpty(mail.sender, "未知发件人"), 16, TEXT, !mail.seen);
         sender.setSingleLine(true);
         senderWrap.addView(sender, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView date = text(shortMailDate(mail.date), 13, MUTED, false);
+        TextView date = text(shortMailDate(mail.date), 12, MUTED, false);
         date.setGravity(Gravity.RIGHT);
         top.addView(senderWrap, new LinearLayout.LayoutParams(0, -2, 1));
         top.addView(date, new LinearLayout.LayoutParams(dp(78), -2));
         TextView subject = text(nonEmpty(mail.subject, "无主题"), 15, TEXT, !mail.seen);
-        subject.setPadding(mail.seen ? 0 : dp(16), dp(3), 0, dp(2));
+        subject.setPadding(mail.seen ? 0 : dp(16), dp(4), 0, dp(3));
         subject.setMaxLines(1);
-        TextView preview = text(cleanPreview(mail.preview), 14, Color.rgb(135, 143, 148), false);
-        preview.setPadding(mail.seen ? 0 : dp(16), 0, 0, dp(10));
+        TextView preview = text(cleanPreview(mail.preview), 13, Color.rgb(135, 143, 148), false);
+        preview.setPadding(mail.seen ? 0 : dp(16), 0, 0, dp(12));
         preview.setMaxLines(2);
         row.addView(top);
         row.addView(subject);
@@ -985,53 +996,102 @@ public class MainActivity extends Activity {
     private void renderDetail(Models.Mail mail, JSONObject data) {
         currentScreen = "detail";
         currentDetailMail = mail;
-        setHeader(nonEmpty(mail.subject, "邮件详情"), mail.sender);
+        setHeader("邮件详情", mail.sender);
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(BG);
         LinearLayout box = column(dp(10));
+        box.setPadding(dp(14), dp(10), dp(14), dp(18));
         scroll.addView(box);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
 
         JSONObject detail = data.optJSONObject("detail");
         JSONObject source = detail == null ? data : detail;
+        currentDetailSource = source;
         String html = Json.str(source, "html");
         String text = Json.str(source, "text");
-        box.addView(text("发件人：" + nonEmpty(mail.sender, Json.anyStr(source, "from", "from_address")), 14, TEXT, true));
-        box.addView(text("时间：" + nonEmpty(mail.date, Json.anyStr(source, "date", "createdAt", "created_at")), 12, MUTED, false));
+        String senderText = nonEmpty(mail.sender, Json.anyStr(source, "from", "from_address"));
+        String dateText = nonEmpty(mail.date, Json.anyStr(source, "date", "createdAt", "created_at"));
+        String toText = Json.anyStr(source, "to", "to_address");
+
+        box.addView(detailHeaderCard(mail, senderText, toText, dateText));
+        box.addView(detailActionStrip(mail, source));
+
+        LinearLayout bodyCard = panel(dp(0), dp(0));
+        bodyCard.setBackground(bg(Color.WHITE, 22, SOFT_LINE, 1));
+        TextView bodyLabel = sectionLabel("正文");
+        bodyLabel.setPadding(dp(18), dp(16), dp(18), dp(8));
+        bodyCard.addView(bodyLabel);
+        WebView web = mailWebView();
+        String body = wrapMailHtml(html.isEmpty() ? plainTextHtml(text) : html);
+        web.loadDataWithBaseURL(api.baseUrl(), body, "text/html", "UTF-8", null);
+        bodyCard.addView(web, new LinearLayout.LayoutParams(-1, dp(720)));
+        box.addView(bodyCard);
+    }
+
+    private View detailHeaderCard(Models.Mail mail, String senderText, String toText, String dateText) {
+        LinearLayout card = panel(dp(16), dp(16));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView avatar = avatarView(senderText);
+        top.addView(avatar, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
+        names.setPadding(dp(12), 0, 0, 0);
+        TextView sender = text(nonEmpty(senderText, "未知发件人"), 16, TEXT, true);
+        sender.setMaxLines(2);
+        TextView date = text(shortDate(dateText), 12, MUTED, false);
+        date.setPadding(0, dp(3), 0, 0);
+        names.addView(sender);
+        names.addView(date);
+        top.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
+        if (!mail.seen) top.addView(badge("未读", Color.rgb(59, 159, 225), Color.WHITE));
+        card.addView(top);
+
+        TextView subject = text(nonEmpty(mail.subject, "无主题"), 22, TEXT, true);
+        subject.setLineSpacing(dp(4), 1.0f);
+        subject.setPadding(0, dp(18), 0, dp(10));
+        card.addView(subject);
+        if (!toText.isEmpty()) {
+            TextView to = text("收件人：" + toText, 13, MUTED, false);
+            to.setMaxLines(2);
+            card.addView(to);
+        }
+        return card;
+    }
+
+    private View detailActionStrip(Models.Mail mail, JSONObject source) {
         HorizontalScrollView actionScroll = new HorizontalScrollView(this);
         actionScroll.setHorizontalScrollBarEnabled(false);
+        actionScroll.setFillViewport(false);
+        actionScroll.setPadding(0, 0, 0, 0);
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.setPadding(dp(2), dp(2), dp(2), dp(2));
         actionScroll.addView(actions);
         if ("draft".equals(mail.kind)) {
-            actions.addView(outlineButton("继续编辑", v -> renderComposeEditor(mail.to, mail.subject, mail.text, mail.id)));
-            actions.addView(outlineButton("删除草稿", v -> deleteDraft(mail)));
+            actions.addView(detailAction("✎", "继续编辑", v -> renderComposeEditor(mail.to, mail.subject, mail.text, mail.id)));
+            actions.addView(detailAction("×", "删除草稿", v -> deleteDraft(mail)));
         } else if ("outbox".equals(mail.kind)) {
-            actions.addView(outlineButton("重试发送", v -> retryOutbox(mail)));
-            actions.addView(outlineButton("编辑再发", v -> renderComposeEditor(mail.to, mail.subject, mail.text, "")));
-            actions.addView(outlineButton("删除记录", v -> deleteOutbox(mail)));
+            actions.addView(detailAction("↻", "重试", v -> retryOutbox(mail)));
+            actions.addView(detailAction("✎", "编辑再发", v -> renderComposeEditor(mail.to, mail.subject, mail.text, "")));
+            actions.addView(detailAction("×", "删除记录", v -> deleteOutbox(mail)));
         } else if (!"sent".equals(mail.folder)) {
-            actions.addView(outlineButton(mail.seen ? "标未读" : "标已读", v -> toggleSeen(mail)));
-            actions.addView(outlineButton(mail.favorite ? "取消星标" : "星标", v -> toggleFavorite(mail)));
+            actions.addView(detailAction(mail.seen ? "○" : "✓", mail.seen ? "标未读" : "标已读", v -> toggleSeen(mail)));
+            actions.addView(detailAction(mail.favorite ? "★" : "☆", mail.favorite ? "取消星标" : "星标", v -> toggleFavorite(mail)));
         }
         if (!"draft".equals(mail.kind) && !"outbox".equals(mail.kind)) {
-            actions.addView(outlineButton("翻译", v -> translateMail(mail, source)));
-            actions.addView(outlineButton("回复", v -> renderComposeFor(mail, "回复：" + mail.subject)));
-            actions.addView(outlineButton("转发", v -> renderComposeFor(mail, "转发：" + mail.subject)));
-            if (!"sent".equals(mail.folder)) actions.addView(outlineButton("删除", v -> confirmDelete(mail)));
+            actions.addView(detailAction("译", "翻译", v -> translateMail(mail, source)));
+            actions.addView(detailAction("↩", "回复", v -> renderComposeFor(mail, "回复：" + mail.subject)));
+            actions.addView(detailAction("↪", "转发", v -> renderComposeFor(mail, "转发：" + mail.subject)));
+            if (!"sent".equals(mail.folder)) actions.addView(detailAction("×", "删除", v -> confirmDelete(mail)));
         }
-        box.addView(actionScroll);
-
-        WebView web = new WebView(this);
-        WebSettings settings = web.getSettings();
-        settings.setLoadWithOverviewMode(true);
-        settings.setUseWideViewPort(true);
-        settings.setTextZoom(100);
-        settings.setBuiltInZoomControls(false);
-        String body = wrapMailHtml(html.isEmpty() ? plainTextHtml(text) : html);
-        web.loadDataWithBaseURL(api.baseUrl(), body, "text/html", "UTF-8", null);
-        box.addView(web, new LinearLayout.LayoutParams(-1, dp(650)));
+        return actionScroll;
     }
 
     private void toggleSeen(Models.Mail mail) {
@@ -1079,6 +1139,12 @@ public class MainActivity extends Activity {
     }
 
     private void translateMail(Models.Mail mail, JSONObject source) {
+        String sourceHash = translationSourceHash(mail, source);
+        LocalStore.TranslationCache cached = store.readTranslation(mail, sourceHash);
+        if (cached != null) {
+            showTranslation(mail, source, cached.translation, cached.format, true);
+            return;
+        }
         runAsync("翻译中...", () -> api.post("/api/ai/translate", new JSONObject()
             .put("subject", mail.subject)
             .put("text", Json.str(source, "text"))
@@ -1086,26 +1152,42 @@ public class MainActivity extends Activity {
             .put("account_type", mail.accountType)
             .put("account_id", mail.accountId)
             .put("folder", mail.folder)
-            .put("message_id", mail.id)), result -> showTranslation(result));
+            .put("message_id", mail.id)), result -> {
+            String translated = Json.str(result, "translation");
+            String format = Json.str(result, "format");
+            store.saveTranslation(
+                mail,
+                sourceHash,
+                translated,
+                format,
+                Json.str(result, "engine"),
+                Json.str(result, "provider"),
+                Json.str(result, "model")
+            );
+            showTranslation(mail, source, translated, format, result.optBoolean("cached"));
+        });
     }
 
-    private void showTranslation(JSONObject result) {
+    private void showTranslation(Models.Mail mail, JSONObject source, String translated, String format, boolean cached) {
         currentScreen = "translation";
-        String translated = Json.str(result, "translation");
-        String format = Json.str(result, "format");
-        setHeader("中文翻译", result.optBoolean("cached") ? "已使用缓存" : "实时翻译");
+        currentDetailMail = mail;
+        currentDetailSource = source;
+        setHeader("中文翻译", "");
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(BG);
         LinearLayout box = column(dp(10));
+        box.setPadding(dp(14), dp(10), dp(14), dp(18));
         scroll.addView(box);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
-        WebView web = new WebView(this);
-        web.getSettings().setLoadWithOverviewMode(true);
-        web.getSettings().setUseWideViewPort(true);
-        web.getSettings().setTextZoom(100);
-        String body = wrapMailHtml("html".equals(format) ? translated : plainTextHtml(translated));
-        web.loadDataWithBaseURL(api.baseUrl(), body, "text/html", "UTF-8", null);
-        box.addView(web, new LinearLayout.LayoutParams(-1, dp(650)));
+
+        box.addView(detailHeaderCard(mail, nonEmpty(mail.sender, Json.anyStr(source, "from", "from_address")), Json.anyStr(source, "to", "to_address"), nonEmpty(mail.date, Json.anyStr(source, "date", "createdAt", "created_at"))));
+        box.addView(readingSection(cached ? "中文翻译 · 已缓存" : "中文翻译", "html".equals(format) ? translated : plainTextHtml(translated), dp(520)));
+
+        String originalHtml = Json.str(source, "html");
+        String originalText = Json.str(source, "text");
+        box.addView(readingSection("原文", originalHtml.isEmpty() ? plainTextHtml(originalText) : originalHtml, dp(620)));
     }
 
     private void confirmDelete(Models.Mail mail) {
@@ -1500,6 +1582,37 @@ public class MainActivity extends Activity {
         return btn;
     }
 
+    private TextView detailAction(String icon, String label, View.OnClickListener listener) {
+        TextView btn = text(icon + "  " + label, 13, PRIMARY_DARK, true);
+        btn.setGravity(Gravity.CENTER);
+        btn.setSingleLine(true);
+        btn.setPadding(dp(13), dp(10), dp(13), dp(10));
+        btn.setBackground(bg(Color.WHITE, 18, Color.rgb(204, 222, 224), 1));
+        btn.setOnClickListener(listener);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(42));
+        lp.setMargins(0, dp(4), dp(8), dp(4));
+        btn.setLayoutParams(lp);
+        return btn;
+    }
+
+    private TextView sectionLabel(String value) {
+        TextView label = text(value, 15, TEXT, true);
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        return label;
+    }
+
+    private View readingSection(String titleText, String html, int minHeight) {
+        LinearLayout card = panel(dp(0), dp(0));
+        card.setBackground(bg(Color.WHITE, 22, SOFT_LINE, 1));
+        TextView label = sectionLabel(titleText);
+        label.setPadding(dp(18), dp(16), dp(18), dp(8));
+        card.addView(label);
+        WebView web = mailWebView();
+        web.loadDataWithBaseURL(api.baseUrl(), wrapMailHtml(html), "text/html", "UTF-8", null);
+        card.addView(web, new LinearLayout.LayoutParams(-1, minHeight));
+        return card;
+    }
+
     private TextView actionText(String text, boolean active) {
         TextView chip = text(text, 13, active ? Color.WHITE : PRIMARY_DARK, true);
         chip.setGravity(Gravity.CENTER);
@@ -1570,19 +1683,54 @@ public class MainActivity extends Activity {
         return "<pre class=\"memail-plain\">" + escape(value) + "</pre>";
     }
 
+    private WebView mailWebView() {
+        WebView web = new WebView(this);
+        WebSettings settings = web.getSettings();
+        settings.setLoadWithOverviewMode(true);
+        settings.setUseWideViewPort(true);
+        settings.setTextZoom(106);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        web.setBackgroundColor(Color.TRANSPARENT);
+        web.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        web.setVerticalScrollBarEnabled(false);
+        web.setHorizontalScrollBarEnabled(false);
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                view.postDelayed(() -> view.evaluateJavascript(
+                    "(function(){return Math.max(document.body.scrollHeight,document.documentElement.scrollHeight);})()",
+                    value -> {
+                        try {
+                            int cssHeight = (int) Math.ceil(Double.parseDouble(value.replace("\"", "")));
+                            int px = Math.max(dp(260), (int) (cssHeight * getResources().getDisplayMetrics().density) + dp(28));
+                            ViewGroup.LayoutParams lp = view.getLayoutParams();
+                            if (lp != null && Math.abs(lp.height - px) > dp(24)) {
+                                lp.height = Math.min(px, dp(2400));
+                                view.setLayoutParams(lp);
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }), 120);
+            }
+        });
+        return web;
+    }
+
     private static String wrapMailHtml(String body) {
         String safeBody = body == null ? "" : body;
         return "<!doctype html><html><head>"
             + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, maximum-scale=3\">"
             + "<style>"
-            + "html,body{margin:0;padding:0;background:#fff;color:#14252c;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;line-height:1.55;overflow-x:hidden;}"
-            + "body{box-sizing:border-box;padding:10px 8px 18px 8px;word-break:break-word;overflow-wrap:anywhere;}"
+            + "html,body{margin:0;padding:0;background:transparent;color:#14252c;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:16px;line-height:1.68;overflow-x:hidden;}"
+            + "body{box-sizing:border-box;padding:12px 18px 24px 18px;word-break:break-word;overflow-wrap:anywhere;}"
+            + "p{margin:0 0 14px 0;}div{max-width:100%;}"
             + "img{max-width:100%!important;height:auto!important;}"
-            + "table{max-width:100%!important;width:100%!important;border-collapse:collapse;table-layout:auto;display:block;overflow-x:auto;}"
+            + "table{max-width:100%!important;width:100%!important;border-collapse:collapse;table-layout:auto;display:block;overflow-x:auto;margin:12px 0;border-radius:10px;}"
             + "tbody,thead,tfoot,tr{max-width:100%;}"
-            + "td,th{word-break:break-word;overflow-wrap:anywhere;white-space:normal!important;}"
+            + "td,th{word-break:break-word;overflow-wrap:anywhere;white-space:normal!important;padding:8px 6px;border-color:#dfe8ea;}"
             + "a{color:#0b7285;word-break:break-word;}"
-            + "pre,.memail-plain{white-space:pre-wrap;font:15px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6;margin:0;}"
+            + "pre,.memail-plain{white-space:pre-wrap;font:16px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;margin:0;}"
             + "*{max-width:100%;box-sizing:border-box;}"
             + "</style></head><body>" + safeBody + "</body></html>";
     }
@@ -1603,6 +1751,25 @@ public class MainActivity extends Activity {
     private static String cleanPreview(String value) {
         if (value == null) return "";
         return value.replaceAll("\\s+", " ").trim();
+    }
+
+    private static String translationSourceHash(Models.Mail mail, JSONObject source) {
+        String raw = nonEmpty(mail.subject, "")
+            + "\n" + Json.str(source, "html")
+            + "\n" + Json.str(source, "text");
+        return sha256(raw);
+    }
+
+    private static String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : bytes) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception ignored) {
+            return Integer.toHexString((value == null ? "" : value).hashCode());
+        }
     }
 
     private static String shortDate(String value) {

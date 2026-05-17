@@ -11,7 +11,7 @@ import java.util.List;
 
 final class LocalStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "memail_mobile_cache.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
     LocalStore(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -59,14 +59,36 @@ final class LocalStore extends SQLiteOpenHelper {
             + "PRIMARY KEY(account_type, account_id, folder, id))");
         db.execSQL("CREATE INDEX idx_mails_scope_date ON mails(account_type, account_id, folder, date_text DESC)");
         db.execSQL("CREATE INDEX idx_mails_date ON mails(date_text DESC)");
+        createTranslationTable(db);
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 2) {
+            createTranslationTable(db);
+            return;
+        }
         db.execSQL("DROP TABLE IF EXISTS mails");
+        db.execSQL("DROP TABLE IF EXISTS translations");
         db.execSQL("DROP TABLE IF EXISTS folders");
         db.execSQL("DROP TABLE IF EXISTS accounts");
         onCreate(db);
+    }
+
+    private static void createTranslationTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS translations ("
+            + "account_type TEXT NOT NULL,"
+            + "account_id TEXT NOT NULL,"
+            + "folder TEXT NOT NULL,"
+            + "id TEXT NOT NULL,"
+            + "source_hash TEXT NOT NULL,"
+            + "translation TEXT,"
+            + "format TEXT,"
+            + "engine TEXT,"
+            + "provider TEXT,"
+            + "model TEXT,"
+            + "updated_at INTEGER DEFAULT 0,"
+            + "PRIMARY KEY(account_type, account_id, folder, id, source_hash))");
     }
 
     void replaceAccounts(List<Models.Account> accounts) {
@@ -222,6 +244,61 @@ final class LocalStore extends SQLiteOpenHelper {
             "account_type=? AND account_id=? AND folder=? AND id=?",
             new String[]{safe(mail.accountType), safe(mail.accountId), safe(mail.folder), mailId(mail)}
         );
+        db.delete(
+            "translations",
+            "account_type=? AND account_id=? AND folder=? AND id=?",
+            new String[]{safe(mail.accountType), safe(mail.accountId), safe(mail.folder), mailId(mail)}
+        );
+    }
+
+    TranslationCache readTranslation(Models.Mail mail, String sourceHash) {
+        if (mail == null || isEmpty(sourceHash)) return null;
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.query(
+            "translations",
+            null,
+            "account_type=? AND account_id=? AND folder=? AND id=? AND source_hash=?",
+            new String[]{safe(mail.accountType), safe(mail.accountId), safe(mail.folder), mailId(mail), sourceHash},
+            null,
+            null,
+            "updated_at DESC",
+            "1"
+        )) {
+            if (!cursor.moveToFirst()) return null;
+            TranslationCache cache = new TranslationCache();
+            cache.translation = get(cursor, "translation");
+            cache.format = get(cursor, "format");
+            cache.engine = get(cursor, "engine");
+            cache.provider = get(cursor, "provider");
+            cache.model = get(cursor, "model");
+            return cache.translation.isEmpty() ? null : cache;
+        }
+    }
+
+    void saveTranslation(
+        Models.Mail mail,
+        String sourceHash,
+        String translation,
+        String format,
+        String engine,
+        String provider,
+        String model
+    ) {
+        if (mail == null || isEmpty(sourceHash) || isEmpty(translation)) return;
+        SQLiteDatabase db = getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put("account_type", safe(mail.accountType));
+        values.put("account_id", safe(mail.accountId));
+        values.put("folder", safe(mail.folder));
+        values.put("id", mailId(mail));
+        values.put("source_hash", sourceHash);
+        values.put("translation", safe(translation));
+        values.put("format", safe(format));
+        values.put("engine", safe(engine));
+        values.put("provider", safe(provider));
+        values.put("model", safe(model));
+        values.put("updated_at", System.currentTimeMillis());
+        db.insertWithOnConflict("translations", null, values, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     List<Models.Mail> readVirtualMails(
@@ -332,5 +409,13 @@ final class LocalStore extends SQLiteOpenHelper {
 
     private static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    static final class TranslationCache {
+        String translation;
+        String format;
+        String engine;
+        String provider;
+        String model;
     }
 }

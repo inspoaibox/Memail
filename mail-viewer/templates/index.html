@@ -443,43 +443,92 @@
         /* 邮件列表选中态 */
         .mail-item {
             cursor: pointer;
-            transition: all 0.15s ease;
+            transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
             overflow: hidden;
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius);
+            border: 0;
+            border-bottom: 1px solid rgba(207,220,225,0.82);
+            border-radius: 0;
             box-shadow: none;
             margin-left: 0;
             margin-right: 0;
+            background: #ffffff;
+        }
+        .mail-item:first-child {
+            border-top: 1px solid rgba(207,220,225,0.68);
         }
         .mail-item .card-body {
-            padding-left: 0.45rem !important;
-            padding-right: 0.45rem !important;
+            padding: 0.72rem 0.78rem !important;
         }
         .mail-item .mail-item-body {
             min-width: 0;
         }
-        .mail-item .d-flex.justify-content-between.align-items-start {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) 126px;
-            column-gap: 8px;
-            align-items: start !important;
+        .mail-list-card {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            min-width: 0;
         }
-        .mail-item .d-flex.justify-content-between.align-items-start > .mail-sender,
-        .mail-item .d-flex.justify-content-between.align-items-start > strong {
+        .mail-list-check {
+            flex: 0 0 auto;
+            padding-top: 4px;
+        }
+        .mail-list-content {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .mail-list-top {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: baseline;
+            gap: 10px;
+            min-width: 0;
+        }
+        .mail-list-sender,
+        .mail-list-subject,
+        .mail-list-preview {
             min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .mail-item .d-flex.justify-content-between.align-items-start > small,
-        .mail-item .d-flex.justify-content-between.align-items-start > .mail-item-meta {
-            justify-self: end;
-            width: 126px;
-            min-width: 126px;
-            max-width: 126px;
+        .mail-list-sender {
+            font-size: 0.95rem;
+            line-height: 1.22;
+            color: var(--text-color);
+        }
+        .mail-list-date {
+            color: var(--muted-text);
+            font-size: 0.76rem;
+            white-space: nowrap;
             text-align: right;
+        }
+        .mail-list-subject {
+            margin-top: 3px;
+            font-size: 0.88rem;
+            line-height: 1.3;
+            color: #25343b;
+        }
+        .mail-list-preview {
+            margin-top: 4px;
+            color: var(--muted-text);
+            font-size: 0.76rem;
+            line-height: 1.25;
+        }
+        .mail-list-tag {
+            display: inline-flex;
+            align-items: center;
+            max-width: 118px;
+            margin-right: 5px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: rgba(36,107,115,0.08);
+            color: #44626a;
+            font-size: 0.68rem;
+            font-weight: 700;
+            vertical-align: 1px;
             overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .mail-item .mail-item-meta {
             white-space: nowrap;
@@ -506,36 +555,72 @@
             font-size: 0.78rem;
             line-height: 1.28;
         }
+        .mail-avatar {
+            position: relative;
+            flex: 0 0 auto;
+            width: 38px;
+            height: 38px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            border: 1px solid rgba(207,220,225,0.9);
+            background: linear-gradient(145deg, #eff8f7, #ffffff);
+            color: var(--primary-color);
+            font-size: 0.82rem;
+            font-weight: 800;
+            letter-spacing: 0;
+        }
+        .mail-avatar-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: inherit;
+            background: #ffffff;
+        }
+        .mail-avatar-fallback {
+            width: 100%;
+            height: 100%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mail-row-avatar {
+            margin-top: 1px;
+        }
         /* 未读邮件样式 */
         .mail-item.mail-unread {
-            border-left: 3px solid var(--navy);
-            background: #f8fbfd;
+            background: #fbfefe;
+            box-shadow: inset 3px 0 0 var(--navy);
         }
-        .mail-item.mail-unread .mail-sender {
+        .mail-item.mail-unread .mail-sender,
+        .mail-item.mail-unread .mail-list-sender {
             font-weight: 700;
             color: var(--text-color);
         }
-        .mail-item.mail-unread .mail-subject {
+        .mail-item.mail-unread .mail-subject,
+        .mail-item.mail-unread .mail-list-subject {
             font-weight: 600;
             color: var(--text-color);
         }
         /* 已读邮件样式 */
-        .mail-item:not(.mail-unread) .mail-sender {
+        .mail-item:not(.mail-unread) .mail-sender,
+        .mail-item:not(.mail-unread) .mail-list-sender {
             font-weight: 400;
             color: var(--muted-text);
         }
-        .mail-item:not(.mail-unread) .mail-subject {
+        .mail-item:not(.mail-unread) .mail-subject,
+        .mail-item:not(.mail-unread) .mail-list-subject {
             font-weight: 400;
             color: var(--muted-text);
         }
         .mail-item:hover {
             background: var(--surface-hover);
-            border-color: var(--strong-border);
         }
         .mail-item.active {
             background: var(--primary-soft);
-            border-left: 3px solid var(--primary-color);
-            border-color: rgba(36,107,115,0.24);
+            box-shadow: inset 3px 0 0 var(--primary-color);
         }
         .mail-item.active .mail-copy {
             background: transparent;
@@ -546,11 +631,14 @@
         }
         .mail-item.active strong,
         .mail-item.active .mail-sender,
-        .mail-item.active .mail-subject {
+        .mail-item.active .mail-subject,
+        .mail-item.active .mail-list-sender,
+        .mail-item.active .mail-list-subject {
             font-weight: 700;
             color: var(--text-color);
         }
-        .mail-item.active .mail-intro {
+        .mail-item.active .mail-intro,
+        .mail-item.active .mail-list-preview {
             opacity: 0.9;
             color: var(--muted-text);
         }
@@ -559,7 +647,6 @@
         }
         .mail-item.mail-pinned {
             order: -1;
-            border-color: rgba(183,130,47,0.42);
             box-shadow: inset 3px 0 0 var(--accent-color);
         }
         .mail-item-flags {
@@ -858,15 +945,33 @@
         }
         .mail-account-provider-icon {
             flex: 0 0 auto;
-            width: 24px;
-            height: 24px;
-            border-radius: 8px;
+            width: 30px;
+            height: 30px;
+            border-radius: 999px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             color: var(--primary-color);
-            background: var(--primary-soft);
-            font-size: 0.92rem;
+            background: linear-gradient(145deg, #eef8f7, #ffffff);
+            border: 1px solid rgba(207,220,225,0.9);
+            font-size: 0.78rem;
+            font-weight: 800;
+            overflow: hidden;
+        }
+        .mail-account-provider-icon .mail-avatar-img,
+        .mail-account-provider-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: inherit;
+            background: #ffffff;
+        }
+        .mail-account-provider-icon .mail-avatar-fallback {
+            width: 100%;
+            height: 100%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
         .mail-account-actions {
             display: grid;
@@ -3569,6 +3674,114 @@
             return name && address ? `${name} <${address}>` : (address || name || '');
         }
 
+        function _extractEmailAddress(value) {
+            if (!value) return '';
+            if (typeof value === 'object') return value.address || value.email || '';
+            const text = String(value || '');
+            const angle = text.match(/<([^<>@\s]+@[^<>\s]+)>/);
+            if (angle) return angle[1];
+            const plain = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+            return plain ? plain[0] : '';
+        }
+
+        function _domainFromEmail(value) {
+            const email = _extractEmailAddress(value) || String(value || '');
+            const domain = email.includes('@') ? email.split('@').pop() : email;
+            return String(domain || '').trim().toLowerCase().replace(/^www\./, '');
+        }
+
+        function _initialForAvatar(value, fallback = 'M') {
+            const text = String(value || fallback || 'M').trim();
+            if (!text) return 'M';
+            const email = _extractEmailAddress(text);
+            const source = email ? email.split('@')[0] : text;
+            const cleaned = source.replace(/^["']+|["']+$/g, '').trim();
+            return (cleaned.charAt(0) || 'M').toUpperCase();
+        }
+
+        function _domainIconUrl(domain) {
+            const value = String(domain || '').trim().toLowerCase();
+            if (!value || !value.includes('.')) return '';
+            return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(value)}&sz=64`;
+        }
+
+        function _avatarHtml({ label = '', email = '', domain = '', className = 'mail-avatar', title = '' } = {}) {
+            const iconDomain = domain || _domainFromEmail(email);
+            const initial = _initialForAvatar(label || email || iconDomain || 'M');
+            const iconUrl = _domainIconUrl(iconDomain);
+            const fallbackStyle = iconUrl ? ' style="display:none"' : '';
+            const safeTitle = title || label || email || iconDomain;
+            const classes = String(className || 'mail-avatar').trim() || 'mail-avatar';
+            const baseClass = classes.split(/\s+/).pop() || 'mail-avatar';
+            return `
+                <span class="${_escapeAttr(classes)}" title="${_escapeAttr(safeTitle)}">
+                    ${iconUrl ? `<img class="${_escapeAttr(baseClass)}-img mail-avatar-img" src="${_escapeAttr(iconUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';">` : ''}
+                    <span class="${_escapeAttr(baseClass)}-fallback mail-avatar-fallback"${fallbackStyle}>${_escapeHtml(initial)}</span>
+                </span>`;
+        }
+
+        function _accountAvatarHtml(account = {}, fallbackLabel = '') {
+            const email = account.email || account.address || fallbackLabel || '';
+            const label = _accountDisplayName(account, email) || fallbackLabel || email || account.name || 'M';
+            return _avatarHtml({ label, email, className: 'mail-account-provider-icon', title: label });
+        }
+
+        function _senderAvatarHtml(sender, accountEmail = '') {
+            const email = _extractEmailAddress(sender) || accountEmail || '';
+            return _avatarHtml({ label: sender || email || t('unknownSender'), email, className: 'mail-avatar mail-row-avatar', title: sender || email });
+        }
+
+        function _mailDateLabel(value) {
+            if (!value) return '';
+            const date = new Date(value);
+            if (!Number.isFinite(date.getTime())) return '';
+            return date.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US');
+        }
+
+        function _mailListTag(text) {
+            return text ? `<span class="mail-list-tag">${_escapeHtml(text)}</span>` : '';
+        }
+
+        function _renderMailListItem({
+            msg,
+            msgId = '',
+            sender = '',
+            subject = '',
+            intro = '',
+            date = '',
+            accountEmail = '',
+            metaFallback = {},
+            checkbox = '',
+            onClick = '',
+            tags = [],
+            extraClass = '',
+        }) {
+            const seen = msg?.seen === true;
+                    const safeMsgId = _escapeAttr(msgId || msg?.id || msg?.uid || '');
+                    const className = `mail-item ${seen ? '' : 'mail-unread'} ${_messageClasses(msg || {}, metaFallback)} ${extraClass || ''}`.trim();
+            const flags = _renderMessageFlags(msg || {}, metaFallback);
+            const tagHtml = (tags || []).filter(Boolean).map(_mailListTag).join('');
+            const clickAttr = onClick ? ` onclick="${onClick}"` : '';
+            const avatarEmail = accountEmail || _extractEmailAddress(sender);
+            return `
+                <div class="card mail-item-card ${className}" data-msg-id="${safeMsgId}"${clickAttr}>
+                    <div class="card-body">
+                        <div class="mail-list-card">
+                            ${checkbox ? `<div class="mail-list-check" onclick="event.stopPropagation()">${checkbox}</div>` : ''}
+                            ${_senderAvatarHtml(sender, avatarEmail)}
+                            <div class="mail-list-content">
+                                <div class="mail-list-top">
+                                    <div class="mail-list-sender">${flags}<span class="mail-copy">${_escapeHtml(sender || t('unknownSender'))}</span></div>
+                                    <div class="mail-list-date">${_escapeHtml(_mailDateLabel(date))}</div>
+                                </div>
+                                <div class="mail-list-subject"><span class="mail-copy">${_escapeHtml(subject || t('noSubject'))}</span></div>
+                                <div class="mail-list-preview">${tagHtml}<span class="mail-copy">${_escapeHtml(intro || '')}</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
         function _accountProviderIcon(type, provider = '') {
             if (type === 'local') return 'bi-hdd-network';
             const name = String(provider || '').toLowerCase();
@@ -4033,7 +4246,7 @@
                 rows.push(`<div class="mail-account-group">${_escapeHtml(t('globalMailbox'))}</div>`);
                 rows.push(`
                     <button class="mail-account-item ${currentAccountType === 'global' ? 'active' : ''}" draggable="false" data-account-type="global" data-account-id="global" onclick="selectGlobalMailbox()">
-                        <span class="mail-account-provider-icon"><i class="bi bi-collection"></i></span>
+                        ${_accountAvatarHtml({displayName: t('globalMailbox'), email: ''}, t('globalMailbox'))}
                         <span class="mail-account-main">
                             <span class="mail-account-title">${_escapeHtml(t('globalMailbox'))}</span>
                             <span class="mail-account-subtitle">${_escapeHtml(t('globalMailboxHint'))}</span>
@@ -4045,7 +4258,7 @@
                 keywordRules.filter(rule => rule.enabled !== false).forEach(rule => {
                     rows.push(`
                         <button class="mail-account-item ${currentAccountType === 'keyword' && currentKeywordRuleId === rule.id ? 'active' : ''}" draggable="false" data-account-type="keyword" data-account-id="${_escapeAttr(rule.id)}" onclick="selectKeywordRule('${_escapeAttr(rule.id)}')">
-                            <span class="mail-account-provider-icon"><i class="bi bi-funnel"></i></span>
+                            ${_accountAvatarHtml({displayName: rule.name, email: ''}, rule.name)}
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(rule.name)}</span>
                                 <span class="mail-account-subtitle">${_escapeHtml((rule.keywords || []).slice(0, 3).join(', '))}</span>
@@ -4068,14 +4281,14 @@
                 if (collapsed) return;
                 rows.push(`
                     <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_ALL_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_ALL_FOLDER}')">
-                        <span class="mail-account-provider-icon"><i class="bi bi-collection"></i></span>
+                        ${_accountAvatarHtml({displayName: t('allMail'), email: ''}, t('allMail'))}
                         <span class="mail-account-main">
                             <span class="mail-account-title">${_escapeHtml(t('allMail'))}</span>
                             <span class="mail-account-subtitle">${_escapeHtml(t('groupMailboxHint', {group}))}</span>
                         </span>
                     </button>
                     <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_UNREAD_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_UNREAD_FOLDER}')">
-                        <span class="mail-account-provider-icon"><i class="bi bi-envelope-exclamation"></i></span>
+                        ${_accountAvatarHtml({displayName: t('unreadMail'), email: ''}, t('unreadMail'))}
                         <span class="mail-account-main">
                             <span class="mail-account-title">${_escapeHtml(t('unreadMail'))}</span>
                             <span class="mail-account-subtitle">${_escapeHtml(t('groupMailboxHint', {group}))}</span>
@@ -4089,7 +4302,7 @@
                         const showSubtitle = displayName && displayName !== address;
                         rows.push(`
                         <button class="mail-account-item ${currentAccountType === 'local' && address === currentMailbox ? 'active' : ''}" draggable="true" data-account-type="local" data-account-id="${_escapeAttr(address)}" data-account-email="${_escapeAttr(address)}" onclick="if(!suppressAccountClick) selectMailbox('${encodeURIComponent(address)}')">
-                            <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('local')}"></i></span>
+                            ${_accountAvatarHtml({...item, email: address, address}, displayName)}
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
@@ -4104,7 +4317,7 @@
                         const showSubtitle = displayName && displayName !== email;
                         rows.push(`
                         <button class="mail-account-item ${currentAccountType === 'external' && String(account.id) === String(currentExternalAccountId) ? 'active' : ''}" draggable="true" data-account-type="external" data-account-id="${_escapeAttr(String(account.id))}" data-account-email="${_escapeAttr(email)}" onclick="if(!suppressAccountClick) selectExternalAccount('${id}')">
-                            <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('external', provider)}"></i></span>
+                            ${_accountAvatarHtml(account, displayName)}
                             <span class="mail-account-main">
                                 <span class="mail-account-title-row">
                                     <span class="mail-account-title">${_escapeHtml(displayName)}</span>
@@ -4162,7 +4375,7 @@
                     const sendName = (item.send_name || item.sendName || '').trim();
                     return `
                         <div class="account-settings-row">
-                            <span class="mail-account-provider-icon"><i class="bi bi-envelope"></i></span>
+                            ${_accountAvatarHtml({...item, email: address, address}, displayName)}
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(address)}</span>` : ''}
@@ -4190,7 +4403,7 @@
                     const sendName = (account.sendName || account.send_name || '').trim();
                     return `
                         <div class="account-settings-row">
-                            <span class="mail-account-provider-icon"><i class="bi ${_accountProviderIcon('external', provider)}"></i></span>
+                            ${_accountAvatarHtml(account, displayName)}
                             <span class="flex-grow-1 min-w-0">
                                 <span class="mail-account-title">${_escapeHtml(displayName)}</span>
                                 ${showSubtitle ? `<span class="mail-account-subtitle">${_escapeHtml(email)}</span>` : ''}
@@ -5630,7 +5843,7 @@
                         : t('scopeAll');
                 return `
                     <div class="account-settings-row">
-                        <span class="mail-account-provider-icon"><i class="bi bi-funnel"></i></span>
+                        ${_accountAvatarHtml({displayName: rule.name, email: ''}, rule.name)}
                         <span class="flex-grow-1 min-w-0">
                             <span class="mail-account-title">${_escapeHtml(rule.name)}</span>
                             <span class="mail-account-subtitle">${_escapeHtml(scopeText)} · ${rule.match_mode === 'all' ? t('matchAll') : t('matchAny')}</span>
@@ -6133,7 +6346,7 @@
                     const count = _groupAccountCount(group);
                     return `
                         <div class="account-settings-row">
-                            <span class="mail-account-provider-icon"><i class="bi bi-collection"></i></span>
+                            ${_accountAvatarHtml({displayName: group, email: ''}, group)}
                             <span class="mail-account-main">
                                 <span class="mail-account-title">${_escapeHtml(group)}</span>
                                 <span class="mail-account-subtitle">${count} ${currentLang === 'zh' ? '个账号' : 'accounts'}</span>
@@ -7044,26 +7257,25 @@
                 const date = msg.date || msg.createdAt || msg.created_at;
                 const metaFallback = { accountType: isExternal ? 'external' : 'local', accountId: msg._accountId || '', folder: sourceFolder, messageId: isExternal ? msg.uid : msgId };
                 const batchRef = _batchRefForMessage(msg);
-                const accountBadge = msg._accountLabel ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg._accountLabel)}</span>` : '';
-                const folderBadge = isExternal ? `<span class="badge text-bg-light me-1">${_escapeHtml(batchRef?.folder || sourceFolder)}</span>` : '';
-                return `
-                    <div class="card mb-1 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="${isExternal ? `viewGlobalExternalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(msgId))}, this)` : `viewGlobalLocalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(String(msgId)))}, this)`}">
-                        <div class="card-body py-1 px-2">
-                            <div class="d-flex align-items-start">
-                                ${supportsBatch && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
-                                    <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
-                                </div>` : ''}
-                                <div class="flex-grow-1 min-w-0">
-                                    <div class="d-flex justify-content-between align-items-start">
-                                        <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
-                                        <small class="text-muted text-nowrap">${date ? new Date(date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
-                                    </div>
-                                    <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(subject)}</span></div>
-                                    <small class="mail-intro text-muted text-truncate d-block">${accountBadge}${folderBadge}<span class="mail-copy">${_escapeHtml(msg.intro || '')}</span></small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>`;
+                const checkbox = supportsBatch && batchRef
+                    ? `<input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">`
+                    : '';
+                const onClick = isExternal
+                    ? `viewGlobalExternalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(msgId))}, this)`
+                    : `viewGlobalLocalMail(${_jsString(encodeURIComponent(String(msg._accountId || '')))}, ${_jsString(encodeURIComponent(String(msgId)))}, this)`;
+                return _renderMailListItem({
+                    msg,
+                    msgId,
+                    sender,
+                    subject,
+                    intro: msg.intro || '',
+                    date,
+                    accountEmail: isExternal ? (msg._accountEmail || '') : String(msg._accountId || ''),
+                    metaFallback,
+                    checkbox,
+                    onClick,
+                    tags: [msg._accountLabel || '', isExternal ? (batchRef?.folder || sourceFolder) : ''],
+                });
             }).join('');
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
                 currentPage: currentGlobalPage,
@@ -7341,19 +7553,20 @@
                 return;
             }
             mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
-                const toStr = _escapeHtml((msg.to || []).join(', '));
-                const subject = _escapeHtml(msg.subject || t('noSubject'));
                 const metaFallback = { accountType: 'local', accountId: currentEmail, folder: 'sent', messageId: msg.id };
-                return `
-                    <div class="card mb-1 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewSentDetailById('${msg.id}', this)">
-                        <div class="card-body py-1 px-2">
-                            <div class="d-flex justify-content-between align-items-start">
-                                <strong>${_renderMessageFlags(msg, metaFallback)}<i class="bi bi-arrow-right me-1 text-muted"></i><span class="mail-copy">${toStr}</span></strong>
-                                <small class="text-muted">${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
-                            </div>
-                            <div class="text-truncate"><span class="mail-copy">${subject}</span></div>
-                        </div>
-                    </div>`;
+                const toText = (msg.to || []).map(item => _formatAddress(item)).filter(Boolean).join(', ');
+                return _renderMailListItem({
+                    msg: {...msg, seen: true},
+                    msgId: msg.id,
+                    sender: toText || t('unknownSender'),
+                    subject: msg.subject || t('noSubject'),
+                    intro: '',
+                    date: msg.createdAt,
+                    accountEmail: currentEmail,
+                    metaFallback,
+                    onClick: `viewSentDetailById(${_jsString(msg.id)}, this)`,
+                    tags: [t('sent')],
+                });
             }).join('');
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
                 currentPage: currentSentPage,
@@ -7394,16 +7607,18 @@
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-file-earmark-text d-block"></i><p>${t('noDrafts')}</p></div>`;
                 return;
             }
-            mailList.innerHTML = messages.map(msg => `
-                <div class="card mb-1 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="openDraft(${_jsString(msg.id)}, this)">
-                    <div class="card-body py-1 px-2">
-                        <div class="d-flex justify-content-between align-items-start">
-                            <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.to || t('unknownSender'))}</span></span>
-                            <small class="text-muted">${msg.updated_at ? new Date(msg.updated_at).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
-                        </div>
-                        <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                    </div>
-                </div>`).join('');
+            mailList.innerHTML = messages.map(msg =>
+                _renderMailListItem({
+                    msg: {...msg, seen: true},
+                    msgId: msg.id,
+                    sender: Array.isArray(msg.to) ? msg.to.map(item => _formatAddress(item)).filter(Boolean).join(', ') : (msg.to || t('unknownSender')),
+                    subject: msg.subject || t('noSubject'),
+                    intro: '',
+                    date: msg.updated_at,
+                    accountEmail: msg.from_email || currentEmail,
+                    onClick: `openDraft(${_jsString(msg.id)}, this)`,
+                    tags: [t('drafts')],
+                })).join('');
         }
 
         async function queryOutbox() {
@@ -7438,17 +7653,18 @@
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-exclamation-diamond d-block"></i><p>${t('noOutbox')}</p></div>`;
                 return;
             }
-            mailList.innerHTML = messages.map(msg => `
-                <div class="card mb-1 mail-item" data-msg-id="${_escapeAttr(msg.id)}" onclick="viewOutboxDetail(${_jsString(msg.id)}, this)">
-                    <div class="card-body py-1 px-2">
-                        <div class="d-flex justify-content-between align-items-start">
-                            <span class="mail-sender text-truncate me-2"><span class="mail-copy">${_escapeHtml(msg.to || t('unknownSender'))}</span></span>
-                            <small class="text-danger">${_escapeHtml(msg.status || '')}</small>
-                        </div>
-                        <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                        <small class="mail-intro text-muted text-truncate d-block">${_escapeHtml(msg.error || '')}</small>
-                    </div>
-                </div>`).join('');
+            mailList.innerHTML = messages.map(msg =>
+                _renderMailListItem({
+                    msg: {...msg, seen: true},
+                    msgId: msg.id,
+                    sender: Array.isArray(msg.to) ? msg.to.map(item => _formatAddress(item)).filter(Boolean).join(', ') : (msg.to || t('unknownSender')),
+                    subject: msg.subject || t('noSubject'),
+                    intro: msg.error || '',
+                    date: msg.created_at || msg.updated_at,
+                    accountEmail: msg.from_email || currentEmail,
+                    onClick: `viewOutboxDetail(${_jsString(msg.id)}, this)`,
+                    tags: [msg.status || t('outbox')],
+                })).join('');
         }
 
         async function openDraft(draftId, element) {
@@ -7604,18 +7820,19 @@
             }
             mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
                 const metaFallback = { accountType: 'local', accountId: currentEmail, folder: 'trash', messageId: msg.id };
-                return `
-                <div class="card mb-1 mail-item ${_messageClasses(msg, metaFallback)}" data-msg-id="${msg.id}" onclick="viewMailDetail('${msg.id}', this, true)">
-                    <div class="card-body py-1 px-2">
-                        <div class="d-flex justify-content-between align-items-start">
-                            <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
-                            <small class="text-muted">${new Date(msg.createdAt).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
-                        </div>
-                        <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                        <small class="mail-intro text-muted text-truncate d-block"><span class="mail-copy">${_escapeHtml(msg.intro || '')}</span></small>
-                    </div>
-                </div>
-            `; }).join('');
+                return _renderMailListItem({
+                    msg,
+                    msgId: msg.id,
+                    sender: msg.from?.name || msg.from?.address || t('unknownSender'),
+                    subject: msg.subject || t('noSubject'),
+                    intro: msg.intro || '',
+                    date: msg.createdAt,
+                    accountEmail: currentEmail,
+                    metaFallback,
+                    onClick: `viewMailDetail(${_jsString(msg.id)}, this, true)`,
+                    tags: [t('trash')],
+                });
+            }).join('');
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
                 currentPage: currentTrashPage,
                 total: currentTrashTotal,
@@ -7792,30 +8009,28 @@
                 const clickHandler = source === 'sent'
                     ? `viewSentDetailById(${_jsString(msg.id)}, this.closest('.mail-item'))`
                     : `viewMailDetail(${_jsString(msg.id)}, this.closest('.mail-item'), ${source === 'trash' ? 'true' : 'false'})`;
-                return `
-                <div class="card mb-1 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgKey)}">
-                    <div class="card-body py-1 px-2">
-                        <div class="d-flex align-items-start">
-                            ${supportsBatch && source === 'inbox' && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
-                                <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
-                            </div>` : ''}
-                            <div class="flex-grow-1 mail-item-body" onclick="${clickHandler}">
-                                <div class="d-flex justify-content-between align-items-start">
-                                    <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${source === 'sent' ? _escapeHtml((msg.to || []).map(item => typeof item === 'string' ? item : (item.address || item.name || '')).filter(Boolean).join(', ') || t('unknownSender')) : _escapeHtml(msg.from?.name || msg.from?.address || t('unknownSender'))}</span></span>
-                                    <div class="mail-item-meta text-end ms-2">
-                                        ${msg.extracted_code ? `<span class="badge bg-success me-1" title="验证码"><i class="bi bi-key me-1"></i>${msg.extracted_code}</span>` : ''}
-                                        <small class="text-muted">${new Date(msg.createdAt || msg.created_at || msg.date || msg.receivedAt || 0).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US')}</small>
-                                    </div>
-                                </div>
-                                <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                                <small class="mail-intro text-muted text-truncate d-block">
-                                    ${isVirtualTab ? `<span class="badge text-bg-light me-1">${_escapeHtml(sourceLabel)}</span>` : ''}
-                                    <span class="mail-copy">${_escapeHtml(msg.intro || '')}</span>
-                                </small>
-                            </div>
-                        </div>
-                    </div>
-                </div>`;
+                const sender = source === 'sent'
+                    ? (msg.to || []).map(item => typeof item === 'string' ? item : (item.address || item.name || '')).filter(Boolean).join(', ') || t('unknownSender')
+                    : (msg.from?.name || msg.from?.address || t('unknownSender'));
+                const checkbox = supportsBatch && source === 'inbox' && batchRef
+                    ? `<input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">`
+                    : '';
+                return _renderMailListItem({
+                    msg,
+                    msgId: msgKey,
+                    sender,
+                    subject: msg.subject || t('noSubject'),
+                    intro: msg.intro || '',
+                    date: msg.createdAt || msg.created_at || msg.date || msg.receivedAt,
+                    accountEmail: currentEmail,
+                    metaFallback,
+                    checkbox,
+                    onClick: clickHandler.replace("this.closest('.mail-item')", 'this'),
+                    tags: [
+                        isVirtualTab ? sourceLabel : '',
+                        msg.extracted_code ? `验证码 ${msg.extracted_code}` : '',
+                    ],
+                });
             }).join('');
             
             if (isInboxTab || isVirtualTab) {
@@ -7953,27 +8168,22 @@
                 const folderBadge = _isExternalVirtualFolder(currentExternalFolder) || hasExplicitFolder
                     ? `<span class="badge text-bg-light me-1">${_escapeHtml(msg.folderName || sourceFolder)}</span>`
                     : '';
-                return `
-                    <div class="card mb-1 mail-item ${msg.seen ? '' : 'mail-unread'} ${_messageClasses(msg, metaFallback)}" data-msg-id="${_escapeAttr(msgId)}" onclick="viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)">
-                        <div class="card-body py-1 px-2">
-                            <div class="d-flex align-items-start">
-                                ${supportsBatch && batchRef ? `<div class="form-check me-2 mt-1" onclick="event.stopPropagation()">
-                                    <input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">
-                                </div>` : ''}
-                                <div class="flex-grow-1 min-w-0">
-                                    <div class="d-flex justify-content-between align-items-start">
-                                        <span class="mail-sender text-truncate me-2">${_renderMessageFlags(msg, metaFallback)}<span class="mail-copy">${_escapeHtml(sender)}</span></span>
-                                        <div class="mail-item-meta text-end ms-2">
-                                            ${msg.flagged ? `<i class="bi bi-star-fill text-warning me-1"></i>` : ''}
-                                            <small class="text-muted">${msg.date ? new Date(msg.date).toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US') : ''}</small>
-                                        </div>
-                                    </div>
-                                    <div class="mail-subject text-truncate"><span class="mail-copy">${_escapeHtml(msg.subject || t('noSubject'))}</span></div>
-                                    <small class="mail-intro text-muted text-truncate d-block">${folderBadge}<span class="mail-copy">${_escapeHtml(intro)}</span></small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>`;
+                const checkbox = supportsBatch && batchRef
+                    ? `<input class="form-check-input mail-checkbox" type="checkbox" value="${_escapeAttr(batchRef.key)}" onchange="updateBatchButtons()">`
+                    : '';
+                return _renderMailListItem({
+                    msg,
+                    msgId,
+                    sender,
+                    subject: msg.subject || t('noSubject'),
+                    intro,
+                    date: msg.date,
+                    accountEmail: currentExternalAccount?.email || '',
+                    metaFallback,
+                    checkbox,
+                    onClick: `viewExternalMailDetail(${_jsString(encodeURIComponent(msgId))}, this)`,
+                    tags: [_isExternalVirtualFolder(currentExternalFolder) || hasExplicitFolder ? (msg.folderName || sourceFolder) : ''],
+                });
             }).join('');
 
             mailList.insertAdjacentHTML('beforeend', _renderPagination({
