@@ -1398,7 +1398,17 @@ public class MainActivity extends Activity {
             renderLocalMessageDetail(mail);
             return;
         }
-        runAsync("打开邮件...", () -> {
+        Models.Mail cached = store.readMailDetail(mail);
+        if (cached != null && (!cached.html.isEmpty() || !cached.text.isEmpty())) {
+            renderLocalMessageDetail(cached);
+            fetchAndCacheDetail(mail, true);
+            return;
+        }
+        fetchAndCacheDetail(mail, false);
+    }
+
+    private void fetchAndCacheDetail(Models.Mail mail, boolean silent) {
+        runAsync(silent ? null : "打开邮件...", () -> {
             if ("external".equals(mail.accountType)) {
                 return api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder));
             }
@@ -1406,7 +1416,13 @@ public class MainActivity extends Activity {
                 return api.post("/api/sent/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
             }
             return api.post("/api/inbox/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
-        }, data -> renderDetail(mail, data));
+        }, data -> {
+            Models.Mail merged = mergeDetailIntoMail(mail, data);
+            store.upsertMailDetail(merged);
+            if (!silent || currentDetailMail == null || sameMail(currentDetailMail, mail)) {
+                renderDetail(merged, data);
+            }
+        });
     }
 
     private void renderLocalMessageDetail(Models.Mail mail) {
@@ -1420,6 +1436,36 @@ public class MainActivity extends Activity {
             // JSONObject only fails for invalid numeric values; string mail fields are safe here.
         }
         renderDetail(mail, data);
+    }
+
+    private Models.Mail mergeDetailIntoMail(Models.Mail base, JSONObject data) {
+        JSONObject detail = data.optJSONObject("detail");
+        JSONObject source = detail == null ? data : detail;
+        Models.Mail mail = new Models.Mail();
+        mail.accountType = base.accountType;
+        mail.accountId = base.accountId;
+        mail.folder = base.folder;
+        mail.id = base.id;
+        mail.sender = nonEmpty(base.sender, Json.anyStr(source, "from", "from_address"));
+        mail.subject = nonEmpty(base.subject, Json.str(source, "subject"));
+        mail.preview = nonEmpty(base.preview, Json.anyStr(source, "intro", "text"));
+        mail.date = nonEmpty(base.date, Json.anyStr(source, "date", "createdAt", "created_at"));
+        mail.kind = base.kind;
+        mail.to = Json.anyStr(source, "to", "to_address");
+        mail.text = Json.str(source, "text");
+        mail.html = Json.str(source, "html");
+        mail.error = nonEmpty(base.error, Json.str(source, "error"));
+        mail.seen = true;
+        mail.favorite = base.favorite || source.optBoolean("flagged", false) || Json.obj(source, "meta").optBoolean("favorite", false);
+        return mail;
+    }
+
+    private boolean sameMail(Models.Mail a, Models.Mail b) {
+        return a != null && b != null
+            && nonEmpty(a.accountType, "").equals(nonEmpty(b.accountType, ""))
+            && nonEmpty(a.accountId, "").equals(nonEmpty(b.accountId, ""))
+            && nonEmpty(a.folder, "").equals(nonEmpty(b.folder, ""))
+            && nonEmpty(a.id, "").equals(nonEmpty(b.id, ""));
     }
 
     private void renderDetail(Models.Mail mail, JSONObject data) {

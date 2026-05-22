@@ -2402,16 +2402,19 @@ app.get('/api/accounts/:id/mails/:uid', async (req, res) => {
   const folder = req.query.folder || 'INBOX';
   const uid = req.params.uid;
   const forceSync = ['1', 'true', 'yes'].includes(String(req.query.sync || req.query.refresh || '').toLowerCase());
+  const markSeen = !['0', 'false', 'no'].includes(String(req.query.markSeen ?? '1').toLowerCase());
 
   try {
     const cached = forceSync ? null : await readCachedMessageBody(client, folder, uid);
     if (cached) {
-      updateCachedMessageSeen(client, folder, uid, true).catch(() => {});
-      backgroundMarkRemoteSeen(client, folder, uid);
+      if (markSeen) {
+        updateCachedMessageSeen(client, folder, uid, true).catch(() => {});
+        backgroundMarkRemoteSeen(client, folder, uid);
+      }
       return res.json(cached);
     }
 
-    const detail = await readMessageDetailFromRemote(client, folder, uid, { markSeen: true });
+    const detail = await readMessageDetailFromRemote(client, folder, uid, { markSeen });
     res.json({ ...detail, cached: false });
   } catch (err) {
     res.status(500).json({ error: imapApiError(err, { folder, command: 'SELECT/DOWNLOAD' }) });

@@ -170,10 +170,55 @@ public class BackgroundSyncService extends JobService {
                     }
                 }
                 store.upsertMails(page);
+                cacheMailDetails(api, store, page);
             } catch (Exception ignored) {
                 // One mailbox failing must not block the rest of the background cache.
             }
         }
+    }
+
+    private void cacheMailDetails(ApiClient api, LocalStore store, List<Models.Mail> page) {
+        if (page == null || page.isEmpty()) return;
+        for (Models.Mail mail : page) {
+            if (mail == null || mail.id == null || mail.id.isEmpty()) continue;
+            if ((mail.html != null && !mail.html.isEmpty()) || (mail.text != null && !mail.text.isEmpty())) continue;
+            try {
+                JSONObject data;
+                if ("external".equals(mail.accountType)) {
+                    data = api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder) + "&markSeen=0");
+                } else {
+                    data = api.post("/api/inbox/detail", new JSONObject()
+                        .put("email", mail.accountId)
+                        .put("message_id", mail.id));
+                }
+                Models.Mail detail = mergeDetail(mail, data);
+                store.upsertMailDetail(detail);
+            } catch (Exception ignored) {
+                // Detail caching is best-effort; list cache remains usable.
+            }
+        }
+    }
+
+    private Models.Mail mergeDetail(Models.Mail base, JSONObject data) {
+        JSONObject detail = data.optJSONObject("detail");
+        JSONObject source = detail == null ? data : detail;
+        Models.Mail mail = new Models.Mail();
+        mail.accountType = base.accountType;
+        mail.accountId = base.accountId;
+        mail.folder = base.folder;
+        mail.id = base.id;
+        mail.sender = nonEmpty(base.sender, Json.anyStr(source, "from", "from_address"));
+        mail.subject = nonEmpty(base.subject, Json.str(source, "subject"));
+        mail.preview = nonEmpty(base.preview, Json.anyStr(source, "intro", "text"));
+        mail.date = nonEmpty(base.date, Json.anyStr(source, "date", "createdAt", "created_at"));
+        mail.kind = base.kind;
+        mail.to = Json.anyStr(source, "to", "to_address");
+        mail.text = Json.str(source, "text");
+        mail.html = Json.str(source, "html");
+        mail.error = nonEmpty(base.error, Json.str(source, "error"));
+        mail.seen = base.seen;
+        mail.favorite = base.favorite || source.optBoolean("flagged", false) || Json.obj(source, "meta").optBoolean("favorite", false);
+        return mail;
     }
 
     private void notifyIfNeeded(SharedPreferences prefs, List<Models.Account> accounts, int oldUnread) {
@@ -239,5 +284,9 @@ public class BackgroundSyncService extends JobService {
 
     private static String encode(String value) {
         return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    private static String nonEmpty(String value, String fallback) {
+        return value == null || value.isEmpty() ? fallback : value;
     }
 }

@@ -188,6 +188,7 @@ final class LocalStore extends SQLiteOpenHelper {
             long now = System.currentTimeMillis();
             for (Models.Mail mail : mails) {
                 if (isEmpty(mail.accountType) || isEmpty(mail.accountId) || isEmpty(mail.folder)) continue;
+                Models.Mail existing = readMailByKey(db, mail.accountType, mail.accountId, mail.folder, mailId(mail));
                 ContentValues values = new ContentValues();
                 values.put("account_type", safe(mail.accountType));
                 values.put("account_id", safe(mail.accountId));
@@ -195,12 +196,12 @@ final class LocalStore extends SQLiteOpenHelper {
                 values.put("id", mailId(mail));
                 values.put("sender", safe(mail.sender));
                 values.put("subject", safe(mail.subject));
-                values.put("preview", safe(mail.preview));
+                values.put("preview", safe(nonEmpty(mail.preview, existing == null ? "" : existing.preview)));
                 values.put("date_text", safe(mail.date));
                 values.put("kind", safe(mail.kind));
-                values.put("to_text", safe(mail.to));
-                values.put("text_body", safe(mail.text));
-                values.put("html_body", safe(mail.html));
+                values.put("to_text", safe(nonEmpty(mail.to, existing == null ? "" : existing.to)));
+                values.put("text_body", safe(nonEmpty(mail.text, existing == null ? "" : existing.text)));
+                values.put("html_body", safe(nonEmpty(mail.html, existing == null ? "" : existing.html)));
                 values.put("error", safe(mail.error));
                 values.put("seen", mail.seen ? 1 : 0);
                 values.put("favorite", mail.favorite ? 1 : 0);
@@ -210,6 +211,30 @@ final class LocalStore extends SQLiteOpenHelper {
             db.setTransactionSuccessful();
         } finally {
             db.endTransaction();
+        }
+    }
+
+    void upsertMailDetail(Models.Mail mail) {
+        if (mail == null) return;
+        List<Models.Mail> one = new ArrayList<>();
+        one.add(mail);
+        upsertMails(one);
+    }
+
+    Models.Mail readMailDetail(Models.Mail mail) {
+        if (mail == null) return null;
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.query(
+            "mails",
+            null,
+            "account_type=? AND account_id=? AND folder=? AND id=?",
+            new String[]{safe(mail.accountType), safe(mail.accountId), safe(mail.folder), mailId(mail)},
+            null,
+            null,
+            null,
+            "1"
+        )) {
+            return cursor.moveToFirst() ? readMail(cursor) : null;
         }
     }
 
@@ -391,6 +416,21 @@ final class LocalStore extends SQLiteOpenHelper {
         return mail;
     }
 
+    private static Models.Mail readMailByKey(SQLiteDatabase db, String accountType, String accountId, String folder, String id) {
+        try (Cursor cursor = db.query(
+            "mails",
+            null,
+            "account_type=? AND account_id=? AND folder=? AND id=?",
+            new String[]{safe(accountType), safe(accountId), safe(folder), safe(id)},
+            null,
+            null,
+            null,
+            "1"
+        )) {
+            return cursor.moveToFirst() ? readMail(cursor) : null;
+        }
+    }
+
     private static String mailId(Models.Mail mail) {
         if (!isEmpty(mail.id)) return mail.id;
         String raw = safe(mail.accountType) + "|" + safe(mail.accountId) + "|" + safe(mail.folder)
@@ -409,6 +449,10 @@ final class LocalStore extends SQLiteOpenHelper {
 
     private static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String nonEmpty(String value, String fallback) {
+        return value == null || value.isEmpty() ? fallback : value;
     }
 
     static final class TranslationCache {
