@@ -27,6 +27,68 @@ final class Models {
         int count;
     }
 
+    static final class KeywordRule {
+        String id;
+        String name;
+        String scopeType;
+        String scopeGroup;
+        String[] scopeAccounts = new String[0];
+        String matchMode;
+        String[] keywords = new String[0];
+        String[] fields = new String[0];
+        boolean enabled = true;
+
+        String keywordLine() {
+            if (keywords == null || keywords.length == 0) return "";
+            StringBuilder sb = new StringBuilder();
+            for (String keyword : keywords) {
+                if (keyword == null || keyword.isEmpty()) continue;
+                if (sb.length() > 0) sb.append("、");
+                sb.append(keyword);
+            }
+            return sb.toString();
+        }
+
+        boolean matches(Mail mail, String extraQuery) {
+            if (!enabled || keywords == null || keywords.length == 0 || mail == null) return false;
+            String blob = searchableText(mail).toLowerCase();
+            boolean all = "all".equalsIgnoreCase(matchMode);
+            boolean matched = all;
+            for (String keyword : keywords) {
+                String key = keyword == null ? "" : keyword.trim().toLowerCase();
+                if (key.isEmpty()) continue;
+                boolean hit = blob.contains(key);
+                if (all && !hit) {
+                    matched = false;
+                    break;
+                }
+                if (!all && hit) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return false;
+            String q = extraQuery == null ? "" : extraQuery.trim().toLowerCase();
+            return q.isEmpty() || blob.contains(q);
+        }
+
+        private String searchableText(Mail mail) {
+            StringBuilder sb = new StringBuilder();
+            if (usesField("from")) sb.append(mail.sender).append(' ');
+            if (usesField("to")) sb.append(mail.to).append(' ');
+            if (usesField("subject")) sb.append(mail.subject).append(' ');
+            if (usesField("intro")) sb.append(mail.preview).append(' ');
+            if (usesField("body")) sb.append(mail.text).append(' ').append(mail.html);
+            return sb.toString();
+        }
+
+        private boolean usesField(String field) {
+            if (fields == null || fields.length == 0) return "subject".equals(field) || "from".equals(field) || "intro".equals(field);
+            for (String item : fields) if (field.equalsIgnoreCase(item)) return true;
+            return false;
+        }
+    }
+
     static final class Mail {
         String accountType;
         String accountId;

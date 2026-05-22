@@ -5,18 +5,23 @@ import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.OpenableColumns;
 import android.text.Html;
 import android.text.InputType;
+import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -36,6 +41,7 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -46,7 +52,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -71,18 +77,34 @@ public class MainActivity extends Activity {
     private static final String PREFS = "memail_mobile";
     private static final String CHANNEL_MAIL = "memail_mail";
     private static final long EVENT_RECONNECT_MS = 4_000L;
+    private static final long FOREGROUND_REFRESH_MS = 120_000L;
+    private static final long BOOTSTRAP_REFRESH_COOLDOWN_MS = 45_000L;
+    private static final int REQ_PICK_ATTACHMENT = 4107;
+    private static final int MAX_MOBILE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+    private static final int KEYWORD_SCAN_LIMIT = 600;
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final ApiClient api = new ApiClient();
     private final List<Models.Account> accounts = new ArrayList<>();
     private final List<Models.Folder> folders = new ArrayList<>();
     private final List<Models.Mail> mails = new ArrayList<>();
+    private final List<Models.KeywordRule> keywordRules = new ArrayList<>();
 
     private SharedPreferences prefs;
     private LocalStore store;
     private Handler mainHandler;
     private Thread eventThread;
     private volatile boolean eventStreamRunning = false;
+    private volatile boolean bootstrapRefreshRunning = false;
+    private boolean foregroundRefreshLoopRunning = false;
+    private final Runnable foregroundRefreshTask = new Runnable() {
+        @Override
+        public void run() {
+            if (!foregroundRefreshLoopRunning || token.isEmpty() || mainHandler == null) return;
+            refreshBootstrapSilentlyIfDue(false);
+            mainHandler.postDelayed(this, FOREGROUND_REFRESH_MS);
+        }
+    };
     private LinearLayout root;
     private LinearLayout content;
     private LinearLayout navBar;
@@ -91,6 +113,7 @@ public class MainActivity extends Activity {
     private ProgressBar progress;
     private Models.Account selectedAccount;
     private Models.Folder selectedFolder;
+    private Models.KeywordRule selectedKeywordRule;
     private String selectedVirtualMode = "";
     private String selectedGroup = "";
     private String token = "";
@@ -104,6 +127,18 @@ public class MainActivity extends Activity {
     private String currentScreen = "boot";
     private Models.Mail currentDetailMail;
     private JSONObject currentDetailSource;
+    private Models.Account composeSender;
+    private final List<ComposeAttachment> composeAttachments = new ArrayList<>();
+    private TextView composeFromAvatar;
+    private TextView composeFromView;
+    private LinearLayout composeAttachmentList;
+
+    private static final class ComposeAttachment {
+        String filename;
+        String contentType;
+        String content;
+        int size;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -128,15 +163,34 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleLaunchIntent(intent);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_PICK_ATTACHMENT && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) addComposeAttachment(uri);
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         startEventStream();
+        startForegroundRefreshLoop();
+        if (!token.isEmpty() && !accounts.isEmpty()) refreshBootstrapSilentlyIfDue(false);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         stopEventStream();
+        stopForegroundRefreshLoop();
     }
 
     @Override
@@ -175,7 +229,7 @@ public class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(16), statusBarInset() + dp(8), dp(16), dp(8));
+        header.setPadding(dp(12), statusBarInset() + dp(6), dp(12), dp(6));
         header.setBackgroundColor(Color.WHITE);
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
         View headerLine = new View(this);
@@ -192,7 +246,7 @@ public class MainActivity extends Activity {
         titleBox.setPadding(0, 0, 0, 0);
         header.addView(titleBox, new LinearLayout.LayoutParams(0, -2, 1));
 
-        title = text("Memail", 18, TEXT, true);
+        title = text("Memail", 20, TEXT, true);
         title.setGravity(Gravity.CENTER);
         subtitle = text("", 1, Color.TRANSPARENT, false);
         subtitle.setGravity(Gravity.CENTER);
@@ -214,16 +268,22 @@ public class MainActivity extends Activity {
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
 
         navBar = bottomNav();
-        root.addView(navBar, new LinearLayout.LayoutParams(-1, dp(88)));
+        root.addView(navBar, new LinearLayout.LayoutParams(-1, dp(74)));
     }
 
     private LinearLayout bottomNav() {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setGravity(Gravity.CENTER);
+        outer.setPadding(dp(12), dp(2), dp(12), dp(12));
+        outer.setBackgroundColor(Color.WHITE);
+        outer.setVisibility(token.isEmpty() ? View.GONE : View.VISIBLE);
+
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER);
-        bar.setPadding(dp(14), dp(9), dp(14), dp(14));
-        bar.setBackgroundColor(BG);
-        bar.setVisibility(token.isEmpty() ? View.GONE : View.VISIBLE);
+        bar.setPadding(dp(5), dp(4), dp(5), dp(4));
+        bar.setBackground(bg(Color.WHITE, 26, SOFT_LINE, 1));
         String[] labels = {"账户", "邮件", "写信", "设置"};
         String[] icons = {"⌂", "✉", "✎", "⚙"};
         for (int i = 0; i < labels.length; i++) {
@@ -238,10 +298,11 @@ public class MainActivity extends Activity {
                 rebuildBottomNav();
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1);
-            lp.setMargins(dp(3), 0, dp(3), 0);
+            lp.setMargins(dp(1), 0, dp(1), 0);
             bar.addView(item, lp);
         }
-        return bar;
+        outer.addView(bar, new LinearLayout.LayoutParams(-1, dp(54)));
+        return outer;
     }
 
     private void rebuildBottomNav() {
@@ -259,21 +320,26 @@ public class MainActivity extends Activity {
 
     private View navItem(String icon, String label, boolean active) {
         LinearLayout item = new LinearLayout(this);
-        item.setOrientation(active ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        item.setOrientation(LinearLayout.VERTICAL);
         item.setGravity(Gravity.CENTER);
-        item.setPadding(active ? dp(12) : dp(4), dp(6), active ? dp(14) : dp(4), dp(6));
+        item.setBaselineAligned(false);
+        item.setPadding(dp(2), dp(1), dp(2), dp(4));
         item.setBackground(active
-            ? bg(PRIMARY, 24, PRIMARY, 0)
-            : bg(Color.WHITE, 22, Color.rgb(232, 239, 240), 1));
+            ? bg(PRIMARY_SOFT, 21, Color.rgb(187, 219, 218), 1)
+            : bg(Color.TRANSPARENT, 19, Color.TRANSPARENT, 0));
 
-        TextView iconView = text(icon, active ? 20 : 22, active ? Color.WHITE : NAV_INACTIVE, true);
+        TextView iconView = text(icon, 23, active ? PRIMARY : NAV_INACTIVE, true);
         iconView.setGravity(Gravity.CENTER);
-        TextView labelView = text(label, active ? 13 : 11, active ? Color.WHITE : NAV_INACTIVE, true);
+        iconView.setIncludeFontPadding(false);
+        iconView.setTranslationY(-dp(1));
+        TextView labelView = text(label, 11, active ? PRIMARY_DARK : NAV_INACTIVE, true);
         labelView.setGravity(Gravity.CENTER);
-        labelView.setPadding(active ? dp(7) : 0, active ? 0 : dp(1), 0, 0);
+        labelView.setIncludeFontPadding(false);
+        labelView.setPadding(0, 0, 0, 0);
+        labelView.setTranslationY(-dp(1));
 
-        item.addView(iconView, new LinearLayout.LayoutParams(active ? dp(24) : -1, active ? -1 : dp(28)));
-        item.addView(labelView, new LinearLayout.LayoutParams(active ? -2 : -1, active ? -2 : dp(18)));
+        item.addView(iconView, new LinearLayout.LayoutParams(-1, dp(24)));
+        item.addView(labelView, new LinearLayout.LayoutParams(-1, dp(15)));
         return item;
     }
 
@@ -344,30 +410,86 @@ public class MainActivity extends Activity {
     private void loadHome() {
         navIndex = 0;
         requestNotificationPermission();
+        BackgroundSyncService.schedule(this);
         startEventStream();
+        startForegroundRefreshLoop();
         accounts.clear();
         accounts.addAll(store.readAccounts());
+        loadCachedKeywordRules();
         if (accounts.isEmpty()) {
-            fetchBootstrapThenAccounts(true);
+            fetchBootstrapThenAccounts(true, true);
         } else {
             renderAccounts();
             checkNotifications();
-            fetchBootstrapThenAccounts(false);
+            refreshBootstrapSilentlyIfDue(true);
         }
+        handleLaunchIntent(getIntent());
+    }
+
+    private void handleLaunchIntent(Intent intent) {
+        if (intent == null || token.isEmpty()) return;
+        if (!"mail".equals(intent.getStringExtra("open"))) return;
+        mainHandler.postDelayed(() -> {
+            navIndex = 1;
+            renderMailHub();
+            rebuildBottomNav();
+        }, 180);
     }
 
     private void fetchBootstrapThenAccounts(boolean render) {
-        runAsync("同步账户...", () -> {
-            api.get("/api/sync/bootstrap");
-            JSONObject local = api.get("/api/mailboxes");
-            JSONObject external = api.get("/imap/api/accounts");
-            parseAccounts(local, external);
-            store.replaceAccounts(accounts);
-            return "ok";
+        fetchBootstrapThenAccounts(render, true);
+    }
+
+    private void fetchBootstrapThenAccounts(boolean render, boolean visible) {
+        if (bootstrapRefreshRunning && !render) return;
+        bootstrapRefreshRunning = true;
+        runAsync(visible ? "同步账户..." : null, () -> {
+            try {
+                JSONObject bootstrap = api.get("/api/sync/bootstrap");
+                JSONObject local = api.get("/api/mailboxes");
+                JSONObject external = api.get("/imap/api/accounts");
+                parseAccounts(local, external);
+                replaceKeywordRules(parseKeywordRuleList(bootstrap));
+                try {
+                    List<Models.KeywordRule> rules = parseKeywordRuleList(api.get("/api/keyword-rules"));
+                    if (!rules.isEmpty()) replaceKeywordRules(rules);
+                } catch (Exception ignored) {
+                    // Older servers can rely on /api/sync/bootstrap; the UI still shows cached rules.
+                }
+                saveKeywordRuleCache();
+                store.replaceAccounts(accounts);
+                prefs.edit().putLong("last_bootstrap_refresh_at", System.currentTimeMillis()).apply();
+                return "ok";
+            } finally {
+                bootstrapRefreshRunning = false;
+            }
         }, result -> {
             if (render) renderAccounts();
+            else if ("mailHub".equals(currentScreen)) renderMailHub();
+            else if ("accounts".equals(currentScreen)) renderAccounts();
+            else if ("list".equals(currentScreen) && "keyword".equals(selectedVirtualMode)) loadMails(true);
             checkNotifications();
         });
+    }
+
+    private void refreshBootstrapSilentlyIfDue(boolean force) {
+        if (token.isEmpty()) return;
+        long last = prefs.getLong("last_bootstrap_refresh_at", 0L);
+        long now = System.currentTimeMillis();
+        if (!force && now - last < BOOTSTRAP_REFRESH_COOLDOWN_MS) return;
+        fetchBootstrapThenAccounts(false, false);
+    }
+
+    private void startForegroundRefreshLoop() {
+        if (mainHandler == null || token.isEmpty() || foregroundRefreshLoopRunning) return;
+        foregroundRefreshLoopRunning = true;
+        mainHandler.removeCallbacks(foregroundRefreshTask);
+        mainHandler.postDelayed(foregroundRefreshTask, FOREGROUND_REFRESH_MS);
+    }
+
+    private void stopForegroundRefreshLoop() {
+        foregroundRefreshLoopRunning = false;
+        if (mainHandler != null) mainHandler.removeCallbacks(foregroundRefreshTask);
     }
 
     private void parseAccounts(JSONObject local, JSONObject external) {
@@ -390,6 +512,76 @@ public class MainActivity extends Activity {
         for (int i = 0; i < externalArray.length(); i++) addExternalAccount(externalArray.optJSONObject(i));
     }
 
+    private List<Models.KeywordRule> parseKeywordRuleList(JSONObject source) {
+        List<Models.KeywordRule> parsed = new ArrayList<>();
+        JSONArray arr = Json.array(source, "keywordRules");
+        if (arr.length() == 0) arr = Json.array(source, "keyword_rules");
+        if (arr.length() == 0) arr = Json.array(source, "rules");
+        if (arr.length() == 0) arr = Json.array(source, "items");
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            if (item == null) continue;
+            Models.KeywordRule rule = new Models.KeywordRule();
+            rule.id = Json.str(item, "id");
+            rule.name = Json.str(item, "name");
+            rule.scopeType = Json.anyStr(item, "scope_type", "scopeType");
+            rule.scopeGroup = Json.anyStr(item, "scope_group", "scopeGroup");
+            rule.scopeAccounts = jsonStringArray(Json.arrayAny(item, "scope_accounts", "scopeAccounts"));
+            rule.matchMode = Json.anyStr(item, "match_mode", "matchMode");
+            rule.enabled = item.optBoolean("enabled", true);
+            rule.keywords = jsonStringArray(Json.array(item, "keywords"));
+            rule.fields = jsonStringArray(Json.array(item, "fields"));
+            if (rule.enabled && !rule.id.isEmpty() && !rule.name.isEmpty()) parsed.add(rule);
+        }
+        return parsed;
+    }
+
+    private void replaceKeywordRules(List<Models.KeywordRule> rules) {
+        keywordRules.clear();
+        if (rules != null) keywordRules.addAll(rules);
+    }
+
+    private void loadCachedKeywordRules() {
+        try {
+            String raw = prefs.getString("keyword_rules_cache", "[]");
+            replaceKeywordRules(parseKeywordRuleList(new JSONObject().put("rules", new JSONArray(raw))));
+        } catch (Exception ignored) {
+            keywordRules.clear();
+        }
+    }
+
+    private void saveKeywordRuleCache() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (Models.KeywordRule rule : keywordRules) {
+                JSONObject item = new JSONObject()
+                    .put("id", rule.id)
+                    .put("name", rule.name)
+                    .put("scopeType", rule.scopeType)
+                    .put("scopeGroup", rule.scopeGroup)
+                    .put("matchMode", rule.matchMode)
+                    .put("enabled", rule.enabled);
+                JSONArray keywords = new JSONArray();
+                if (rule.keywords != null) for (String keyword : rule.keywords) keywords.put(keyword);
+                JSONArray fields = new JSONArray();
+                if (rule.fields != null) for (String field : rule.fields) fields.put(field);
+                JSONArray scopeAccounts = new JSONArray();
+                if (rule.scopeAccounts != null) for (String account : rule.scopeAccounts) scopeAccounts.put(account);
+                item.put("keywords", keywords).put("fields", fields).put("scopeAccounts", scopeAccounts);
+                arr.put(item);
+            }
+            prefs.edit().putString("keyword_rules_cache", arr.toString()).apply();
+        } catch (Exception ignored) {
+            // Cache is only a startup hint; failing to save it should not block mail usage.
+        }
+    }
+
+    private String[] jsonStringArray(JSONArray arr) {
+        String[] values = new String[arr.length()];
+        for (int i = 0; i < arr.length(); i++) values[i] = arr.optString(i, "");
+        return values;
+    }
+
     private void addExternalAccount(JSONObject item) {
         if (item == null) return;
         Models.Account account = new Models.Account();
@@ -409,28 +601,30 @@ public class MainActivity extends Activity {
         currentDetailMail = null;
         selectedVirtualMode = "";
         selectedGroup = "";
+        selectedKeywordRule = null;
         setHeader("账户与分组", accounts.size() + " 个账号");
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
-        LinearLayout list = column(dp(10));
+        LinearLayout list = column(dp(8));
+        list.setPadding(dp(12), dp(10), dp(12), dp(18));
         scroll.addView(list);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
-        Map<String, List<Models.Account>> grouped = new HashMap<>();
+        list.addView(dashboardCard("账户工作台", accounts.size() + " 个账号", totalUnread() + " 封未读 · " + allGroups().size() + " 个分组"));
+        Map<String, List<Models.Account>> grouped = new LinkedHashMap<>();
         for (Models.Account account : accounts) {
             String group = account.group == null || account.group.isEmpty() ? "未分组" : account.group;
             grouped.computeIfAbsent(group, k -> new ArrayList<>()).add(account);
         }
         for (String group : grouped.keySet()) {
-            TextView groupTitle = text(group, 15, MUTED, true);
-            groupTitle.setPadding(dp(4), dp(10), dp(4), dp(4));
-            list.addView(groupTitle);
+            list.addView(sectionHeader(group, grouped.get(group).size() + " 个账号 · 未读 " + groupUnread(group)));
             for (Models.Account account : grouped.get(group)) list.addView(accountRow(account));
         }
         if (accounts.isEmpty()) list.addView(empty("暂无账户，请先在服务端添加邮箱账号。"));
     }
 
     private View accountRow(Models.Account account) {
-        LinearLayout row = panel(dp(14), dp(12));
+        LinearLayout row = panel(dp(12), dp(11));
+        row.setBackground(bg(Color.WHITE, 22, SOFT_LINE, 1));
         row.setOnClickListener(v -> {
             selectedAccount = account;
             loadFolders(account);
@@ -438,12 +632,15 @@ public class MainActivity extends Activity {
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView icon = text("✉", 17, PRIMARY, true);
-        top.addView(icon, new LinearLayout.LayoutParams(dp(30), dp(30)));
+        TextView icon = avatarView(account.label() + account.email);
+        top.addView(icon, new LinearLayout.LayoutParams(dp(46), dp(46)));
         LinearLayout names = new LinearLayout(this);
         names.setOrientation(LinearLayout.VERTICAL);
+        names.setPadding(dp(12), 0, 0, 0);
         TextView name = text(account.label(), 16, TEXT, true);
+        name.setSingleLine(true);
         TextView meta = text(account.email, 12, MUTED, false);
+        meta.setSingleLine(true);
         names.addView(name);
         names.addView(meta);
         top.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
@@ -452,9 +649,12 @@ public class MainActivity extends Activity {
             top.addView(badge);
         }
         row.addView(top);
-        TextView type = text(("local".equals(account.type) ? "本地邮箱" : "外部邮箱") + " · " + nonEmpty(account.group, "未分组"), 11, MUTED, false);
-        type.setPadding(dp(30), dp(6), 0, 0);
-        row.addView(type);
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        chips.setPadding(dp(58), dp(8), 0, 0);
+        chips.addView(tinyChip("local".equals(account.type) ? "本地邮箱" : "外部邮箱"));
+        chips.addView(tinyChip(nonEmpty(account.group, "未分组")));
+        row.addView(chips);
         return row;
     }
 
@@ -464,40 +664,79 @@ public class MainActivity extends Activity {
         selectedFolder = null;
         selectedVirtualMode = "";
         selectedGroup = "";
+        selectedKeywordRule = null;
         setHeader("邮件", "所有账号和分组");
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
-        LinearLayout list = column(dp(3));
+        LinearLayout list = column(dp(8));
+        list.setPadding(dp(12), dp(10), dp(12), dp(18));
         scroll.addView(list);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
-        list.addView(hubRow("全部账号", "所有邮件", totalUnread(), v -> openVirtualMailbox("global_all", "")));
-        list.addView(hubRow("全部账号", "未读邮件", totalUnread(), v -> openVirtualMailbox("global_unread", "")));
+        list.addView(dashboardCard("邮件中心", totalUnread() + " 封未读", accounts.size() + " 个账号 · " + allGroups().size() + " 个分组"));
+        list.addView(sectionHeader("全局邮箱", "跨账号聚合查看"));
+        list.addView(hubRow("全部账号", "所有邮件", totalUnread(), "▦", v -> openVirtualMailbox("global_all", "")));
+        list.addView(hubRow("未读邮件", "所有账号的未读消息", totalUnread(), "●", v -> openVirtualMailbox("global_unread", "")));
+        Map<String, Integer> keywordCounts = keywordRuleCounts();
+        int keywordTotal = 0;
+        for (Integer value : keywordCounts.values()) keywordTotal += value == null ? 0 : value;
+        list.addView(sectionHeader(
+            "关键词监控",
+            keywordRules.isEmpty() ? "暂无规则" : keywordRules.size() + " 条规则 · " + keywordTotal + " 封命中"
+        ));
+        if (keywordRules.isEmpty()) {
+            list.addView(hubRow("暂无关键词规则", "请在服务端设置中新增关键词监控规则", 0, "⌁", v -> toast("请先在服务端设置关键词规则")));
+        } else {
+            for (Models.KeywordRule rule : keywordRules) {
+                int count = keywordCounts.containsKey(rule.id) ? keywordCounts.get(rule.id) : 0;
+                list.addView(hubRow(rule.name, nonEmpty(rule.keywordLine(), "命中关键词邮件"), count, "⚑", v -> openKeywordMailbox(rule), true));
+            }
+        }
+        list.addView(sectionHeader("分组邮箱", "按业务分组查看"));
         for (String group : allGroups()) {
             int unread = groupUnread(group);
-            list.addView(hubRow(group, "分组所有邮件", unread, v -> openVirtualMailbox("group_all", group)));
-            list.addView(hubRow(group, "分组未读邮件", unread, v -> openVirtualMailbox("group_unread", group)));
+            list.addView(hubRow(group, "分组所有邮件", unread, "▣", v -> openVirtualMailbox("group_all", group)));
+            list.addView(hubRow(group + " · 未读", "分组未读邮件", unread, "●", v -> openVirtualMailbox("group_unread", group)));
         }
         if (accounts.isEmpty()) list.addView(empty("暂无账户，请先在服务端添加邮箱账号。"));
     }
 
-    private View hubRow(String titleText, String subText, int unread, View.OnClickListener listener) {
-        LinearLayout row = panel(dp(14), dp(12));
+    private View hubRow(String titleText, String subText, int unread, String iconText, View.OnClickListener listener) {
+        return hubRow(titleText, subText, unread, iconText, listener, false);
+    }
+
+    private View hubRow(String titleText, String subText, int unread, String iconText, View.OnClickListener listener, boolean alwaysShowBadge) {
+        LinearLayout row = panel(dp(12), dp(12));
+        row.setBackground(bg(Color.WHITE, 22, SOFT_LINE, 1));
         row.setOnClickListener(listener);
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView icon = text(iconText, 19, PRIMARY, true);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(bg(PRIMARY_SOFT, 16, Color.TRANSPARENT, 0));
+        top.addView(icon, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
+        names.setPadding(dp(12), 0, 0, 0);
         TextView titleView = text(titleText, 16, TEXT, true);
-        TextView badgeView = unread > 0 ? badge(String.valueOf(unread), ACCENT, Color.WHITE) : null;
-        top.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1));
+        titleView.setSingleLine(true);
+        TextView subView = text(subText, 13, MUTED, false);
+        subView.setSingleLine(true);
+        names.addView(titleView);
+        names.addView(subView);
+        TextView badgeView = (unread > 0 || alwaysShowBadge)
+            ? badge(String.valueOf(Math.max(0, unread)), unread > 0 ? ACCENT : Color.rgb(231, 238, 239), unread > 0 ? Color.WHITE : MUTED)
+            : null;
+        top.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
         if (badgeView != null) top.addView(badgeView);
         row.addView(top);
-        row.addView(text(subText, 13, MUTED, false));
         return row;
     }
 
     private void openVirtualMailbox(String mode, String group) {
         selectedVirtualMode = mode;
         selectedGroup = group == null ? "" : group;
+        selectedKeywordRule = null;
         selectedAccount = null;
         selectedFolder = folder("virtual", "", mode, virtualTitle(mode, selectedGroup), 0);
         currentPage = 1;
@@ -506,8 +745,22 @@ public class MainActivity extends Activity {
         loadMails(false);
     }
 
+    private void openKeywordMailbox(Models.KeywordRule rule) {
+        selectedKeywordRule = rule;
+        selectedVirtualMode = "keyword";
+        selectedGroup = "";
+        selectedAccount = null;
+        selectedFolder = folder("keyword", "", rule.id, rule.name, 0);
+        currentPage = 1;
+        hasMore = false;
+        searchQuery = "";
+        loadMails(false);
+    }
+
     private void loadFolders(Models.Account account) {
         selectedAccount = account;
+        selectedKeywordRule = null;
+        selectedVirtualMode = "";
         selectedFolder = null;
         folders.clear();
         searchQuery = "";
@@ -582,9 +835,10 @@ public class MainActivity extends Activity {
         content.removeAllViews();
         LinearLayout page = column(0);
         content.addView(page, new LinearLayout.LayoutParams(-1, -1));
-        if (selectedAccount != null) page.addView(folderChips(), new LinearLayout.LayoutParams(-1, dp(52)));
-        page.addView(searchBar(), new LinearLayout.LayoutParams(-1, dp(48)));
+        if (selectedAccount != null) page.addView(folderChips(), new LinearLayout.LayoutParams(-1, dp(48)));
+        page.addView(searchBar(), new LinearLayout.LayoutParams(-1, dp(46)));
         LinearLayout list = column(0);
+        list.setPadding(dp(8), 0, dp(8), dp(12));
         ScrollView scroll = new ScrollView(this);
         scroll.addView(list);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -605,7 +859,7 @@ public class MainActivity extends Activity {
     private LinearLayout searchBar() {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setPadding(dp(16), dp(5), dp(16), dp(5));
+        bar.setPadding(dp(10), dp(4), dp(10), dp(4));
         bar.setBackgroundColor(Color.WHITE);
         EditText input = input("搜索发件人 / 主题 / 内容", searchQuery, false);
         input.setSingleLine(true);
@@ -647,7 +901,7 @@ public class MainActivity extends Activity {
         scroll.setHorizontalScrollBarEnabled(false);
         LinearLayout chips = new LinearLayout(this);
         chips.setOrientation(LinearLayout.HORIZONTAL);
-        chips.setPadding(dp(16), dp(8), dp(16), dp(8));
+        chips.setPadding(dp(10), dp(7), dp(10), dp(7));
         chips.setBackgroundColor(Color.WHITE);
         scroll.addView(chips);
         for (Models.Folder folder : folders) {
@@ -737,6 +991,10 @@ public class MainActivity extends Activity {
                 }
             }
             store.upsertMails(next);
+            if ("keyword".equals(selectedVirtualMode) && currentPage <= 1 && next.isEmpty() && !mails.isEmpty()) {
+                hasMore = false;
+                return "kept_cached_keyword";
+            }
             if (currentPage <= 1) mails.clear();
             mails.addAll(next);
             return "ok";
@@ -756,6 +1014,12 @@ public class MainActivity extends Activity {
     private List<Models.Mail> cachedMails() {
         int offset = Math.max(0, (currentPage - 1) * pageSize);
         if (selectedAccount == null && !selectedVirtualMode.isEmpty()) {
+            if ("keyword".equals(selectedVirtualMode) && selectedKeywordRule != null) {
+                List<Models.Mail> cached = store.readVirtualMails(scopedAccounts(), false, "", 500, 0);
+                List<Models.Mail> matched = filterKeywordMails(cached, selectedKeywordRule, searchQuery);
+                hasMore = offset + pageSize < matched.size();
+                return slice(matched, offset, pageSize);
+            }
             return store.readVirtualMails(scopedAccounts(), selectedVirtualMode.endsWith("_unread"), searchQuery, pageSize, offset);
         }
         if (selectedAccount == null || selectedFolder == null) return new ArrayList<>();
@@ -765,6 +1029,13 @@ public class MainActivity extends Activity {
 
     private List<Models.Mail> loadVirtualMails() throws Exception {
         List<Models.Mail> merged = new ArrayList<>();
+        if ("keyword".equals(selectedVirtualMode) && selectedKeywordRule != null) {
+            List<Models.Mail> source = loadKeywordSourceMails();
+            List<Models.Mail> matched = filterKeywordMails(source, selectedKeywordRule, searchQuery);
+            int offset = Math.max(0, (currentPage - 1) * pageSize);
+            hasMore = offset + pageSize < matched.size();
+            return slice(matched, offset, pageSize);
+        }
         boolean unreadOnly = selectedVirtualMode.endsWith("_unread");
         List<Models.Account> scoped = scopedAccounts();
         int offset = Math.max(0, (currentPage - 1) * pageSize);
@@ -781,7 +1052,7 @@ public class MainActivity extends Activity {
             JSONArray arr = Json.array(data, "mails");
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject item = arr.optJSONObject(i);
-                Models.Mail mail = Models.Mail.fromExternal(item, String.valueOf(item.opt("accountId")), Json.anyStr(item, "folder", "folderName"));
+                Models.Mail mail = Models.Mail.fromExternal(item, Json.anyStr(item, "accountId", "account_id"), Json.anyStr(item, "folder", "folderName"));
                 mail.accountType = "external";
                 if (matchesSearch(mail)) merged.add(mail);
             }
@@ -807,6 +1078,85 @@ public class MainActivity extends Activity {
         return merged.size() > pageSize ? new ArrayList<>(merged.subList(0, pageSize)) : merged;
     }
 
+    private List<Models.Mail> loadKeywordSourceMails() throws Exception {
+        Map<String, Models.Mail> sourceMap = new LinkedHashMap<>();
+        List<Models.Account> scoped = scopedAccounts();
+        for (Models.Mail mail : store.readVirtualMails(scoped, false, "", KEYWORD_SCAN_LIMIT * 2, 0)) {
+            sourceMap.put(mailStableKey(mail), mail);
+        }
+        List<String> externalIds = new ArrayList<>();
+        for (Models.Account account : scoped) {
+            if ("external".equals(account.type)) externalIds.add(account.id);
+        }
+        if (!externalIds.isEmpty()) {
+            JSONObject data = api.get("/imap/api/mails?accountIds=" + encode(join(externalIds, ",")) + "&count=" + KEYWORD_SCAN_LIMIT + "&offset=0&cacheOnly=1");
+            JSONArray arr = Json.array(data, "mails");
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject item = arr.optJSONObject(i);
+                Models.Mail mail = Models.Mail.fromExternal(item, Json.anyStr(item, "accountId", "account_id"), Json.anyStr(item, "folder", "folderName"));
+                mail.accountType = "external";
+                sourceMap.put(mailStableKey(mail), mail);
+            }
+        }
+        for (Models.Account account : scoped) {
+            if (!"local".equals(account.type)) continue;
+            JSONObject data = api.post("/api/inbox/query", new JSONObject()
+                .put("email", account.email)
+                .put("offset", 0)
+                .put("limit", KEYWORD_SCAN_LIMIT)
+                .put("unread_only", false));
+            JSONArray arr = Json.array(data, "messages");
+            for (int i = 0; i < arr.length(); i++) {
+                Models.Mail mail = Models.Mail.fromLocal(arr.optJSONObject(i), account.id, "inbox");
+                sourceMap.put(mailStableKey(mail), mail);
+            }
+        }
+        List<Models.Mail> source = new ArrayList<>(sourceMap.values());
+        store.upsertMails(source);
+        return source;
+    }
+
+    private List<Models.Mail> filterKeywordMails(List<Models.Mail> source, Models.KeywordRule rule, String extraQuery) {
+        List<Models.Mail> matched = new ArrayList<>();
+        for (Models.Mail mail : source) if (rule.matches(mail, extraQuery)) matched.add(mail);
+        matched.sort((a, b) -> nonEmpty(b.date, "").compareTo(nonEmpty(a.date, "")));
+        return matched;
+    }
+
+    private Map<String, Integer> keywordRuleCounts() {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        if (keywordRules.isEmpty() || accounts.isEmpty()) return counts;
+        List<Models.Mail> source = store.readVirtualMails(accounts, false, "", KEYWORD_SCAN_LIMIT * 3, 0);
+        for (Models.KeywordRule rule : keywordRules) {
+            int count = 0;
+            for (Models.Mail mail : source) {
+                if (keywordRuleIncludesMail(rule, mail) && rule.matches(mail, "")) count++;
+            }
+            counts.put(rule.id, count);
+        }
+        return counts;
+    }
+
+    private boolean keywordRuleIncludesMail(Models.KeywordRule rule, Models.Mail mail) {
+        if (rule == null || mail == null) return false;
+        Models.Account account = findMailAccountStrict(mail);
+        if (account != null) return keywordRuleIncludesAccount(rule, account);
+        if ("group".equals(rule.scopeType)) return false;
+        if ("accounts".equals(rule.scopeType)) {
+            if (rule.scopeAccounts == null || rule.scopeAccounts.length == 0) return true;
+            for (String scopeAccount : rule.scopeAccounts) {
+                if (sameId(scopeAccount, mail.accountId)) return true;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    private List<Models.Mail> slice(List<Models.Mail> source, int offset, int limit) {
+        if (source == null || source.isEmpty() || offset >= source.size()) return new ArrayList<>();
+        return new ArrayList<>(source.subList(Math.max(0, offset), Math.min(source.size(), Math.max(0, offset) + Math.max(1, limit))));
+    }
+
     private List<Models.Account> scopedAccounts() {
         List<Models.Account> scoped = new ArrayList<>();
         for (Models.Account account : accounts) {
@@ -814,9 +1164,36 @@ public class MainActivity extends Activity {
                 String group = account.group == null || account.group.isEmpty() ? "未分组" : account.group;
                 if (!group.equals(selectedGroup)) continue;
             }
+            if ("keyword".equals(selectedVirtualMode) && selectedKeywordRule != null && !keywordRuleIncludesAccount(selectedKeywordRule, account)) continue;
             scoped.add(account);
         }
         return scoped;
+    }
+
+    private boolean keywordRuleIncludesAccount(Models.KeywordRule rule, Models.Account account) {
+        if (rule == null || account == null) return false;
+        if ("group".equals(rule.scopeType)) {
+            String group = account.group == null || account.group.isEmpty() ? "未分组" : account.group;
+            return group.equals(nonEmpty(rule.scopeGroup, "未分组"));
+        }
+        if ("accounts".equals(rule.scopeType)) {
+            if (rule.scopeAccounts == null || rule.scopeAccounts.length == 0) return true;
+            for (String scopeAccount : rule.scopeAccounts) {
+                if (sameId(scopeAccount, account.id) || sameId(scopeAccount, account.email)) return true;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    private String mailStableKey(Models.Mail mail) {
+        if (mail == null) return "";
+        return nonEmpty(mail.accountType, "")
+            + "|" + nonEmpty(mail.accountId, "")
+            + "|" + nonEmpty(mail.folder, "")
+            + "|" + nonEmpty(mail.id, "")
+            + "|" + nonEmpty(mail.subject, "")
+            + "|" + nonEmpty(mail.date, "");
     }
 
     private boolean matchesSearch(Models.Mail mail) {
@@ -824,6 +1201,54 @@ public class MainActivity extends Activity {
         String q = searchQuery.toLowerCase();
         String blob = (nonEmpty(mail.sender, "") + " " + nonEmpty(mail.to, "") + " " + nonEmpty(mail.subject, "") + " " + nonEmpty(mail.preview, "")).toLowerCase();
         return blob.contains(q);
+    }
+
+    private String mailAccountLine(Models.Mail mail) {
+        Models.Account account = findMailAccount(mail);
+        String accountName = account == null ? nonEmpty(mail.accountId, "未知邮箱") : account.label();
+        String folderName = mobileFolderName(mail.folder);
+        if (folderName.isEmpty()) return accountName;
+        return accountName + "  ·  " + folderName;
+    }
+
+    private Models.Account findMailAccount(Models.Mail mail) {
+        Models.Account account = findMailAccountStrict(mail);
+        return account == null ? selectedAccount : account;
+    }
+
+    private Models.Account findMailAccountStrict(Models.Mail mail) {
+        if (mail == null) return null;
+        String type = nonEmpty(mail.accountType, "");
+        String id = nonEmpty(mail.accountId, "");
+        for (Models.Account account : accounts) {
+            if (!type.isEmpty() && !type.equals(account.type)) continue;
+            if (sameId(id, account.id) || sameId(id, account.email)) return account;
+        }
+        for (Models.Account account : accounts) {
+            if (sameId(id, account.id) || sameId(id, account.email)) return account;
+        }
+        return null;
+    }
+
+    private boolean sameId(String left, String right) {
+        if (left == null || right == null) return false;
+        String a = left.trim();
+        String b = right.trim();
+        return !a.isEmpty() && a.equalsIgnoreCase(b);
+    }
+
+    private String mobileFolderName(String folder) {
+        String value = nonEmpty(folder, "").trim();
+        if (value.isEmpty()) return "";
+        if ("inbox".equalsIgnoreCase(value)) return "收件箱";
+        if ("sent".equalsIgnoreCase(value) || "sent messages".equalsIgnoreCase(value)) return "已发送";
+        if ("drafts".equalsIgnoreCase(value)) return "草稿箱";
+        if ("junk".equalsIgnoreCase(value) || "spam".equalsIgnoreCase(value)) return "垃圾邮件";
+        if ("trash".equalsIgnoreCase(value) || "deleted messages".equalsIgnoreCase(value)) return "已删除";
+        if ("archive".equalsIgnoreCase(value)) return "归档";
+        if ("unread".equalsIgnoreCase(value)) return "未读";
+        if ("outbox".equalsIgnoreCase(value)) return "发送失败";
+        return value;
     }
 
     private void syncSelectedAccount() {
@@ -842,7 +1267,7 @@ public class MainActivity extends Activity {
             });
             return;
         }
-        fetchBootstrapThenAccounts(false);
+        fetchBootstrapThenAccounts(false, false);
         currentPage = 1;
         loadMails(false);
     }
@@ -851,8 +1276,8 @@ public class MainActivity extends Activity {
         int seq = event.optInt("seq", 0);
         if (seq > 0) prefs.edit().putInt("sync_seq", seq).apply();
         String type = Json.str(event, "type");
-        if (type.startsWith("mail.") || type.startsWith("draft.") || type.startsWith("outbox.") || type.startsWith("message.")) {
-            fetchBootstrapThenAccounts(false);
+        if (type.startsWith("mail.") || type.startsWith("draft.") || type.startsWith("outbox.") || type.startsWith("message.") || type.startsWith("keyword_rule.")) {
+            fetchBootstrapThenAccounts(false, false);
             if ("list".equals(currentScreen) && (selectedAccount != null || !selectedVirtualMode.isEmpty())) {
                 currentPage = 1;
                 loadMails(true);
@@ -918,18 +1343,18 @@ public class MainActivity extends Activity {
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.HORIZONTAL);
         shell.setGravity(Gravity.TOP);
-        shell.setPadding(dp(16), dp(12), dp(14), 0);
+        shell.setPadding(dp(8), dp(9), dp(8), 0);
         shell.setBackgroundColor(Color.WHITE);
         LinearLayout.LayoutParams shellLp = new LinearLayout.LayoutParams(-1, -2);
         shellLp.setMargins(0, 0, 0, 0);
         shell.setLayoutParams(shellLp);
 
         TextView avatar = avatarView(mail.sender);
-        shell.addView(avatar, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        shell.addView(avatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(12), 0, 0, 0);
+        row.setPadding(dp(9), 0, 0, 0);
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -940,21 +1365,25 @@ public class MainActivity extends Activity {
             TextView dot = text("●", 12, Color.rgb(59, 159, 225), true);
             senderWrap.addView(dot, new LinearLayout.LayoutParams(dp(16), -2));
         }
-        TextView sender = text((mail.favorite ? "★ " : "") + nonEmpty(mail.sender, "未知发件人"), 16, TEXT, !mail.seen);
+        TextView sender = text((mail.favorite ? "★ " : "") + nonEmpty(mail.sender, "未知发件人"), 17, TEXT, !mail.seen);
         sender.setSingleLine(true);
         senderWrap.addView(sender, new LinearLayout.LayoutParams(0, -2, 1));
         TextView date = text(shortMailDate(mail.date), 12, MUTED, false);
         date.setGravity(Gravity.RIGHT);
         top.addView(senderWrap, new LinearLayout.LayoutParams(0, -2, 1));
         top.addView(date, new LinearLayout.LayoutParams(dp(78), -2));
-        TextView subject = text(nonEmpty(mail.subject, "无主题"), 15, TEXT, !mail.seen);
-        subject.setPadding(mail.seen ? 0 : dp(16), dp(4), 0, dp(3));
+        TextView subject = text(nonEmpty(mail.subject, "无主题"), 16, TEXT, !mail.seen);
+        subject.setPadding(0, dp(3), 0, dp(2));
         subject.setMaxLines(1);
-        TextView preview = text(cleanPreview(mail.preview), 13, Color.rgb(135, 143, 148), false);
-        preview.setPadding(mail.seen ? 0 : dp(16), 0, 0, dp(12));
+        TextView account = text(mailAccountLine(mail), 12, PRIMARY_DARK, false);
+        account.setSingleLine(true);
+        account.setPadding(0, 0, 0, dp(3));
+        TextView preview = text(cleanPreview(mail.preview), 14, Color.rgb(135, 143, 148), false);
+        preview.setPadding(0, 0, 0, dp(8));
         preview.setMaxLines(2);
         row.addView(top);
         row.addView(subject);
+        row.addView(account);
         if (!mail.preview.isEmpty()) row.addView(preview);
         View divider = new View(this);
         divider.setBackgroundColor(Color.rgb(238, 241, 242));
@@ -1075,11 +1504,17 @@ public class MainActivity extends Activity {
         actions.setPadding(dp(2), dp(2), dp(2), dp(2));
         actionScroll.addView(actions);
         if ("draft".equals(mail.kind)) {
-            actions.addView(detailAction("✎", "继续编辑", v -> renderComposeEditor(mail.to, mail.subject, mail.text, mail.id)));
+            actions.addView(detailAction("✎", "继续编辑", v -> {
+                composeSender = findMailAccount(mail);
+                renderComposeEditor(mail.to, mail.subject, mail.text, mail.id);
+            }));
             actions.addView(detailAction("×", "删除草稿", v -> deleteDraft(mail)));
         } else if ("outbox".equals(mail.kind)) {
             actions.addView(detailAction("↻", "重试", v -> retryOutbox(mail)));
-            actions.addView(detailAction("✎", "编辑再发", v -> renderComposeEditor(mail.to, mail.subject, mail.text, "")));
+            actions.addView(detailAction("✎", "编辑再发", v -> {
+                composeSender = findMailAccount(mail);
+                renderComposeEditor(mail.to, mail.subject, mail.text, "");
+            }));
             actions.addView(detailAction("×", "删除记录", v -> deleteOutbox(mail)));
         } else if (!"sent".equals(mail.folder)) {
             actions.addView(detailAction(mail.seen ? "○" : "✓", mail.seen ? "标未读" : "标已读", v -> toggleSeen(mail)));
@@ -1242,10 +1677,12 @@ public class MainActivity extends Activity {
     private void renderCompose() {
         selectedVirtualMode = "";
         selectedGroup = "";
+        composeSender = selectedAccount;
         renderComposeFor(null, "");
     }
 
     private void renderComposeFor(Models.Mail source, String subject) {
+        if (source != null) composeSender = findMailAccount(source);
         String toValue = source == null ? "" : cleanAddress(source.sender);
         String bodyValue = source == null ? "" : "\n\n---- 原邮件 ----\n" + nonEmpty(source.preview, "");
         renderComposeEditor(toValue, subject, bodyValue, "");
@@ -1253,54 +1690,495 @@ public class MainActivity extends Activity {
 
     private void renderComposeEditor(String toValue, String subjectValue, String bodyValue, String draftId) {
         currentScreen = "compose";
-        setHeader("写邮件", selectedAccount == null ? "选择发件账号" : selectedAccount.label());
+        navIndex = 2;
+        rebuildBottomNav();
+        composeSender = composeSender == null ? defaultComposeSender() : composeSender;
+        composeAttachments.clear();
+        setHeader("写邮件", composeSender == null ? "选择发件账号" : composeSender.label());
         content.removeAllViews();
+        LinearLayout page = column(0);
+        page.setBackgroundColor(BG);
+        content.addView(page, new LinearLayout.LayoutParams(-1, -1));
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.setBackgroundColor(BG);
         LinearLayout box = column(dp(10));
+        box.setPadding(dp(12), dp(10), dp(12), dp(22));
         scroll.addView(box);
-        content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+        page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         EditText to = input("收件人，多个用逗号分隔", toValue, false);
+        EditText cc = input("抄送 CC，可选", "", false);
+        EditText bcc = input("密送 BCC，可选", "", false);
         EditText sub = input("主题", subjectValue, false);
         EditText body = input("正文", bodyValue, false);
-        body.setMinLines(8);
+        body.setMinLines(10);
         body.setGravity(Gravity.TOP);
-        box.addView(to);
-        box.addView(sub);
-        box.addView(body);
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView save = outlineButton("保存草稿", v -> saveDraft(to.getText().toString(), sub.getText().toString(), body.getText().toString(), draftId));
+        box.addView(composeSenderCard());
+        box.addView(composeEnvelopeCard(to, cc, bcc, sub));
+        box.addView(composeEditorCard(body));
+        TextView attach = outlineButton("＋ 添加附件", v -> pickComposeAttachment());
+        box.addView(composeAttachmentCard(attach));
+        composeAttachmentList = column(dp(2));
+        box.addView(composeAttachmentList);
+        updateComposeAttachmentList();
+        TextView save = outlineButton("保存草稿", v -> saveDraft(to.getText().toString(), cc.getText().toString(), bcc.getText().toString(), sub.getText().toString(), body.getText().toString(), draftId));
         TextView send = primaryButton("发送");
-        send.setOnClickListener(v -> sendMail(to.getText().toString(), sub.getText().toString(), body.getText().toString(), draftId));
-        actions.addView(save, new LinearLayout.LayoutParams(0, dp(48), 1));
-        actions.addView(send, new LinearLayout.LayoutParams(0, dp(48), 1));
-        box.addView(actions);
+        send.setOnClickListener(v -> sendMail(to.getText().toString(), cc.getText().toString(), bcc.getText().toString(), sub.getText().toString(), body.getText().toString(), draftId));
+        page.addView(composeActionBar(save, send), new LinearLayout.LayoutParams(-1, dp(72)));
     }
 
-    private JSONObject composePayload(Models.Account sender, String to, String subject, String body) throws Exception {
+    private Models.Account defaultComposeSender() {
+        if (selectedAccount != null) return selectedAccount;
+        if (composeSender != null) return composeSender;
+        return accounts.isEmpty() ? null : accounts.get(0);
+    }
+
+    private String composeSenderLabel() {
+        return composeSender == null
+            ? "发件账号：请选择"
+            : "发件账号：" + composeSender.label() + " <" + composeSender.email + ">";
+    }
+
+    private String composeSenderDisplay() {
+        return composeSender == null
+            ? "请选择发件邮箱"
+            : composeSender.label() + " <" + composeSender.email + ">";
+    }
+
+    private View composeSenderCard() {
+        LinearLayout card = panel(dp(14), dp(12));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        card.setOnClickListener(v -> chooseComposeSender());
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        composeFromAvatar = avatarView(composeSender == null ? "Memail" : composeSender.label() + composeSender.email);
+        row.addView(composeFromAvatar, new LinearLayout.LayoutParams(dp(46), dp(46)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setPadding(dp(12), 0, dp(8), 0);
+        TextView label = text("发件账号", 12, MUTED, true);
+        composeFromView = text(composeSenderDisplay(), 15, TEXT, true);
+        composeFromView.setSingleLine(true);
+        copy.addView(label);
+        copy.addView(composeFromView);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView change = tinyChip("切换");
+        row.addView(change);
+        card.addView(row);
+        return card;
+    }
+
+    private View composeEnvelopeCard(EditText to, EditText cc, EditText bcc, EditText subject) {
+        LinearLayout card = panel(dp(14), dp(12));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        card.addView(sectionLabel("收件信息"));
+        card.addView(composeField("收件人", to));
+        card.addView(composeField("抄送", cc));
+        card.addView(composeField("密送", bcc));
+        card.addView(composeField("主题", subject));
+        return card;
+    }
+
+    private View composeEditorCard(EditText body) {
+        LinearLayout card = panel(dp(14), dp(12));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        card.addView(sectionLabel("正文编辑"));
+        card.addView(formatToolbar(body));
+        card.addView(body, new LinearLayout.LayoutParams(-1, -2));
+        return card;
+    }
+
+    private View composeAttachmentCard(TextView attach) {
+        LinearLayout card = panel(dp(14), dp(12));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        card.addView(sectionLabel("附件"));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(44));
+        lp.setMargins(0, dp(8), 0, 0);
+        card.addView(attach, lp);
+        return card;
+    }
+
+    private View composeField(String labelText, EditText edit) {
+        LinearLayout field = new LinearLayout(this);
+        field.setOrientation(LinearLayout.VERTICAL);
+        field.setPadding(0, dp(6), 0, 0);
+        TextView label = text(labelText, 12, MUTED, true);
+        label.setPadding(dp(2), 0, dp(2), dp(2));
+        field.addView(label);
+        field.addView(edit, new LinearLayout.LayoutParams(-1, -2));
+        return field;
+    }
+
+    private void chooseComposeSender() {
+        if (accounts.isEmpty()) {
+            toast("暂无可用邮箱账号");
+            return;
+        }
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        LinearLayout sheet = column(dp(8));
+        sheet.setPadding(dp(16), dp(14), dp(16), dp(16));
+        sheet.setBackground(bg(Color.WHITE, 28, SOFT_LINE, 1));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView titleView = text("选择发件邮箱", 20, TEXT, true);
+        TextView close = text("×", 28, MUTED, false);
+        close.setGravity(Gravity.CENTER);
+        close.setOnClickListener(v -> dialog.dismiss());
+        header.addView(titleView, new LinearLayout.LayoutParams(0, dp(42), 1));
+        header.addView(close, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        sheet.addView(header);
+
+        TextView hint = text("选择后将作为本次写信的发件账号，不会清空已填写内容。", 13, MUTED, false);
+        hint.setPadding(dp(2), 0, dp(2), dp(6));
+        sheet.addView(hint);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = column(dp(4));
+        scroll.addView(list);
+        Map<String, List<Models.Account>> grouped = new LinkedHashMap<>();
+        for (Models.Account account : accounts) {
+            String group = nonEmpty(account.group, "未分组");
+            if (!grouped.containsKey(group)) grouped.put(group, new ArrayList<>());
+            grouped.get(group).add(account);
+        }
+        for (Map.Entry<String, List<Models.Account>> entry : grouped.entrySet()) {
+            list.addView(composeSenderGroupHeader(entry.getKey(), entry.getValue().size()));
+            for (Models.Account account : entry.getValue()) {
+                list.addView(composeSenderOption(account, dialog));
+            }
+        }
+
+        sheet.addView(scroll, new LinearLayout.LayoutParams(-1, Math.min(dp(480), getResources().getDisplayMetrics().heightPixels - dp(190))));
+        TextView cancel = outlineButton("取消", v -> dialog.dismiss());
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-1, dp(46));
+        cancelLp.setMargins(0, dp(8), 0, 0);
+        sheet.addView(cancel, cancelLp);
+
+        dialog.setContentView(sheet);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setGravity(Gravity.BOTTOM);
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            android.view.WindowManager.LayoutParams params = window.getAttributes();
+            params.dimAmount = 0.32f;
+            window.setAttributes(params);
+        }
+    }
+
+    private View composeSenderGroupHeader(String group, int count) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(2), dp(10), dp(2), dp(4));
+        TextView name = text(group, 13, MUTED, true);
+        TextView meta = text(count + " 个账号", 12, MUTED, false);
+        meta.setGravity(Gravity.RIGHT);
+        row.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+        row.addView(meta, new LinearLayout.LayoutParams(0, -2, 1));
+        return row;
+    }
+
+    private View composeSenderOption(Models.Account account, android.app.Dialog dialog) {
+        boolean active = composeSender != null && sameId(composeSender.type, account.type) && sameId(composeSender.id, account.id);
+        LinearLayout card = panel(dp(12), dp(10));
+        card.setBackground(bg(active ? PRIMARY_SOFT : Color.WHITE, 22, active ? Color.rgb(149, 205, 202) : SOFT_LINE, 1));
+        card.setOnClickListener(v -> {
+            composeSender = account;
+            updateComposeSenderViews();
+            dialog.dismiss();
+        });
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView avatar = avatarView(account.label() + account.email);
+        row.addView(avatar, new LinearLayout.LayoutParams(dp(46), dp(46)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setPadding(dp(12), 0, dp(8), 0);
+        TextView name = text(account.label(), 16, TEXT, true);
+        name.setSingleLine(true);
+        TextView email = text(account.email, 12, MUTED, false);
+        email.setSingleLine(true);
+        copy.addView(name);
+        copy.addView(email);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+        if (account.unread > 0) row.addView(badge(String.valueOf(account.unread), ACCENT, Color.WHITE));
+        TextView check = text(active ? "✓" : "›", 22, active ? PRIMARY : MUTED, true);
+        check.setGravity(Gravity.CENTER);
+        row.addView(check, new LinearLayout.LayoutParams(dp(34), dp(42)));
+        card.addView(row);
+
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        chips.setPadding(dp(58), dp(8), 0, 0);
+        chips.addView(tinyChip("local".equals(account.type) ? "本地" : "外部"));
+        chips.addView(tinyChip(nonEmpty(account.group, "未分组")));
+        if (!nonEmpty(account.sendName, "").isEmpty()) chips.addView(tinyChip("发件名 " + account.sendName));
+        card.addView(chips);
+        return card;
+    }
+
+    private void updateComposeSenderViews() {
+        if (composeSender == null) return;
+        if (composeFromView != null) composeFromView.setText(composeSenderDisplay());
+        if (composeFromAvatar != null) {
+            String label = composeSender.label() + composeSender.email;
+            int color = avatarColor(label);
+            composeFromAvatar.setText(avatarLabel(label));
+            composeFromAvatar.setBackground(bg(color, 23, color, 0));
+        }
+        setHeader("写邮件", composeSender.label());
+    }
+
+    private LinearLayout formatToolbar(EditText body) {
+        LinearLayout tools = new LinearLayout(this);
+        tools.setOrientation(LinearLayout.VERTICAL);
+        tools.setPadding(0, dp(8), 0, dp(8));
+        tools.setBackground(bg(SURFACE, 18, SOFT_LINE, 1));
+
+        LinearLayout row1 = toolbarRow();
+        addToolbarButton(row1, toolButton("加粗", v -> wrapSelection(body, "<b>", "</b>")));
+        addToolbarButton(row1, toolButton("斜体", v -> wrapSelection(body, "<i>", "</i>")));
+        addToolbarButton(row1, toolButton("下划线", v -> wrapSelection(body, "<u>", "</u>")));
+        addToolbarButton(row1, toolButton("链接", v -> insertLink(body)));
+        tools.addView(row1);
+
+        LinearLayout row2 = toolbarRow();
+        addToolbarButton(row2, toolButton("列表", v -> wrapSelection(body, "<ul><li>", "</li></ul>")));
+        addToolbarButton(row2, toolButton("编号", v -> wrapSelection(body, "<ol><li>", "</li></ol>")));
+        addToolbarButton(row2, toolButton("引用", v -> wrapSelection(body, "<blockquote>", "</blockquote>")));
+        addToolbarButton(row2, toolButton("分隔", v -> insertText(body, "\n<hr>\n")));
+        addToolbarButton(row2, toolButton("清除", v -> clearSelectionFormat(body)));
+        tools.addView(row2);
+        return tools;
+    }
+
+    private LinearLayout toolbarRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8), dp(3), dp(8), dp(3));
+        return row;
+    }
+
+    private TextView toolButton(String label, View.OnClickListener listener) {
+        TextView button = text(label, 12, PRIMARY_DARK, true);
+        button.setGravity(Gravity.CENTER);
+        button.setSingleLine(true);
+        button.setPadding(dp(7), dp(8), dp(7), dp(8));
+        button.setBackground(bg(Color.WHITE, 14, LINE, 1));
+        button.setOnClickListener(listener);
+        return button;
+    }
+
+    private void addToolbarButton(LinearLayout tools, TextView button) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(38), 1);
+        lp.setMargins(dp(3), 0, dp(3), 0);
+        tools.addView(button, lp);
+    }
+
+    private View composeActionBar(TextView save, TextView send) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setBackgroundColor(Color.WHITE);
+        View line = new View(this);
+        line.setBackgroundColor(SOFT_LINE);
+        wrap.addView(line, new LinearLayout.LayoutParams(-1, 1));
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.setPadding(dp(12), dp(8), dp(12), dp(10));
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(0, dp(48), 1);
+        saveLp.setMargins(0, 0, dp(10), 0);
+        actions.addView(save, saveLp);
+        actions.addView(send, new LinearLayout.LayoutParams(0, dp(48), 1));
+        wrap.addView(actions, new LinearLayout.LayoutParams(-1, 0, 1));
+        return wrap;
+    }
+
+    private void wrapSelection(EditText edit, String open, String close) {
+        int start = Math.max(0, edit.getSelectionStart());
+        int end = Math.max(start, edit.getSelectionEnd());
+        String selected = edit.getText().subSequence(start, end).toString();
+        edit.getText().replace(start, end, open + selected + close);
+        edit.setSelection(start + open.length(), start + open.length() + selected.length());
+    }
+
+    private void insertText(EditText edit, String value) {
+        int start = Math.max(0, edit.getSelectionStart());
+        int end = Math.max(start, edit.getSelectionEnd());
+        edit.getText().replace(start, end, value);
+        edit.setSelection(start + value.length());
+    }
+
+    private void clearSelectionFormat(EditText edit) {
+        int start = Math.max(0, edit.getSelectionStart());
+        int end = Math.max(start, edit.getSelectionEnd());
+        if (end <= start) {
+            toast("请先选中要清除格式的文字");
+            return;
+        }
+        String selected = edit.getText().subSequence(start, end).toString()
+            .replaceAll("</?(b|i|u|blockquote|ul|ol|li)>", "")
+            .replaceAll("<a\\s+href=\"[^\"]*\">", "")
+            .replace("</a>", "");
+        edit.getText().replace(start, end, selected);
+        edit.setSelection(start, start + selected.length());
+    }
+
+    private void insertLink(EditText edit) {
+        EditText url = input("https://example.com", "", false);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("插入链接")
+            .setView(url)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("插入", (dialog, which) -> {
+                String href = url.getText().toString().trim();
+                if (href.isEmpty()) return;
+                int start = Math.max(0, edit.getSelectionStart());
+                int end = Math.max(start, edit.getSelectionEnd());
+                String selected = edit.getText().subSequence(start, end).toString();
+                String label = selected.isEmpty() ? href : selected;
+                edit.getText().replace(start, end, "<a href=\"" + href + "\">" + label + "</a>");
+            })
+            .show();
+    }
+
+    private void pickComposeAttachment() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(intent, REQ_PICK_ATTACHMENT);
+    }
+
+    private void addComposeAttachment(Uri uri) {
+        try {
+            ComposeAttachment item = readAttachment(uri);
+            composeAttachments.add(item);
+            updateComposeAttachmentList();
+            toast("已添加附件：" + item.filename);
+        } catch (Exception e) {
+            toast("附件添加失败：" + e.getMessage());
+        }
+    }
+
+    private ComposeAttachment readAttachment(Uri uri) throws Exception {
+        ComposeAttachment item = new ComposeAttachment();
+        item.filename = attachmentName(uri);
+        item.contentType = nonEmpty(getContentResolver().getType(uri), "application/octet-stream");
+        try (InputStream input = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            if (input == null) throw new Exception("无法读取文件");
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                output.write(buffer, 0, read);
+                if (output.size() > MAX_MOBILE_ATTACHMENT_BYTES) throw new Exception("单个附件不能超过 8MB");
+            }
+            byte[] bytes = output.toByteArray();
+            item.size = bytes.length;
+            item.content = Base64.encodeToString(bytes, Base64.NO_WRAP);
+        }
+        return item;
+    }
+
+    private String attachmentName(Uri uri) {
+        String name = "";
+        try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) name = cursor.getString(index);
+            }
+        } catch (Exception ignored) {
+            // Fall through to URI based name.
+        }
+        if (!name.isEmpty()) return name;
+        String path = uri.getLastPathSegment();
+        return path == null || path.isEmpty() ? "attachment" : path;
+    }
+
+    private void updateComposeAttachmentList() {
+        if (composeAttachmentList == null) return;
+        composeAttachmentList.removeAllViews();
+        if (composeAttachments.isEmpty()) {
+            composeAttachmentList.addView(text("暂无附件", 12, MUTED, false));
+            return;
+        }
+        for (ComposeAttachment item : new ArrayList<>(composeAttachments)) {
+            TextView row = outlineButton("附件：" + item.filename + "  " + formatBytes(item.size) + "   ×", v -> {
+                composeAttachments.remove(item);
+                updateComposeAttachmentList();
+            });
+            composeAttachmentList.addView(row, new LinearLayout.LayoutParams(-1, dp(42)));
+        }
+    }
+
+    private String composeBodyHtml(String body) {
+        String html = escape(body).replace("\n", "<br>");
+        html = html
+            .replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+            .replace("&lt;i&gt;", "<i>").replace("&lt;/i&gt;", "</i>")
+            .replace("&lt;u&gt;", "<u>").replace("&lt;/u&gt;", "</u>");
+        html = html.replaceAll("&lt;a href=&quot;([^&]+)&quot;&gt;", "<a href=\"$1\">")
+            .replace("&lt;/a&gt;", "</a>");
+        return "<div>" + html + "</div>";
+    }
+
+    private String formatBytes(int size) {
+        if (size >= 1024 * 1024) return String.format("%.1fMB", size / 1024f / 1024f);
+        if (size >= 1024) return String.format("%.1fKB", size / 1024f);
+        return size + "B";
+    }
+
+    private JSONObject composePayload(Models.Account sender, String to, String cc, String bcc, String subject, String body) throws Exception {
         JSONObject payload = new JSONObject()
             .put("account_type", sender.type)
             .put("account_id", sender.id)
             .put("from_email", sender.email)
             .put("from_name", nonEmpty(sender.sendName, sender.name))
             .put("to", to)
+            .put("cc", cc)
+            .put("bcc", bcc)
             .put("subject", subject)
             .put("text", body)
-            .put("html", "<div>" + escape(body).replace("\n", "<br>") + "</div>");
+            .put("html", composeBodyHtml(body));
+        if (!composeAttachments.isEmpty()) {
+            JSONArray attachments = new JSONArray();
+            for (ComposeAttachment item : composeAttachments) {
+                attachments.put(new JSONObject()
+                    .put("filename", item.filename)
+                    .put("contentType", item.contentType)
+                    .put("content", item.content)
+                    .put("size", item.size));
+            }
+            payload.put("attachments", attachments);
+        }
         if ("external".equals(sender.type)) payload.put("fromName", nonEmpty(sender.sendName, sender.name));
         return payload;
     }
 
-    private void saveDraft(String to, String subject, String body, String draftId) {
-        Models.Account account = selectedAccount;
-        if (account == null && !accounts.isEmpty()) account = accounts.get(0);
+    private void saveDraft(String to, String cc, String bcc, String subject, String body, String draftId) {
+        Models.Account account = composeSender == null ? defaultComposeSender() : composeSender;
         if (account == null) {
             toast("请先选择发件账号");
             return;
         }
         Models.Account sender = account;
         runAsync("保存草稿...", () -> {
-            JSONObject payload = composePayload(sender, to, subject, body);
+            JSONObject payload = composePayload(sender, to, cc, bcc, subject, body);
             if (draftId != null && !draftId.isEmpty()) payload.put("id", draftId);
             return api.post("/api/drafts", payload);
         }, result -> {
@@ -1309,16 +2187,15 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void sendMail(String to, String subject, String body, String draftId) {
-        Models.Account account = selectedAccount;
-        if (account == null && !accounts.isEmpty()) account = accounts.get(0);
+    private void sendMail(String to, String cc, String bcc, String subject, String body, String draftId) {
+        Models.Account account = composeSender == null ? defaultComposeSender() : composeSender;
         if (account == null) {
             toast("请先选择发件账号");
             return;
         }
         Models.Account sender = account;
         runAsync("发送中...", () -> {
-            JSONObject payload = composePayload(sender, to, subject, body);
+            JSONObject payload = composePayload(sender, to, cc, bcc, subject, body);
             JSONObject result;
             try {
                 if ("external".equals(sender.type)) {
@@ -1346,47 +2223,223 @@ public class MainActivity extends Activity {
 
     private void renderSettings() {
         currentScreen = "settings";
-        setHeader("设置", server);
+        setHeader("设置", "偏好与设备");
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
-        LinearLayout box = column(dp(12));
+        scroll.setBackgroundColor(BG);
+        LinearLayout box = column(dp(8));
+        box.setPadding(dp(12), dp(10), dp(12), dp(24));
         scroll.addView(box);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
-        box.addView(card(text("移动端使用设备 Token 访问服务端 API。退出会删除本机 Token，不影响服务端其它设备。", 14, MUTED, false)));
-        TextView refresh = primaryButton("刷新账户和邮件");
-        refresh.setOnClickListener(v -> fetchBootstrapThenAccounts(false));
-        box.addView(refresh);
-        TextView notify = outlineButton(notifyEnabled ? "关闭新邮件通知" : "开启新邮件通知", v -> {
-            notifyEnabled = !notifyEnabled;
-            prefs.edit().putBoolean("notify", notifyEnabled).apply();
-            renderSettings();
-        });
-        box.addView(notify);
+
+        box.addView(settingsStatusCard());
+        box.addView(sectionHeader("同步与缓存", "本地缓存优先，后台静默更新"));
+        box.addView(settingsSyncCard());
+
         Set<String> enabledGroups = notificationGroups();
-        box.addView(text("通知分组", 15, TEXT, true));
-        box.addView(card(text(enabledGroups.isEmpty() ? "当前：所有分组都会通知" : "当前：" + enabledGroups, 13, MUTED, false)));
-        for (String group : allGroups()) {
-            boolean enabled = enabledGroups.isEmpty() || enabledGroups.contains(group);
-            TextView groupButton = outlineButton((enabled ? "✓ " : "○ ") + group, v -> {
-                Set<String> current = notificationGroups();
-                if (current.isEmpty()) current.addAll(allGroups());
-                if (current.contains(group)) current.remove(group);
-                else current.add(group);
-                if (current.size() == allGroups().size()) current.clear();
-                saveNotificationGroups(current);
+        box.addView(sectionHeader("新邮件通知", notifyEnabled ? "已开启" : "已关闭"));
+        box.addView(settingsNotificationCard(enabledGroups));
+
+        box.addView(sectionHeader("安全", "仅退出当前手机"));
+        box.addView(settingsSecurityCard());
+    }
+
+    private View settingsStatusCard() {
+        LinearLayout card = panel(dp(18), dp(16));
+        card.setBackground(bg(PRIMARY_DARK, 28, PRIMARY_DARK, 0));
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView label = text("Memail Mobile", 13, Color.rgb(198, 226, 224), true);
+        TextView value = text(accounts.size() + " 个账号", 27, Color.WHITE, true);
+        value.setPadding(0, dp(6), 0, dp(3));
+        TextView meta = text(totalUnread() + " 封未读 · " + allGroups().size() + " 个分组", 13, Color.rgb(220, 235, 233), false);
+        copy.addView(label);
+        copy.addView(value);
+        copy.addView(meta);
+        top.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView mark = text("⚙", 24, Color.WHITE, true);
+        mark.setGravity(Gravity.CENTER);
+        mark.setBackground(bg(Color.rgb(21, 128, 132), 24, Color.rgb(21, 128, 132), 0));
+        top.addView(mark, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        card.addView(top);
+
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        chips.setPadding(0, dp(12), 0, 0);
+        chips.addView(settingsMiniChip(notifyEnabled ? "通知开启" : "通知关闭"));
+        chips.addView(settingsMiniChip("本地缓存"));
+        chips.addView(settingsMiniChip("Token 设备"));
+        card.addView(chips);
+        return card;
+    }
+
+    private View settingsSyncCard() {
+        LinearLayout card = panel(dp(14), dp(8));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        card.addView(settingsRow("◎", "服务端", server, "当前手机通过设备 Token 访问服务端 API", null, "", false));
+        card.addView(settingsDivider());
+        card.addView(settingsRow("⇄", "最近缓存", lastSyncText(), "打开时优先读取本地缓存，后台静默补齐", null, "", false));
+        card.addView(settingsDivider());
+        card.addView(settingsRow("⟳", "刷新账户和邮件", "立即同步", "手动触发一次账户、规则和邮件缓存更新", v -> fetchBootstrapThenAccounts(false, true), "刷新", true));
+        return card;
+    }
+
+    private View settingsNotificationCard(Set<String> enabledGroups) {
+        LinearLayout card = panel(dp(14), dp(8));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        card.addView(settingsRow(
+            "●",
+            "新邮件通知",
+            notifyEnabled ? "已开启" : "已关闭",
+            notifyEnabled ? "收到新邮件时会显示系统通知" : "当前不会弹出新邮件通知",
+            v -> {
+                notifyEnabled = !notifyEnabled;
+                prefs.edit().putBoolean("notify", notifyEnabled).apply();
                 renderSettings();
-            });
-            box.addView(groupButton);
+            },
+            notifyEnabled ? "关闭" : "开启",
+            true
+        ));
+
+        card.addView(settingsDivider());
+        TextView scope = text(enabledGroups.isEmpty() ? "通知范围：所有分组" : "通知范围：" + enabledGroups.size() + " 个分组", 13, MUTED, false);
+        scope.setPadding(dp(4), dp(10), dp(4), dp(6));
+        card.addView(scope);
+
+        Set<String> groups = allGroups();
+        if (groups.isEmpty()) {
+            TextView emptyGroups = text("暂无分组。添加邮箱后可在这里选择哪些分组允许通知。", 13, MUTED, false);
+            emptyGroups.setPadding(dp(4), dp(8), dp(4), dp(10));
+            card.addView(emptyGroups);
+            return card;
         }
-        TextView logout = outlineButton("退出本机 Token", v -> {
+        for (String group : groups) {
+            boolean enabled = enabledGroups.isEmpty() || enabledGroups.contains(group);
+            card.addView(settingsGroupRow(group, enabled, groupUnread(group)));
+        }
+        return card;
+    }
+
+    private View settingsSecurityCard() {
+        LinearLayout card = panel(dp(14), dp(8));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+        card.addView(settingsRow("⌁", "设备 Token", "已连接", "退出只删除当前手机保存的 Token，不影响服务端和其它设备", null, "", false));
+        card.addView(settingsDivider());
+        card.addView(settingsRow("↯", "退出当前手机", "清除本机访问凭据", "下次打开需要重新连接服务端", v -> {
             prefs.edit().remove("token").apply();
             token = "";
             api.configure(server, "");
+            BackgroundSyncService.cancel(this);
             stopEventStream();
+            stopForegroundRefreshLoop();
             if (navBar != null) navBar.setVisibility(View.GONE);
             showLogin();
+        }, "退出", true));
+        return card;
+    }
+
+    private View settingsRow(String iconText, String titleText, String valueText, String noteText, View.OnClickListener listener, String actionText, boolean clickable) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), dp(10), dp(4), dp(10));
+        if (clickable) row.setOnClickListener(listener);
+
+        TextView icon = text(iconText, 18, PRIMARY, true);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(bg(PRIMARY_SOFT, 16, PRIMARY_SOFT, 0));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(42), dp(42)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setPadding(dp(12), 0, dp(10), 0);
+        TextView titleView = text(titleText, 15, TEXT, true);
+        TextView valueView = text(valueText, 13, PRIMARY_DARK, true);
+        TextView noteView = text(noteText, 12, MUTED, false);
+        noteView.setLineSpacing(dp(1), 1.0f);
+        copy.addView(titleView);
+        copy.addView(valueView);
+        copy.addView(noteView);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+        if (!actionText.isEmpty()) {
+            TextView action = settingsPill(actionText, clickable);
+            row.addView(action);
+        }
+        return row;
+    }
+
+    private View settingsGroupRow(String group, boolean enabled, int unread) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), dp(7), dp(4), dp(7));
+        row.setOnClickListener(v -> {
+            Set<String> current = notificationGroups();
+            if (current.isEmpty()) current.addAll(allGroups());
+            if (current.contains(group)) current.remove(group);
+            else current.add(group);
+            if (current.size() == allGroups().size()) current.clear();
+            saveNotificationGroups(current);
+            renderSettings();
         });
-        box.addView(logout);
+
+        TextView state = text(enabled ? "✓" : "○", 17, enabled ? Color.WHITE : MUTED, true);
+        state.setGravity(Gravity.CENTER);
+        state.setBackground(bg(enabled ? PRIMARY : Color.rgb(238, 243, 244), 15, enabled ? PRIMARY : Color.rgb(238, 243, 244), 0));
+        row.addView(state, new LinearLayout.LayoutParams(dp(30), dp(30)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setPadding(dp(12), 0, dp(8), 0);
+        TextView name = text(group, 15, TEXT, true);
+        TextView meta = text(unread > 0 ? unread + " 封未读" : "暂无未读", 12, MUTED, false);
+        copy.addView(name);
+        copy.addView(meta);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+        row.addView(settingsPill(enabled ? "通知" : "静默", enabled));
+        return row;
+    }
+
+    private TextView settingsMiniChip(String value) {
+        TextView chip = text(value, 12, Color.WHITE, true);
+        chip.setGravity(Gravity.CENTER);
+        chip.setPadding(dp(9), dp(5), dp(9), dp(5));
+        chip.setBackground(bg(Color.rgb(33, 118, 123), 13, Color.rgb(33, 118, 123), 0));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(0, 0, dp(8), 0);
+        chip.setLayoutParams(lp);
+        return chip;
+    }
+
+    private TextView settingsPill(String value, boolean active) {
+        TextView pill = text(value, 12, active ? PRIMARY_DARK : MUTED, true);
+        pill.setGravity(Gravity.CENTER);
+        pill.setSingleLine(true);
+        pill.setPadding(dp(10), dp(6), dp(10), dp(6));
+        pill.setBackground(bg(active ? PRIMARY_SOFT : Color.rgb(239, 244, 245), 14, active ? Color.rgb(186, 218, 216) : Color.rgb(226, 234, 235), 1));
+        return pill;
+    }
+
+    private View settingsDivider() {
+        View line = new View(this);
+        line.setBackgroundColor(SOFT_LINE);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, 1);
+        lp.setMargins(dp(58), 0, dp(4), 0);
+        line.setLayoutParams(lp);
+        return line;
+    }
+
+    private String lastSyncText() {
+        long value = prefs.getLong("last_bootstrap_refresh_at", 0L);
+        if (value <= 0) return "尚未缓存";
+        return android.text.format.DateFormat.format("MM-dd HH:mm", value).toString();
     }
 
     private void checkNotifications() {
@@ -1426,6 +2479,7 @@ public class MainActivity extends Activity {
     }
 
     private String virtualTitle(String mode, String group) {
+        if ("keyword".equals(mode)) return selectedKeywordRule == null ? "关键词监控" : selectedKeywordRule.name;
         if ("global_unread".equals(mode)) return "全部未读邮件";
         if ("global_all".equals(mode)) return "全部邮件";
         if ("group_unread".equals(mode)) return nonEmpty(group, "未分组") + " · 未读邮件";
@@ -1455,6 +2509,13 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return;
         }
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setAction("com.memail.mobile.OPEN_MAIL");
+        intent.putExtra("open", "mail");
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent pendingIntent = PendingIntent.getActivity(this, 1001, intent, flags);
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
             ? new Notification.Builder(this, CHANNEL_MAIL)
             : new Notification.Builder(this);
@@ -1462,6 +2523,7 @@ public class MainActivity extends Activity {
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(title)
             .setContentText(text)
+            .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .build();
         ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE)).notify(1001, notification);
@@ -1484,19 +2546,22 @@ public class MainActivity extends Activity {
     }
 
     private void runAsync(String loading, Task task, Consumer<JSONObject> success) {
-        if (loading != null) setLoading(true, loading);
+        boolean visible = loading != null;
+        if (visible) setLoading(true, loading);
         io.submit(() -> {
             try {
                 Object result = task.run();
                 JSONObject object = result instanceof JSONObject ? (JSONObject) result : new JSONObject().put("value", String.valueOf(result));
                 runOnUiThread(() -> {
-                    setLoading(false, "");
+                    if (visible) setLoading(false, "");
                     success.accept(object);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    setLoading(false, "");
-                    toast(e.getMessage());
+                    if (visible) {
+                        setLoading(false, "");
+                        toast(e.getMessage());
+                    }
                 });
             }
         });
@@ -1505,6 +2570,7 @@ public class MainActivity extends Activity {
     private void setLoading(boolean loading, String message) {
         progress.setVisibility(loading ? View.VISIBLE : View.GONE);
         if (loading && message != null) subtitle.setText(message);
+        if (!loading) subtitle.setText("");
     }
 
     private void setHeader(String main, String sub) {
@@ -1563,6 +2629,57 @@ public class MainActivity extends Activity {
 
     private LinearLayout cardContainer() {
         return panel(dp(14), dp(12));
+    }
+
+    private View dashboardCard(String titleText, String valueText, String metaText) {
+        LinearLayout card = panel(dp(18), dp(16));
+        card.setBackground(bg(PRIMARY_DARK, 28, PRIMARY_DARK, 0));
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView titleView = text(titleText, 13, Color.rgb(198, 226, 224), true);
+        TextView valueView = text(valueText, 26, Color.WHITE, true);
+        valueView.setPadding(0, dp(6), 0, dp(3));
+        TextView metaView = text(metaText, 13, Color.rgb(220, 235, 233), false);
+        copy.addView(titleView);
+        copy.addView(valueView);
+        copy.addView(metaView);
+        top.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView mark = text("✉", 25, Color.WHITE, true);
+        mark.setGravity(Gravity.CENTER);
+        mark.setBackground(bg(Color.rgb(21, 128, 132), 24, Color.rgb(21, 128, 132), 0));
+        top.addView(mark, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        card.addView(top);
+        return card;
+    }
+
+    private View sectionHeader(String titleText, String metaText) {
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(2), dp(12), dp(2), dp(4));
+        TextView titleView = text(titleText, 14, TEXT, true);
+        TextView metaView = text(metaText, 12, MUTED, false);
+        metaView.setGravity(Gravity.RIGHT);
+        header.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1));
+        header.addView(metaView, new LinearLayout.LayoutParams(0, -2, 1));
+        return header;
+    }
+
+    private TextView tinyChip(String value) {
+        TextView chip = text(value, 11, PRIMARY_DARK, true);
+        chip.setGravity(Gravity.CENTER);
+        chip.setSingleLine(true);
+        chip.setPadding(dp(8), dp(4), dp(8), dp(4));
+        chip.setBackground(bg(PRIMARY_SOFT, 12, PRIMARY_SOFT, 0));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(0, 0, dp(6), 0);
+        chip.setLayoutParams(lp);
+        return chip;
     }
 
     private TextView primaryButton(String text) {

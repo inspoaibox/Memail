@@ -27,6 +27,7 @@ const MONGO_DB_NAME = process.env.MONGO_DB_NAME || process.env.DB_NAME || 'mails
 const IMAP_CACHE_TTL_MS = Math.max(30, parseInt(process.env.IMAP_CACHE_TTL_SECONDS || '86400', 10)) * 1000;
 const IMAP_CACHE_SYNC_WINDOW = Math.max(30, parseInt(process.env.IMAP_CACHE_SYNC_WINDOW || '100', 10));
 const IMAP_CACHE_LOOKBACK = Math.max(20, parseInt(process.env.IMAP_CACHE_LOOKBACK || '50', 10));
+const IMAP_CACHE_BODY_PREFETCH = Math.min(100, Math.max(0, parseInt(process.env.IMAP_CACHE_BODY_PREFETCH || '50', 10)));
 const MAX_SEND_ATTACHMENT_BYTES = Math.max(1024 * 1024, parseInt(process.env.MAX_SEND_ATTACHMENT_BYTES || String(15 * 1024 * 1024), 10));
 const MAX_SEND_ATTACHMENTS_BYTES = Math.max(1024 * 1024, parseInt(process.env.MAX_SEND_ATTACHMENTS_BYTES || String(25 * 1024 * 1024), 10));
 const IMAP_SYNC_SCHEDULER_ENABLED = process.env.IMAP_SYNC_SCHEDULER_ENABLED !== '0';
@@ -46,6 +47,7 @@ let runtimeSettings = {};
 let mongoClient = null;
 let cacheDb = null;
 const accountSyncJobs = new Map();
+const bodyPrefetchJobs = new Set();
 let syncSchedulerTimer = null;
 let syncSchedulerRunning = false;
 if (!ACCOUNTS_SECRET) {
@@ -959,13 +961,14 @@ async function upsertCachedMessages(client, folder, mails) {
   if (ops.length) await collections.messages.bulkWrite(ops, { ordered: false });
 }
 
-async function upsertCachedMessageBody(client, folderPath, uid, detail) {
+async function upsertCachedMessageBody(client, folderPath, uid, detail, options = {}) {
   const collections = cacheCollections();
   if (!collections) return;
   const account = client.account;
   const accountKey = stableAccountKey(account);
   const normalizedUid = normalizeUid(uid);
   const now = new Date();
+  const seen = options.seen === undefined ? undefined : !!options.seen;
   await collections.bodies.updateOne(
     { accountKey, folder: folderPath, uid: normalizedUid },
     {
@@ -991,18 +994,17 @@ async function upsertCachedMessageBody(client, folderPath, uid, detail) {
     },
     { upsert: true },
   );
+  const messagePatch = {
+    subject: detail.subject || '(no subject)',
+    bodyCached: true,
+    bodyCachedAt: now,
+    updatedAt: now,
+  };
+  if (detail.date) messagePatch.date = new Date(detail.date);
+  if (seen !== undefined) messagePatch.seen = seen;
   await collections.messages.updateOne(
     { accountKey, folder: folderPath, uid: normalizedUid },
-    {
-      $set: {
-        subject: detail.subject || '(no subject)',
-        date: detail.date ? new Date(detail.date) : null,
-        seen: true,
-        bodyCached: true,
-        bodyCachedAt: now,
-        updatedAt: now,
-      },
-    },
+    { $set: messagePatch },
   );
 }
 
@@ -1075,6 +1077,89 @@ function backgroundMarkRemoteSeen(client, folderPath, uid) {
   });
 }
 
+async function readMessageDetailFromRemote(client, folderPath, uid, options = {}) {
+  await client.ensureConnected();
+  const lock = await client.client.getMailboxLock(folderPath);
+  try {
+    const source = await client.client.download(String(uid), undefined, { uid: true });
+    const parsed = await simpleParser(source.content);
+    const detail = messageDetailFromParsed(parsed);
+
+    if (options.markSeen) {
+      try {
+        await client.client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true });
+      } catch (flagErr) {
+        console.warn(`Mark seen failed ${client.account?.auth?.user || ''} ${folderPath}/${uid}: ${imapApiError(flagErr, { folder: folderPath, command: 'STORE \\Seen' })}`);
+      }
+    }
+
+    await upsertCachedMessageBody(client, folderPath, uid, detail, options.markSeen ? { seen: true } : {});
+    return detail;
+  } finally {
+    lock.release();
+  }
+}
+
+async function prefetchCachedMessageBodies(client, folderPath, mails, limit = IMAP_CACHE_BODY_PREFETCH) {
+  const collections = cacheCollections();
+  if (!collections || !limit || isVirtualFolder(folderPath)) return;
+  const accountKey = stableAccountKey(client.account);
+  const candidates = (Array.isArray(mails) ? mails : [])
+    .filter(mail => mail?.uid)
+    .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
+    .slice(0, limit);
+  if (!candidates.length) return;
+
+  const keys = candidates.map(mail => normalizeUid(mail.uid));
+  const cached = await collections.bodies
+    .find({ accountKey, folder: folderPath, uid: { $in: keys } })
+    .project({ uid: 1 })
+    .toArray();
+  const cachedSet = new Set(cached.map(doc => normalizeUid(doc.uid)));
+  const missing = candidates.filter(mail => !cachedSet.has(normalizeUid(mail.uid))).slice(0, limit);
+
+  for (const mail of missing) {
+    try {
+      await readMessageDetailFromRemote(client, folderPath, mail.uid, { markSeen: false });
+    } catch (err) {
+      console.warn(`Prefetch body failed ${client.account?.auth?.user || ''} ${folderPath}/${mail.uid}: ${imapApiError(err, { folder: folderPath, command: 'PREFETCH_BODY' })}`);
+    }
+  }
+}
+
+function backgroundPrefetchCachedMessageBodies(client, folderPath, mails, limit = IMAP_CACHE_BODY_PREFETCH, purpose = 'visible') {
+  if (!limit || isVirtualFolder(folderPath)) return;
+  const key = `${stableAccountKey(client.account)}:${folderPath}:${purpose}`;
+  if (bodyPrefetchJobs.has(key)) return;
+  bodyPrefetchJobs.add(key);
+  setImmediate(() => {
+    prefetchCachedMessageBodies(client, folderPath, mails, limit)
+      .catch(err => {
+        console.warn(`Background body prefetch failed ${client.account?.auth?.user || ''} ${folderPath}: ${imapApiError(err, { folder: folderPath, command: 'PREFETCH_BODY' })}`);
+      })
+      .finally(() => {
+        bodyPrefetchJobs.delete(key);
+      });
+  });
+}
+
+function backgroundPrefetchVisibleMessageBodies(client, mails, fallbackFolder, limit = IMAP_CACHE_BODY_PREFETCH) {
+  if (!limit) return;
+  const groups = new Map();
+  let remaining = limit;
+  for (const mail of Array.isArray(mails) ? mails : []) {
+    if (!mail?.uid || remaining <= 0) break;
+    const folderPath = mail.folder || fallbackFolder;
+    if (!folderPath || isVirtualFolder(folderPath)) continue;
+    if (!groups.has(folderPath)) groups.set(folderPath, []);
+    groups.get(folderPath).push(mail);
+    remaining -= 1;
+  }
+  for (const [folderPath, group] of groups) {
+    backgroundPrefetchCachedMessageBodies(client, folderPath, group, group.length, 'visible');
+  }
+}
+
 async function markSyncState(client, folderPath, patch) {
   const collections = cacheCollections();
   if (!collections) return;
@@ -1143,6 +1228,8 @@ async function syncFolderToCache(client, folder, options = {}) {
   }
 
   await markSyncState(client, folderPath, { syncing: true, error: '' });
+  let result = null;
+  let syncedMails = [];
   const lock = await client.client.getMailboxLock(folderPath);
   try {
     const status = selectedMailboxStatus(client, folderPath);
@@ -1179,6 +1266,7 @@ async function syncFolderToCache(client, folder, options = {}) {
       .sort((a, b) => a - b)
       .slice(-Math.max(options.window || IMAP_CACHE_SYNC_WINDOW, IMAP_CACHE_LOOKBACK));
     const mails = await fetchMessagesByUid(client, folder, selectedUids);
+    syncedMails = mails;
     await upsertCachedMessages(client, folder, mails);
     await pruneRecentCacheWindow(client, folder, mails, Math.max(options.window || IMAP_CACHE_SYNC_WINDOW, IMAP_CACHE_LOOKBACK));
 
@@ -1194,7 +1282,7 @@ async function syncFolderToCache(client, folder, options = {}) {
       uidNext: mailbox.uidNext || 0,
       highestModseq: mailbox.highestModseq ? String(mailbox.highestModseq) : '',
     });
-    return { synced: true, count: mails.length, total: status.messages || 0, unseen: status.unseen || 0 };
+    result = { synced: true, count: mails.length, total: status.messages || 0, unseen: status.unseen || 0 };
   } catch (err) {
     await markSyncState(client, folderPath, {
       syncing: false,
@@ -1204,6 +1292,11 @@ async function syncFolderToCache(client, folder, options = {}) {
   } finally {
     lock.release();
   }
+
+  if (result?.synced && syncedMails.length) {
+    backgroundPrefetchCachedMessageBodies(client, folderPath, syncedMails, syncedMails.length, 'sync');
+  }
+  return result;
 }
 
 function backgroundSyncFolder(client, folder, options = {}) {
@@ -2238,6 +2331,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
         if (isVirtualFolder(folder)) backgroundSyncVirtualFolder(client, folder, { window: count });
         else resolveFolder(client, folder).then(resolved => backgroundSyncFolder(client, resolved, { window: count })).catch(() => {});
       }
+      if (!cacheOnly) backgroundPrefetchVisibleMessageBodies(client, cached.mails, folder);
       return res.json(cached);
     }
 
@@ -2290,6 +2384,7 @@ app.get('/api/accounts/:id/mails', async (req, res) => {
 
       mails.sort((a, b) => new Date(b.date) - new Date(a.date));
       await upsertCachedMessages(client, { path: folder, name: folder }, mails);
+      backgroundPrefetchVisibleMessageBodies(client, mails, folder);
       res.json({ total, unseen: status.unseen, mails, hasMore: startSeq > 1 });
     } finally {
       lock.release();
@@ -2316,24 +2411,8 @@ app.get('/api/accounts/:id/mails/:uid', async (req, res) => {
       return res.json(cached);
     }
 
-    await client.ensureConnected();
-    const lock = await client.client.getMailboxLock(folder);
-    try {
-      const source = await client.client.download(uid, undefined, { uid: true });
-      const parsed = await simpleParser(source.content);
-      const detail = messageDetailFromParsed(parsed);
-
-      try {
-        await client.client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
-      } catch (flagErr) {
-        console.warn(`Mark seen failed ${client.account?.auth?.user || ''} ${folder}/${uid}: ${imapApiError(flagErr, { folder, command: 'STORE \\Seen' })}`);
-      }
-      await upsertCachedMessageBody(client, folder, uid, detail);
-
-      res.json({ ...detail, cached: false });
-    } finally {
-      lock.release();
-    }
+    const detail = await readMessageDetailFromRemote(client, folder, uid, { markSeen: true });
+    res.json({ ...detail, cached: false });
   } catch (err) {
     res.status(500).json({ error: imapApiError(err, { folder, command: 'SELECT/DOWNLOAD' }) });
   }

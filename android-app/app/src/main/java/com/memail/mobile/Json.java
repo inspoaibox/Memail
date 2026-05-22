@@ -24,6 +24,15 @@ final class Json {
         return value == null ? new JSONArray() : value;
     }
 
+    static JSONArray arrayAny(JSONObject object, String... keys) {
+        if (object == null) return new JSONArray();
+        for (String key : keys) {
+            JSONArray value = object.optJSONArray(key);
+            if (value != null) return value;
+        }
+        return new JSONArray();
+    }
+
     static JSONObject obj(JSONObject object, String key) {
         JSONObject value = object == null ? null : object.optJSONObject(key);
         return value == null ? new JSONObject() : value;

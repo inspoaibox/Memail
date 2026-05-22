@@ -4677,6 +4677,11 @@ def sync_bootstrap():
         "mailboxes": mailboxes,
         "drafts": [_public_draft(item) for item in _settings_list(settings, "drafts")],
         "outbox": [_public_outbox(item) for item in _settings_list(settings, "outbox")],
+        "keywordRules": [
+            _public_keyword_rule(item)
+            for item in _settings_list(settings, "keyword_rules")
+            if _normalize_keyword_rule(item)
+        ],
         "security": {
             "totp_enabled": _totp_enabled(settings),
             "sessions": _settings_list(settings, "sessions"),
