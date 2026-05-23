@@ -236,6 +236,70 @@ POST /api/sync/push        # 离线变更上推：当前支持 draft.upsert / dr
 Authorization: Bearer memail_dev_xxx
 ```
 
+### 邮件数据抽取 API
+
+设置页的“关键词规则”区域提供了“数据抽取 API 调用说明”和可复制示例。第三方系统建议使用“安全设置 → 设备 Token”生成 `extraction:read` 只读 Token，只用于读取抽取结果；创建或扫描规则仍应使用后台登录或完整客户端 Token。
+
+内置 Aosom 发货模板可以从 `noreply@aosom.ca` 发来的 `Aosom Business: Your Aosom order has been shipped` 邮件里提取订单号和 UPS 物流单号。
+
+创建 Aosom 抽取规则并立即扫描：
+
+```bash
+curl -X POST "https://mail.yourdomain.com/api/extraction-rules/defaults/aosom-shipped" \
+  -H "Authorization: Bearer <client-full-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"account_emails":["nfksuk@gmail.com"],"scan_now":true}'
+```
+
+读取结构化结果：
+
+```bash
+curl "https://mail.yourdomain.com/api/extraction/results?limit=100" \
+  -H "Authorization: Bearer <extraction-read-token>"
+```
+
+常用过滤参数：
+
+```http
+GET /api/extraction/results?rule_id=<rule_id>
+GET /api/extraction/results?order_number=2B129800035555
+GET /api/extraction/results?tracking_number=1Z1B0W642008640330
+GET /api/extraction/results?account_email=nfksuk@gmail.com&limit=100&offset=0
+```
+
+手动扫描：
+
+```http
+POST /api/extraction/scan
+POST /api/extraction-rules/<rule_id>/scan
+```
+
+结果示例：
+
+```json
+{
+  "success": true,
+  "total": 1,
+  "results": [
+    {
+      "order_number": "2B129800035555",
+      "shipments": [
+        {
+          "carrier": "UPS",
+          "tracking_number": "1Z1B0W642008640330",
+          "item_ref": "84D-264V00BN-1/1"
+        },
+        {
+          "carrier": "UPS",
+          "tracking_number": "1Z1B0W642014357126",
+          "item_ref": "84D-264V00BN-1/1"
+        }
+      ]
+    }
+  ]
+}
+```
+
 同步协议当前采用 `server-wins` 冲突策略：客户端离线编辑草稿时需要携带最新 `version`，如果服务端版本更新，接口会返回 conflict，客户端应提示用户选择覆盖或另存副本。邮件正文缓存按不可变快照处理，客户端通过 `/api/sync/changes` 获取失效事件后再按需重新拉取。
 
 需要回滚时，把 `.env` 中的镜像 tag 改成旧版本，比如 release tag 或 GitHub Actions 里显示的 `sha-...` tag，然后执行：

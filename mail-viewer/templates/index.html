@@ -1105,6 +1105,33 @@
             padding: 16px 10px;
             text-align: center;
         }
+        .api-guide-panel {
+            border: 1px solid rgba(36,107,115,0.2);
+            background: linear-gradient(180deg, #f8fcfc 0%, #ffffff 100%);
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .api-guide-panel code,
+        .api-guide-panel pre {
+            background: #f3f7f8;
+            border: 1px solid var(--border-color);
+            color: #17454c;
+        }
+        .api-guide-panel pre {
+            border-radius: 8px;
+            padding: 10px;
+            max-height: 260px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .api-guide-copy {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
         .mailbox-control-panel {
             flex: 1 1 auto;
             min-height: 0;
@@ -2032,6 +2059,28 @@
                                 <div class="col-12 col-lg-7">
                                     <h6 class="mb-2"><i class="bi bi-funnel me-1"></i><span data-i18n="keywordRules">关键词规则</span></h6>
                                     <div class="account-settings-list" id="keyword-rule-list"></div>
+                                    <div class="api-guide-panel mt-3">
+                                        <div class="api-guide-copy">
+                                            <h6 class="mb-0"><i class="bi bi-braces me-1"></i><span data-i18n="extractionApiGuide">数据抽取 API 调用说明</span></h6>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyExtractionApiExample()">
+                                                <i class="bi bi-clipboard me-1"></i><span data-i18n="copyExample">复制示例</span>
+                                            </button>
+                                        </div>
+                                        <div class="small text-muted mb-2" data-i18n="extractionApiGuideHint">
+                                            用抽取规则监控指定邮箱、发件人、主题和正文内容，命中后会自动保存结构化结果。第三方系统使用设备 Token 读取结果。
+                                        </div>
+                                        <div class="small mb-2">
+                                            <span data-i18n="createExtractionTokenHint">建议在“安全设置 → 设备 Token”创建权限为</span>
+                                            <code>extraction:read</code>
+                                            <span data-i18n="createExtractionTokenHintSuffix">的只读 Token。</span>
+                                        </div>
+                                        <pre id="extraction-api-example" class="small mb-2"></pre>
+                                        <div class="small text-muted">
+                                            <div><strong>GET</strong> <code>/api/extraction/results?limit=100</code></div>
+                                            <div><strong data-i18n="filterParams">可选过滤</strong>: <code>rule_id</code>, <code>order_number</code>, <code>tracking_number</code>, <code>account_email</code>, <code>offset</code>, <code>limit</code></div>
+                                            <div><strong data-i18n="manualScan">手动扫描</strong>: <code>POST /api/extraction/scan</code> 或 <code>POST /api/extraction-rules/&lt;rule_id&gt;/scan</code></div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -2054,6 +2103,10 @@
                                     <h6 class="mb-2"><i class="bi bi-phone me-1"></i><span data-i18n="deviceTokens">设备 Token</span></h6>
                                     <div class="input-group input-group-sm mb-2">
                                         <input type="text" class="form-control" id="device-token-name" data-i18n-ph="deviceTokenName" placeholder="设备名称">
+                                        <select class="form-select" id="device-token-scope" style="max-width:170px;">
+                                            <option value="client:full" data-i18n="tokenScopeFull">完整客户端</option>
+                                            <option value="extraction:read" data-i18n="tokenScopeExtractionRead">数据抽取只读</option>
+                                        </select>
                                         <button class="btn btn-outline-primary" onclick="createDeviceToken()"><i class="bi bi-plus-lg"></i></button>
                                     </div>
                                     <div class="small text-muted mb-2" id="new-device-token"></div>
@@ -2281,6 +2334,14 @@
                 selectAccounts: '选择邮箱',
                 selectGroup: '选择分组',
                 keywordMatchHint: '命中后只显示在关键词分组，不发送通知。',
+                extractionApiGuide: '数据抽取 API 调用说明',
+                extractionApiGuideHint: '用抽取规则监控指定邮箱、发件人、主题和正文内容，命中后会自动保存结构化结果。第三方系统使用设备 Token 读取结果。',
+                createExtractionTokenHint: '建议在“安全设置 → 设备 Token”创建权限为',
+                createExtractionTokenHintSuffix: '的只读 Token。',
+                copyExample: '复制示例',
+                copied: '已复制',
+                filterParams: '可选过滤',
+                manualScan: '手动扫描',
                 securitySettings: '安全设置',
                 twoFactorAuth: '两步验证',
                 setupTotp: '生成 TOTP',
@@ -2290,6 +2351,8 @@
                 enterTotp: '6 位验证码',
                 deviceTokens: '设备 Token',
                 deviceTokenName: '设备名称',
+                tokenScopeFull: '完整客户端',
+                tokenScopeExtractionRead: '数据抽取只读',
                 loginSessions: '登录设备',
                 auditLogs: '审计日志',
                 revoke: '踢出',
@@ -2608,6 +2671,14 @@
                 selectAccounts: 'Select accounts',
                 selectGroup: 'Select group',
                 keywordMatchHint: 'Matches are shown in keyword groups only; no notification is sent.',
+                extractionApiGuide: 'Extraction API Guide',
+                extractionApiGuideHint: 'Use extraction rules to monitor account, sender, subject and body content. Matched data is saved as structured results. Third-party systems read it with a device token.',
+                createExtractionTokenHint: 'Recommended: create a read-only',
+                createExtractionTokenHintSuffix: 'token in Security → Device Tokens.',
+                copyExample: 'Copy example',
+                copied: 'Copied',
+                filterParams: 'Filters',
+                manualScan: 'Manual scan',
                 securitySettings: 'Security',
                 twoFactorAuth: 'Two-factor auth',
                 setupTotp: 'Generate TOTP',
@@ -2617,6 +2688,8 @@
                 enterTotp: '6-digit code',
                 deviceTokens: 'Device Tokens',
                 deviceTokenName: 'Device name',
+                tokenScopeFull: 'Full client',
+                tokenScopeExtractionRead: 'Extraction read-only',
                 loginSessions: 'Login Sessions',
                 auditLogs: 'Audit Logs',
                 revoke: 'Revoke',
@@ -2884,6 +2957,7 @@
             document.getElementById('lang-label').textContent = currentLang === 'zh' ? 'EN' : '中';
             document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
             _updateBrowserNotificationStatus();
+            renderExtractionApiExample();
         }
 
         function toggleLang() {
@@ -5862,6 +5936,49 @@
             }).join('') : `<div class="account-settings-empty">${t('noKeywordRules')}</div>`;
         }
 
+        function _extractionApiExampleText() {
+            const origin = window.location.origin || 'https://mail.example.com';
+            return [
+                '# 1) 创建 Aosom 发货抽取规则，可按需限制 account_emails',
+                `curl -X POST "${origin}/api/extraction-rules/defaults/aosom-shipped" \\`,
+                '  -H "Authorization: Bearer <client-full-token>" \\',
+                '  -H "Content-Type: application/json" \\',
+                '  -d \'{"account_emails":["nfksuk@gmail.com"],"scan_now":true}\'',
+                '',
+                '# 2) 第三方读取结构化结果，建议使用 extraction:read 只读 Token',
+                `curl "${origin}/api/extraction/results?limit=100" \\`,
+                '  -H "Authorization: Bearer <extraction-read-token>"',
+                '',
+                '# 返回示例',
+                JSON.stringify({
+                    success: true,
+                    total: 1,
+                    results: [{
+                        order_number: '2B129800035555',
+                        shipments: [
+                            { carrier: 'UPS', tracking_number: '1Z1B0W642008640330', item_ref: '84D-264V00BN-1/1' },
+                            { carrier: 'UPS', tracking_number: '1Z1B0W642014357126', item_ref: '84D-264V00BN-1/1' },
+                        ],
+                    }],
+                }, null, 2),
+            ].join('\n');
+        }
+
+        function renderExtractionApiExample() {
+            const target = document.getElementById('extraction-api-example');
+            if (target) target.textContent = _extractionApiExampleText();
+        }
+
+        async function copyExtractionApiExample() {
+            const text = _extractionApiExampleText();
+            try {
+                await navigator.clipboard.writeText(text);
+                _showKeywordSettingsAlert('success', t('copied'));
+            } catch (e) {
+                _showKeywordSettingsAlert('warning', text);
+            }
+        }
+
         async function loadKeywordRules() {
             _clearKeywordSettingsAlert();
             try {
@@ -5871,6 +5988,7 @@
                 keywordRules = data.rules || [];
                 renderKeywordScopeControls();
                 renderKeywordRules();
+                renderExtractionApiExample();
                 renderMailboxes();
             } catch (e) {
                 _showKeywordSettingsAlert('danger', `${t('keywordRuleLoadFailed')}: ${e.message}`);
@@ -6042,6 +6160,7 @@
                         <span class="mail-account-provider-icon"><i class="bi bi-phone"></i></span>
                         <span class="flex-grow-1 min-w-0">
                             <span class="mail-account-title">${_escapeHtml(item.name || item.id)}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml((item.scopes || ['client:full']).join(', '))}</span>
                             <span class="mail-account-subtitle">${_escapeHtml(item.last_seen || item.created_at || '')}</span>
                         </span>
                         <span class="account-settings-row-actions">
@@ -6127,10 +6246,11 @@
 
         async function createDeviceToken() {
             const name = document.getElementById('device-token-name').value.trim();
+            const scope = document.getElementById('device-token-scope')?.value || 'client:full';
             const data = await fetchWithSensitiveConfirm('/api/devices/tokens', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
+                body: JSON.stringify({ name, scopes: [scope] }),
             }, 'create_device_token');
             if (!data.success) {
                 _showSecurityAlert('danger', data.message || t('settingsSaveFailed'));

@@ -236,6 +236,70 @@ Use a device token:
 Authorization: Bearer memail_dev_xxx
 ```
 
+### Mail Data Extraction API
+
+The Web UI “Keyword Rules” settings pane includes an “Extraction API Guide” with copyable examples. For third-party systems, create an `extraction:read` read-only token in “Security → Device Tokens”. Rule creation and manual scans should still use a logged-in admin session or a full client token.
+
+The built-in Aosom shipped-order template extracts order numbers and UPS tracking numbers from mail sent by `noreply@aosom.ca` with subject `Aosom Business: Your Aosom order has been shipped`.
+
+Create an Aosom extraction rule and scan immediately:
+
+```bash
+curl -X POST "https://mail.yourdomain.com/api/extraction-rules/defaults/aosom-shipped" \
+  -H "Authorization: Bearer <client-full-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"account_emails":["nfksuk@gmail.com"],"scan_now":true}'
+```
+
+Read structured results:
+
+```bash
+curl "https://mail.yourdomain.com/api/extraction/results?limit=100" \
+  -H "Authorization: Bearer <extraction-read-token>"
+```
+
+Common filters:
+
+```http
+GET /api/extraction/results?rule_id=<rule_id>
+GET /api/extraction/results?order_number=2B129800035555
+GET /api/extraction/results?tracking_number=1Z1B0W642008640330
+GET /api/extraction/results?account_email=nfksuk@gmail.com&limit=100&offset=0
+```
+
+Manual scan:
+
+```http
+POST /api/extraction/scan
+POST /api/extraction-rules/<rule_id>/scan
+```
+
+Example result:
+
+```json
+{
+  "success": true,
+  "total": 1,
+  "results": [
+    {
+      "order_number": "2B129800035555",
+      "shipments": [
+        {
+          "carrier": "UPS",
+          "tracking_number": "1Z1B0W642008640330",
+          "item_ref": "84D-264V00BN-1/1"
+        },
+        {
+          "carrier": "UPS",
+          "tracking_number": "1Z1B0W642014357126",
+          "item_ref": "84D-264V00BN-1/1"
+        }
+      ]
+    }
+  ]
+}
+```
+
 The current conflict policy is `server-wins`: offline draft edits must include the latest `version`; if the server has a newer version, the API returns a conflict and the client should ask whether to overwrite or save a copy. Message-body cache is treated as immutable snapshots; clients watch `/api/sync/changes` for invalidation events and then refetch as needed.
 
 To roll back, change the image tag in `.env` to an older tag, such as a release tag or `sha-...` tag shown in GitHub Actions, then run `docker-compose pull && docker-compose up -d`.

@@ -75,11 +75,17 @@ TRANSLATION_SERVICE_TIMEOUT_SECONDS = int(os.getenv("TRANSLATION_SERVICE_TIMEOUT
 TRANSLATION_CACHE_LIMIT = int(os.getenv("TRANSLATION_CACHE_LIMIT", "500"))
 TRANSLATION_CACHE_MAX_CHARS = int(os.getenv("TRANSLATION_CACHE_MAX_CHARS", str(2 * 1024 * 1024)))
 MOBILE_PUSH_POLL_SECONDS = int(os.getenv("MOBILE_PUSH_POLL_SECONDS", "20"))
+EXTRACTION_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTRACTION_SCAN_INTERVAL_SECONDS", "300"))
+EXTRACTION_SCAN_LIMIT = int(os.getenv("EXTRACTION_SCAN_LIMIT", "300"))
+EXTRACTION_RESULT_LIMIT = int(os.getenv("EXTRACTION_RESULT_LIMIT", "5000"))
 _MOBILE_EVENT_SUBSCRIBERS: set[queue.Queue] = set()
 _MOBILE_EVENT_LOCK = threading.Lock()
 _MOBILE_EVENT_MONITOR_STARTED = False
 _MOBILE_EVENT_LAST_SEQ = 0
 _MOBILE_EVENT_LAST_FINGERPRINT = ""
+_EXTRACTION_SCAN_STARTED = False
+_EXTRACTION_SCAN_RUNNING = False
+_EXTRACTION_SCAN_LOCK = threading.Lock()
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
     "colgroup", "div", "em", "font",
@@ -2016,6 +2022,490 @@ def _portable_keyword_rule(item: dict) -> dict:
     }
 
 
+def _coerce_string_list(value, limit: int = 100) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = re.split(r"[\n,，]+", value)
+    if not isinstance(value, list):
+        value = [value]
+    result = []
+    for item in value:
+        text = str(item or "").strip()
+        if text:
+            result.append(text)
+    return result[:limit]
+
+
+def _bool_from_setting(value, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
+
+
+def _normalize_extraction_rule(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    template = str(item.get("template") or "custom").strip().lower()
+    if template not in {"custom", "aosom_shipped"}:
+        template = "custom"
+
+    defaults = {}
+    if template == "aosom_shipped":
+        defaults = {
+            "name": "Aosom 发货物流提取",
+            "sender_contains": "noreply@aosom.ca",
+            "subject_contains": "Aosom Business: Your Aosom order has been shipped",
+            "order_regex": r"Order\s+#\s*([A-Z0-9-]+)\s+is\s+Shipped",
+            "tracking_regex": r"\b(1Z[0-9A-Z]{16})\b",
+            "carrier_regex": r"\b(UPS|FedEx|DHL|USPS|Canada Post|Purolator)\b",
+        }
+
+    name = str(item.get("name") or defaults.get("name") or "").strip()
+    sender_contains = str(item.get("sender_contains") or item.get("senderContains") or defaults.get("sender_contains") or "").strip()
+    subject_contains = str(item.get("subject_contains") or item.get("subjectContains") or defaults.get("subject_contains") or "").strip()
+    subject_exact = str(item.get("subject_exact") or item.get("subjectExact") or "").strip()
+    order_regex = str(item.get("order_regex") or item.get("orderRegex") or defaults.get("order_regex") or "").strip()
+    tracking_regex = str(item.get("tracking_regex") or item.get("trackingRegex") or defaults.get("tracking_regex") or "").strip()
+    carrier_regex = str(item.get("carrier_regex") or item.get("carrierRegex") or defaults.get("carrier_regex") or "").strip()
+    keywords = _coerce_string_list(item.get("keywords", []), 30)
+
+    if not name or not tracking_regex:
+        return None
+    if not any([sender_contains, subject_contains, subject_exact, keywords]):
+        return None
+
+    raw_match_mode = str(item.get("keyword_match_mode") or item.get("keywordMatchMode") or "any").strip().lower()
+    keyword_match_mode = raw_match_mode if raw_match_mode in {"any", "all"} else "any"
+    scan_limit = min(1000, max(20, _safe_int(item.get("scan_limit") or item.get("scanLimit"), EXTRACTION_SCAN_LIMIT)))
+    now = _iso_now()
+    return {
+        "id": str(item.get("id") or _new_id("ext_")),
+        "name": name[:100],
+        "template": template,
+        "enabled": _bool_from_setting(item.get("enabled"), True),
+        "account_ids": _coerce_string_list(item.get("account_ids", item.get("accountIds", [])), 200),
+        "account_emails": [
+            _normalize_mailbox_address(email)
+            for email in _coerce_string_list(item.get("account_emails", item.get("accountEmails", [])), 200)
+            if _normalize_mailbox_address(email)
+        ],
+        "sender_contains": sender_contains[:240],
+        "subject_contains": subject_contains[:240],
+        "subject_exact": subject_exact[:240],
+        "keywords": keywords,
+        "keyword_match_mode": keyword_match_mode,
+        "order_regex": order_regex[:500],
+        "tracking_regex": tracking_regex[:500],
+        "carrier_regex": carrier_regex[:500],
+        "scan_limit": scan_limit,
+        "created_at": item.get("created_at") or item.get("createdAt") or now,
+        "updated_at": item.get("updated_at") or item.get("updatedAt") or now,
+        "last_scan_at": item.get("last_scan_at") or item.get("lastScanAt") or "",
+        "last_scan_count": _safe_int(item.get("last_scan_count") or item.get("lastScanCount"), 0),
+        "last_scan_error": str(item.get("last_scan_error") or item.get("lastScanError") or "")[:500],
+    }
+
+
+def _public_extraction_rule(item: dict) -> dict:
+    normalized = _normalize_extraction_rule(item) or {}
+    return {
+        "id": normalized.get("id", ""),
+        "name": normalized.get("name", ""),
+        "template": normalized.get("template", "custom"),
+        "enabled": bool(normalized.get("enabled", True)),
+        "account_ids": normalized.get("account_ids", []),
+        "account_emails": normalized.get("account_emails", []),
+        "sender_contains": normalized.get("sender_contains", ""),
+        "subject_contains": normalized.get("subject_contains", ""),
+        "subject_exact": normalized.get("subject_exact", ""),
+        "keywords": normalized.get("keywords", []),
+        "keyword_match_mode": normalized.get("keyword_match_mode", "any"),
+        "order_regex": normalized.get("order_regex", ""),
+        "tracking_regex": normalized.get("tracking_regex", ""),
+        "carrier_regex": normalized.get("carrier_regex", ""),
+        "scan_limit": normalized.get("scan_limit", EXTRACTION_SCAN_LIMIT),
+        "created_at": normalized.get("created_at", ""),
+        "updated_at": normalized.get("updated_at", ""),
+        "last_scan_at": normalized.get("last_scan_at", ""),
+        "last_scan_count": normalized.get("last_scan_count", 0),
+        "last_scan_error": normalized.get("last_scan_error", ""),
+    }
+
+
+def _normalize_message_party(value) -> str:
+    if isinstance(value, dict):
+        name = str(value.get("name") or "").strip()
+        address = str(value.get("address") or "").strip()
+        return f"{name} <{address}>".strip() if name else address
+    if isinstance(value, list):
+        return ", ".join(_normalize_message_party(item) for item in value if item)
+    return str(value or "").strip()
+
+
+def _external_accounts_for_extraction() -> list[dict]:
+    resp = http_session.get(urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/accounts"), timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(_response_error(resp, f"外部账号读取失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    accounts = payload if isinstance(payload, list) else payload.get("accounts", [])
+    return [item for item in accounts if isinstance(item, dict)]
+
+
+def _account_matches_extraction_rule(rule: dict, account: dict) -> bool:
+    account_ids = {str(item) for item in rule.get("account_ids", [])}
+    account_emails = {str(item).lower() for item in rule.get("account_emails", [])}
+    account_id = str(account.get("id") or "")
+    account_email = _normalize_mailbox_address(account.get("email", ""))
+    if account_ids and account_id not in account_ids:
+        return False
+    if account_emails and account_email.lower() not in account_emails:
+        return False
+    return True
+
+
+def _mail_envelope_matches_extraction_rule(rule: dict, mail: dict, include_keywords: bool = True) -> bool:
+    subject = str(mail.get("subject") or "").strip()
+    sender = _normalize_message_party(mail.get("from"))
+    haystack = f"{sender}\n{subject}".lower()
+    sender_contains = str(rule.get("sender_contains") or "").lower()
+    subject_contains = str(rule.get("subject_contains") or "").lower()
+    subject_exact = str(rule.get("subject_exact") or "").lower()
+    if sender_contains and sender_contains not in sender.lower():
+        return False
+    if subject_exact and subject.lower() != subject_exact:
+        return False
+    if subject_contains and subject_contains not in subject.lower():
+        return False
+    keywords = [str(item).lower() for item in rule.get("keywords", []) if str(item).strip()]
+    if not include_keywords:
+        return True
+    if keywords:
+        matched = [keyword in haystack for keyword in keywords]
+        if rule.get("keyword_match_mode") == "all" and not all(matched):
+            return False
+        if rule.get("keyword_match_mode") != "all" and not any(matched):
+            return False
+    return True
+
+
+def _message_detail_text(detail: dict, mail: dict | None = None) -> str:
+    mail = mail or {}
+    parts = [
+        str(detail.get("subject") or mail.get("subject") or ""),
+        _normalize_message_party(detail.get("from") or mail.get("from")),
+        str(detail.get("text") or ""),
+        _extract_plain_text(str(detail.get("html") or "")),
+    ]
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _mail_detail_matches_extraction_rule(rule: dict, detail: dict, mail: dict) -> bool:
+    if not _mail_envelope_matches_extraction_rule(rule, {
+        **mail,
+        "subject": detail.get("subject") or mail.get("subject"),
+        "from": detail.get("from") or mail.get("from"),
+    }, include_keywords=False):
+        return False
+    keywords = [str(item).lower() for item in rule.get("keywords", []) if str(item).strip()]
+    if not keywords:
+        return True
+    text = _message_detail_text(detail, mail).lower()
+    matched = [keyword in text for keyword in keywords]
+    if rule.get("keyword_match_mode") == "all":
+        return all(matched)
+    return any(matched)
+
+
+def _find_unique_regex(regex: str, text: str, flags=re.IGNORECASE) -> list[str]:
+    if not regex:
+        return []
+    result = []
+    try:
+        matches = re.finditer(regex, text or "", flags)
+    except re.error as exc:
+        raise RuntimeError(f"正则表达式错误: {exc}") from exc
+    for match in matches:
+        value = match.group(1) if match.groups() else match.group(0)
+        value = str(value or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _shipment_carrier_from_context(context: str, carrier_regex: str) -> str:
+    if not carrier_regex:
+        return ""
+    try:
+        matches = list(re.finditer(carrier_regex, context or "", re.IGNORECASE))
+    except re.error:
+        return ""
+    return matches[-1].group(1 if matches[-1].groups() else 0).strip() if matches else ""
+
+
+def _extract_shipments_from_text(text: str, tracking_regex: str, carrier_regex: str) -> list[dict]:
+    shipments = []
+    seen = set()
+    try:
+        matches = list(re.finditer(tracking_regex, text or "", re.IGNORECASE))
+    except re.error as exc:
+        raise RuntimeError(f"物流单号正则表达式错误: {exc}") from exc
+    for match in matches:
+        tracking = match.group(1) if match.groups() else match.group(0)
+        tracking = str(tracking or "").strip()
+        if not tracking or tracking in seen:
+            continue
+        seen.add(tracking)
+        context_start = max(0, match.start() - 160)
+        context_end = min(len(text), match.end() + 120)
+        context = text[context_start:context_end]
+        item_ref_match = re.match(r"\s*\(([^)]{1,120})\)", text[match.end():])
+        shipments.append({
+            "carrier": _shipment_carrier_from_context(context[:match.start() - context_start], carrier_regex),
+            "tracking_number": tracking,
+            "item_ref": item_ref_match.group(1).strip() if item_ref_match else "",
+            "context": re.sub(r"\s+", " ", context).strip()[:500],
+        })
+    return shipments
+
+
+def _extraction_record_id(rule: dict, account: dict, mail: dict, order_number: str, shipments: list[dict]) -> str:
+    tracking_part = ",".join(item.get("tracking_number", "") for item in shipments)
+    raw = "|".join([
+        str(rule.get("id") or ""),
+        str(account.get("id") or ""),
+        str(mail.get("folder") or ""),
+        str(mail.get("uid") or mail.get("id") or ""),
+        str(order_number or ""),
+        tracking_part,
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _extract_records_from_message(rule: dict, account: dict, mail: dict, detail: dict) -> list[dict]:
+    text = _message_detail_text(detail, mail)
+    order_numbers = _find_unique_regex(rule.get("order_regex", ""), text) if rule.get("order_regex") else [""]
+    shipments = _extract_shipments_from_text(text, rule.get("tracking_regex", ""), rule.get("carrier_regex", ""))
+    if not shipments:
+        return []
+    if not order_numbers:
+        order_numbers = [""]
+    message = {
+        "account_id": str(account.get("id") or ""),
+        "account_email": _normalize_mailbox_address(account.get("email", "")),
+        "account_name": str(account.get("displayName") or account.get("name") or ""),
+        "uid": str(mail.get("uid") or mail.get("id") or ""),
+        "folder": str(mail.get("folder") or "INBOX"),
+        "subject": str(detail.get("subject") or mail.get("subject") or ""),
+        "from": _normalize_message_party(detail.get("from") or mail.get("from")),
+        "date": str(detail.get("date") or mail.get("date") or ""),
+    }
+    records = []
+    for order_number in order_numbers:
+        record = {
+            "rule_id": rule.get("id", ""),
+            "rule_name": rule.get("name", ""),
+            "template": rule.get("template", "custom"),
+            "order_number": order_number,
+            "shipments": shipments,
+            "message": message,
+            "extracted_at": _iso_now(),
+        }
+        record["id"] = _extraction_record_id(rule, account, mail, order_number, shipments)
+        records.append(record)
+    return records
+
+
+def _public_extraction_result(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    shipments = []
+    for shipment in item.get("shipments", []) if isinstance(item.get("shipments"), list) else []:
+        if not isinstance(shipment, dict):
+            continue
+        tracking_number = str(shipment.get("tracking_number") or "").strip()
+        if not tracking_number:
+            continue
+        shipments.append({
+            "carrier": str(shipment.get("carrier") or "").strip(),
+            "tracking_number": tracking_number,
+            "item_ref": str(shipment.get("item_ref") or "").strip(),
+        })
+    return {
+        "id": str(item.get("id") or ""),
+        "rule_id": str(item.get("rule_id") or ""),
+        "rule_name": str(item.get("rule_name") or ""),
+        "template": str(item.get("template") or "custom"),
+        "order_number": str(item.get("order_number") or ""),
+        "shipments": shipments,
+        "message": item.get("message") if isinstance(item.get("message"), dict) else {},
+        "extracted_at": str(item.get("extracted_at") or ""),
+        "updated_at": str(item.get("updated_at") or item.get("extracted_at") or ""),
+    }
+
+
+def _merge_extraction_results(settings: dict, records: list[dict]) -> list[dict]:
+    existing = [
+        _public_extraction_result(item)
+        for item in _settings_list(settings, "extraction_results")
+        if isinstance(item, dict) and item.get("id")
+    ]
+    by_id = {item["id"]: item for item in existing if item.get("id")}
+    now = _iso_now()
+    for record in records:
+        public = _public_extraction_result(record)
+        if not public.get("id"):
+            continue
+        old = by_id.get(public["id"], {})
+        public["updated_at"] = now
+        if old.get("extracted_at"):
+            public["extracted_at"] = old["extracted_at"]
+        by_id[public["id"]] = public
+    merged = sorted(
+        by_id.values(),
+        key=lambda item: (
+            str((item.get("message") or {}).get("date") or ""),
+            str(item.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )[:EXTRACTION_RESULT_LIMIT]
+    settings["extraction_results"] = merged
+    return merged
+
+
+def _fetch_external_mail_list(account_id: str, limit: int) -> list[dict]:
+    resp = http_session.get(
+        urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{quote(str(account_id), safe='')}/mails"),
+        params={"folder": "__memail_all__", "count": limit, "offset": 0, "cacheOnly": 1},
+        timeout=25,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(_response_error(resp, f"邮件列表读取失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    return payload.get("mails", []) if isinstance(payload, dict) else []
+
+
+def _fetch_external_mail_detail(account_id: str, mail: dict) -> dict:
+    uid = str(mail.get("uid") or mail.get("id") or "")
+    if not uid:
+        return {}
+    resp = http_session.get(
+        urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{quote(str(account_id), safe='')}/mails/{quote(uid, safe='')}"),
+        params={"folder": str(mail.get("folder") or "INBOX"), "markSeen": "0"},
+        timeout=60,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(_response_error(resp, f"邮件详情读取失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+def _scan_extraction_rule(rule: dict) -> tuple[list[dict], dict]:
+    normalized = _normalize_extraction_rule(rule)
+    if not normalized or not normalized.get("enabled", True):
+        return [], {"checked": 0, "matched": 0, "records": 0}
+    records = []
+    checked = 0
+    matched = 0
+    for account in _external_accounts_for_extraction():
+        if not _account_matches_extraction_rule(normalized, account):
+            continue
+        account_id = str(account.get("id") or "")
+        if not account_id:
+            continue
+        for mail in _fetch_external_mail_list(account_id, normalized.get("scan_limit", EXTRACTION_SCAN_LIMIT)):
+            if not isinstance(mail, dict):
+                continue
+            checked += 1
+            if not _mail_envelope_matches_extraction_rule(normalized, mail, include_keywords=False):
+                continue
+            detail = _fetch_external_mail_detail(account_id, mail)
+            if not _mail_detail_matches_extraction_rule(normalized, detail, mail):
+                continue
+            matched += 1
+            records.extend(_extract_records_from_message(normalized, account, mail, detail))
+    return records, {"checked": checked, "matched": matched, "records": len(records)}
+
+
+def _run_extraction_scan_once(rule_id: str = "") -> dict:
+    settings = _read_viewer_settings()
+    rules = [
+        _normalize_extraction_rule(item)
+        for item in _settings_list(settings, "extraction_rules")
+    ]
+    rules = [item for item in rules if item and item.get("enabled", True)]
+    if rule_id:
+        rules = [item for item in rules if item.get("id") == rule_id]
+    records = []
+    summary = {"rules": 0, "checked": 0, "matched": 0, "records": 0, "errors": []}
+    for rule in rules:
+        summary["rules"] += 1
+        try:
+            rule_records, stats = _scan_extraction_rule(rule)
+            records.extend(rule_records)
+            summary["checked"] += stats.get("checked", 0)
+            summary["matched"] += stats.get("matched", 0)
+            summary["records"] += stats.get("records", 0)
+            rule["last_scan_at"] = _iso_now()
+            rule["last_scan_count"] = stats.get("records", 0)
+            rule["last_scan_error"] = ""
+        except Exception as exc:
+            message = str(exc)
+            rule["last_scan_at"] = _iso_now()
+            rule["last_scan_count"] = 0
+            rule["last_scan_error"] = message[:500]
+            summary["errors"].append({"rule_id": rule.get("id", ""), "message": message})
+            app.logger.warning("邮件数据抽取规则扫描失败: %s %s", rule.get("name"), exc, exc_info=True)
+    if records:
+        _merge_extraction_results(settings, records)
+    all_rules = [
+        _normalize_extraction_rule(item)
+        for item in _settings_list(settings, "extraction_rules")
+    ]
+    by_id = {item.get("id"): item for item in all_rules if item}
+    for rule in rules:
+        if rule.get("id") in by_id:
+            by_id[rule["id"]].update(rule)
+    settings["extraction_rules"] = list(by_id.values())[-200:]
+    if records or summary["errors"]:
+        _touch_sync_event(settings, "extraction.results.updated", {
+            "records": summary["records"],
+            "errors": len(summary["errors"]),
+        })
+    _write_viewer_settings(settings)
+    return {"summary": summary, "records": [_public_extraction_result(item) for item in records]}
+
+
+def _extraction_scanner_loop():
+    global _EXTRACTION_SCAN_RUNNING
+    while True:
+        time.sleep(max(30, EXTRACTION_SCAN_INTERVAL_SECONDS))
+        with _EXTRACTION_SCAN_LOCK:
+            if _EXTRACTION_SCAN_RUNNING:
+                continue
+            _EXTRACTION_SCAN_RUNNING = True
+        try:
+            _run_extraction_scan_once()
+        except Exception as exc:
+            app.logger.warning("邮件数据抽取后台扫描失败: %s", exc, exc_info=True)
+        finally:
+            with _EXTRACTION_SCAN_LOCK:
+                _EXTRACTION_SCAN_RUNNING = False
+
+
+def _ensure_extraction_scanner():
+    global _EXTRACTION_SCAN_STARTED
+    if EXTRACTION_SCAN_INTERVAL_SECONDS <= 0:
+        return
+    with _EXTRACTION_SCAN_LOCK:
+        if _EXTRACTION_SCAN_STARTED:
+            return
+        _EXTRACTION_SCAN_STARTED = True
+    threading.Thread(target=_extraction_scanner_loop, name="extraction-scanner", daemon=True).start()
+
+
 def _portable_account_from_local_mailbox(item: dict) -> dict | None:
     address = _normalize_mailbox_address(item.get("address", ""))
     if not address:
@@ -2396,6 +2886,12 @@ def add_security_headers(response):
     return response
 
 
+@app.before_request
+def ensure_background_workers():
+    _ensure_extraction_scanner()
+    return None
+
+
 def login_required(f):
     """登录验证装饰器"""
     @wraps(f)
@@ -2409,6 +2905,18 @@ def login_required(f):
                 return jsonify({"success": False, "message": "未授权访问"}), 401
             return redirect(url_for("login_page"))
         return f(*args, **kwargs)
+    return decorated_function
+
+
+def extraction_api_required(f):
+    """允许后台登录或具备 extraction:read 权限的设备 Token 读取抽取结果。"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth = _device_auth("extraction:read")
+        if auth:
+            request.device_auth = auth
+            return f(*args, **kwargs)
+        return login_required(f)(*args, **kwargs)
     return decorated_function
 
 # 创建带重试的 HTTP session
@@ -3910,6 +4418,150 @@ def delete_keyword_rule(rule_id):
     _touch_sync_event(settings, "keyword_rule.deleted", {"id": rule_id})
     _write_viewer_settings(settings)
     return jsonify({"success": True, "rules": [_public_keyword_rule(item) for item in rules]})
+
+
+@app.route("/api/extraction-rules", methods=["GET"])
+@login_required
+def list_extraction_rules():
+    _ensure_extraction_scanner()
+    settings = _read_viewer_settings()
+    rules = [
+        _public_extraction_rule(item)
+        for item in _settings_list(settings, "extraction_rules")
+        if _normalize_extraction_rule(item)
+    ]
+    return jsonify({"success": True, "rules": rules})
+
+
+@app.route("/api/extraction-rules", methods=["POST"])
+@login_required
+def save_extraction_rule():
+    payload, status = _save_extraction_rule_payload(request.json or {})
+    return jsonify(payload), status
+
+
+def _save_extraction_rule_payload(data: dict) -> tuple[dict, int]:
+    _ensure_extraction_scanner()
+    settings = _read_viewer_settings()
+    rules = [
+        _normalize_extraction_rule(item)
+        for item in _settings_list(settings, "extraction_rules")
+    ]
+    rules = [item for item in rules if item]
+    now = _iso_now()
+    incoming = _normalize_extraction_rule({
+        **data,
+        "updated_at": now,
+        "created_at": data.get("created_at") or now,
+    })
+    if not incoming:
+        return {"success": False, "message": "抽取规则缺少名称、匹配条件或物流单号正则"}, 400
+    existing = next((item for item in rules if item.get("id") == incoming["id"]), None)
+    if existing:
+        incoming["created_at"] = existing.get("created_at", incoming["created_at"])
+        incoming["last_scan_at"] = existing.get("last_scan_at", "")
+        incoming["last_scan_count"] = existing.get("last_scan_count", 0)
+        incoming["last_scan_error"] = existing.get("last_scan_error", "")
+        existing.update(incoming)
+    else:
+        rules.append(incoming)
+    settings["extraction_rules"] = rules[-200:]
+    _touch_sync_event(settings, "extraction_rule.upserted", {"id": incoming["id"]})
+    _write_viewer_settings(settings)
+
+    scan_result = None
+    if _bool_from_setting(data.get("scan_now"), False):
+        scan_result = _run_extraction_scan_once(incoming["id"])
+
+    return {
+        "success": True,
+        "rule": _public_extraction_rule(incoming),
+        "rules": [_public_extraction_rule(item) for item in rules],
+        "scan": scan_result,
+    }, 200
+
+
+@app.route("/api/extraction-rules/defaults/aosom-shipped", methods=["POST"])
+@login_required
+def save_aosom_shipped_extraction_rule():
+    data = request.json or {}
+    data["template"] = "aosom_shipped"
+    if not data.get("name"):
+        data["name"] = "Aosom 发货物流提取"
+    payload, status = _save_extraction_rule_payload(data)
+    return jsonify(payload), status
+
+
+@app.route("/api/extraction-rules/<rule_id>", methods=["DELETE"])
+@login_required
+def delete_extraction_rule(rule_id):
+    settings = _read_viewer_settings()
+    rules = [
+        _normalize_extraction_rule(item)
+        for item in _settings_list(settings, "extraction_rules")
+    ]
+    rules = [item for item in rules if item and item.get("id") != rule_id]
+    settings["extraction_rules"] = rules
+    _touch_sync_event(settings, "extraction_rule.deleted", {"id": rule_id})
+    _write_viewer_settings(settings)
+    return jsonify({"success": True, "rules": [_public_extraction_rule(item) for item in rules]})
+
+
+@app.route("/api/extraction-rules/<rule_id>/scan", methods=["POST"])
+@login_required
+def scan_extraction_rule(rule_id):
+    _ensure_extraction_scanner()
+    result = _run_extraction_scan_once(rule_id)
+    return jsonify({"success": True, **result})
+
+
+@app.route("/api/extraction/scan", methods=["POST"])
+@login_required
+def scan_extraction_rules():
+    _ensure_extraction_scanner()
+    result = _run_extraction_scan_once()
+    return jsonify({"success": True, **result})
+
+
+@app.route("/api/extraction/results", methods=["GET"])
+@app.route("/api/extraction-results", methods=["GET"])
+@extraction_api_required
+def list_extraction_results():
+    settings = _read_viewer_settings()
+    results = [
+        _public_extraction_result(item)
+        for item in _settings_list(settings, "extraction_results")
+        if isinstance(item, dict) and item.get("id")
+    ]
+    rule_id = str(request.args.get("rule_id") or "").strip()
+    order_number = str(request.args.get("order_number") or "").strip().lower()
+    tracking_number = str(request.args.get("tracking_number") or "").strip().lower()
+    account_email = _normalize_mailbox_address(request.args.get("account_email") or "").lower()
+    if rule_id:
+        results = [item for item in results if item.get("rule_id") == rule_id]
+    if order_number:
+        results = [item for item in results if str(item.get("order_number") or "").lower() == order_number]
+    if tracking_number:
+        results = [
+            item for item in results
+            if any(str(ship.get("tracking_number") or "").lower() == tracking_number for ship in item.get("shipments", []))
+        ]
+    if account_email:
+        results = [
+            item for item in results
+            if str((item.get("message") or {}).get("account_email") or "").lower() == account_email
+        ]
+    limit = min(1000, max(1, _safe_int(request.args.get("limit"), 200)))
+    offset = max(0, _safe_int(request.args.get("offset"), 0))
+    page = results[offset:offset + limit]
+    return jsonify({
+        "success": True,
+        "total": len(results),
+        "offset": offset,
+        "limit": limit,
+        "results": page,
+        "generated_at": _iso_now(),
+    })
 
 
 # ---- 搜索邮件 API ----
