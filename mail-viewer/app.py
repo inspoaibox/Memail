@@ -2393,9 +2393,8 @@ def _extract_shipments_from_patterns(text: str, tracking_regexes: list[str], car
 def _extraction_record_id(rule: dict, account: dict, mail: dict, order_number: str, shipments: list[dict]) -> str:
     tracking_part = ",".join(sorted({str(item.get("tracking_number") or "").strip().upper() for item in shipments if item.get("tracking_number")}))
     raw = "|".join([
-        str(account.get("id") or ""),
-        str(mail.get("folder") or ""),
-        str(mail.get("uid") or mail.get("id") or ""),
+        str(rule.get("template") or "custom"),
+        _normalize_mailbox_address(account.get("email", "")) or str(account.get("id") or ""),
         str(order_number or ""),
         tracking_part,
     ])
@@ -2411,9 +2410,8 @@ def _extraction_result_identity(item: dict) -> str:
         if shipment.get("tracking_number")
     }))
     raw = "|".join([
-        str(message.get("account_id") or ""),
-        str(message.get("folder") or ""),
-        str(message.get("uid") or ""),
+        str(public.get("template") or "custom"),
+        _normalize_mailbox_address(message.get("account_email") or "") or str(message.get("account_id") or ""),
         str(public.get("order_number") or ""),
         tracking_part,
     ])
@@ -2542,6 +2540,62 @@ def _dedupe_public_extraction_results(items: list[dict]) -> list[dict]:
     return list(by_key.values())
 
 
+def _extraction_result_time_key(item: dict) -> str:
+    message = item.get("message") if isinstance(item.get("message"), dict) else {}
+    return str(item.get("updated_at") or item.get("extracted_at") or message.get("date") or "")
+
+
+def _aggregate_public_extraction_results_by_order(items: list[dict]) -> list[dict]:
+    by_key = {}
+    for item in items or []:
+        public = _public_extraction_result(item)
+        order_number = str(public.get("order_number") or "").strip()
+        message = public.get("message") if isinstance(public.get("message"), dict) else {}
+        account_key = _normalize_mailbox_address(message.get("account_email") or "") or str(message.get("account_id") or "")
+        if order_number:
+            raw_key = "|".join([
+                str(public.get("template") or "custom").strip().lower(),
+                account_key.lower(),
+                order_number.lower(),
+            ])
+            key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:32]
+        else:
+            key = _extraction_result_identity(public) or public.get("id", "")
+        if not key:
+            continue
+        old = by_key.get(key)
+        if not old:
+            public["id"] = key
+            public["merged_count"] = 1
+            by_key[key] = public
+            continue
+
+        shipments = {}
+        for source in [old, public]:
+            for shipment in source.get("shipments", []) if isinstance(source.get("shipments"), list) else []:
+                tracking = str(shipment.get("tracking_number") or "").strip().upper()
+                if not tracking:
+                    continue
+                existing = shipments.get(tracking, {})
+                shipments[tracking] = {
+                    "carrier": existing.get("carrier") or str(shipment.get("carrier") or "").strip(),
+                    "tracking_number": tracking,
+                    "item_ref": existing.get("item_ref") or str(shipment.get("item_ref") or "").strip(),
+                }
+
+        if _extraction_result_time_key(public) >= _extraction_result_time_key(old):
+            merged = public
+            if old.get("extracted_at") and not merged.get("extracted_at"):
+                merged["extracted_at"] = old["extracted_at"]
+        else:
+            merged = old
+        merged["id"] = key
+        merged["shipments"] = list(shipments.values())
+        merged["merged_count"] = int(old.get("merged_count") or 1) + 1
+        by_key[key] = merged
+    return list(by_key.values())
+
+
 def _extraction_results_collection():
     global _EXTRACTION_MONGO_CLIENT, _EXTRACTION_MONGO_READY
     if EXTRACTION_RESULT_STORE in {"settings", "file", "json"} or not MONGO_URL:
@@ -2664,39 +2718,109 @@ def _cleanup_duplicate_extraction_results(collection=None, max_docs: int = 5000)
     if collection is None:
         return 0
     try:
-        docs = list(collection.find({}, {"_id": 1, "id": 1, "natural_key": 1, "message": 1, "order_number": 1, "shipments": 1, "updated_at": 1, "extracted_at": 1}).sort([("updated_at", DESCENDING)]).limit(max_docs))
+        docs = list(collection.find({}, {"_id": 1, "id": 1, "natural_key": 1, "rule_id": 1, "template": 1, "message": 1, "order_number": 1, "shipments": 1, "updated_at": 1, "extracted_at": 1}).sort([("updated_at", DESCENDING)]).limit(max_docs))
         by_key = {}
         delete_ids = []
         set_ops = []
         for doc in docs:
             public = _public_extraction_result(doc)
-            key = doc.get("natural_key") or _extraction_result_identity(public)
+            key = _extraction_result_identity(public) or doc.get("natural_key") or str(doc.get("id") or "")
             if not key:
                 continue
-            if not doc.get("natural_key") or doc.get("id") != key:
-                set_ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": {"natural_key": key, "id": key}}))
             if key in by_key:
                 delete_ids.append(doc["_id"])
-            else:
-                by_key[key] = doc["_id"]
-        if set_ops:
-            collection.bulk_write(set_ops, ordered=False)
+                continue
+            by_key[key] = doc["_id"]
+            if not doc.get("natural_key") or doc.get("id") != key:
+                set_ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": {"natural_key": key, "id": key}}))
+        deleted_count = 0
         if delete_ids:
             result = collection.delete_many({"_id": {"$in": delete_ids}})
-            return int(result.deleted_count or 0)
+            deleted_count = int(result.deleted_count or 0)
+        if set_ops:
+            collection.bulk_write(set_ops, ordered=False)
+        if deleted_count:
+            return deleted_count
     except Exception as exc:
         app.logger.warning("数据抽取重复结果清理失败: %s", exc)
     return 0
 
 
-def _delete_extraction_results(rule_id: str = "") -> int:
+def _extraction_result_matches_rule_scope(item: dict, rule: dict | None = None, rule_id: str = "") -> bool:
+    if not isinstance(item, dict):
+        return False
+    public = _public_extraction_result(item)
+    item_rule_id = str(public.get("rule_id") or item.get("rule_id") or "")
+    if rule_id and item_rule_id == rule_id:
+        return True
+    if not isinstance(rule, dict):
+        return False
+    normalized = _normalize_extraction_rule(rule) or rule
+    rule_template = str(normalized.get("template") or "").strip().lower()
+    item_template = str(public.get("template") or item.get("template") or "").strip().lower()
+    if rule_template and item_template and item_template != rule_template:
+        return False
+    message = public.get("message") if isinstance(public.get("message"), dict) else {}
+    sender = _normalize_message_party(message.get("from") or item.get("from") or "")
+    subject = str(message.get("subject") or item.get("subject") or "").strip()
+    account_email = _normalize_mailbox_address(message.get("account_email") or item.get("account_email") or "")
+    sender_contains = str(normalized.get("sender_contains") or "").strip().lower()
+    subject_contains = str(normalized.get("subject_contains") or "").strip().lower()
+    subject_exact = str(normalized.get("subject_exact") or "").strip().lower()
+    account_emails = {
+        _normalize_mailbox_address(email).lower()
+        for email in normalized.get("account_emails", [])
+        if _normalize_mailbox_address(email)
+    }
+    has_scope = False
+    if sender_contains:
+        has_scope = True
+        if sender_contains not in sender.lower():
+            return False
+    if subject_exact:
+        has_scope = True
+        if subject.lower() != subject_exact:
+            return False
+    if subject_contains:
+        has_scope = True
+        if subject_contains not in subject.lower():
+            return False
+    if account_emails:
+        has_scope = True
+        if account_email.lower() not in account_emails:
+            return False
+    if has_scope:
+        return True
+    return bool(rule_template and rule_template != "custom" and item_template == rule_template)
+
+
+def _delete_extraction_results(rule_id: str = "", rule: dict | None = None) -> int:
     collection = _extraction_results_collection()
     if collection is None:
         return 0
     _migrate_extraction_results_to_mongo()
-    query = {"rule_id": rule_id} if rule_id else {}
-    result = collection.delete_many(query)
-    return int(result.deleted_count or 0)
+    if not rule_id and not rule:
+        result = collection.delete_many({})
+        return int(result.deleted_count or 0)
+    deleted_count = 0
+    if rule_id:
+        result = collection.delete_many({"rule_id": rule_id})
+        deleted_count += int(result.deleted_count or 0)
+    if rule:
+        candidate_query = {}
+        rule_template = str(rule.get("template") or "").strip().lower()
+        if rule_template:
+            candidate_query["template"] = rule_template
+        candidate_ids = []
+        cursor = collection.find(candidate_query, {"_id": 1, "id": 1, "rule_id": 1, "template": 1, "message": 1, "account_email": 1, "subject": 1, "from": 1}).limit(20000)
+        for doc in cursor:
+            if _extraction_result_matches_rule_scope(doc, rule):
+                candidate_ids.append(doc["_id"])
+        if candidate_ids:
+            result = collection.delete_many({"_id": {"$in": candidate_ids}})
+            deleted_count += int(result.deleted_count or 0)
+    _cleanup_duplicate_extraction_results(collection)
+    return deleted_count
 
 
 def _query_extraction_results(
@@ -2730,6 +2854,7 @@ def _query_extraction_results(
                 item for item in results
                 if str((item.get("message") or {}).get("account_email") or "").lower() == account_email.lower()
             ]
+        results = _aggregate_public_extraction_results_by_order(results)
         return results[offset:offset + limit], len(results), "settings"
     _migrate_extraction_results_to_mongo()
     query = {}
@@ -2741,14 +2866,14 @@ def _query_extraction_results(
         query["tracking_numbers"] = {"$regex": f"^{re.escape(tracking_number)}$", "$options": "i"}
     if account_email:
         query["account_email"] = {"$regex": f"^{re.escape(account_email)}$", "$options": "i"}
-    if not any([rule_id, order_number, tracking_number, account_email]):
-        _cleanup_duplicate_extraction_results(collection)
+    _cleanup_duplicate_extraction_results(collection)
     cursor = collection.find(query, {"_id": 0}).sort([
         ("message_timestamp", DESCENDING),
         ("message_date", DESCENDING),
         ("updated_at", DESCENDING),
     ]).limit(min(5000, max(limit + offset, limit * 5)))
     results = _dedupe_public_extraction_results([_public_extraction_result(item) for item in cursor])
+    results = _aggregate_public_extraction_results_by_order(results)
     total = len(results)
     return results[offset:offset + limit], total, "mongo"
 
@@ -5032,16 +5157,22 @@ def save_aosom_shipped_extraction_rule():
 @login_required
 def delete_extraction_rule(rule_id):
     settings = _read_viewer_settings()
-    rules = [
+    original_rules = [
         _normalize_extraction_rule(item)
         for item in _settings_list(settings, "extraction_rules")
     ]
-    rules = [item for item in rules if item and item.get("id") != rule_id]
-    deleted_results = _delete_extraction_results(rule_id)
-    settings["extraction_results"] = [
+    deleted_rule = next((item for item in original_rules if item and item.get("id") == rule_id), None)
+    rules = [item for item in original_rules if item and item.get("id") != rule_id]
+    deleted_results = _delete_extraction_results(rule_id, deleted_rule)
+    legacy_results = [
         item for item in _settings_list(settings, "extraction_results")
-        if isinstance(item, dict) and str(item.get("rule_id") or "") != rule_id
+        if isinstance(item, dict)
     ]
+    settings["extraction_results"] = [
+        item for item in legacy_results
+        if not _extraction_result_matches_rule_scope(item, deleted_rule, rule_id)
+    ]
+    deleted_results += max(0, len(legacy_results) - len(settings["extraction_results"]))
     settings["extraction_rules"] = rules
     _touch_sync_event(settings, "extraction_rule.deleted", {"id": rule_id, "deleted_results": deleted_results})
     _write_viewer_settings(settings)
