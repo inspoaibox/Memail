@@ -249,11 +249,11 @@ Authorization: Bearer memail_dev_xxx
 - 后台扫描按规则、账号、文件夹保存 UID 游标，并保留少量回扫窗口，避免大邮箱每次重扫。
 - 抽取结果默认保存到 MongoDB 的 `extraction_results` 集合，支持按规则、订单号、物流号、邮箱分页过滤；旧版 settings 中的结果会自动迁移到 MongoDB。
 
-内置 Aosom 发货模板可以从 `noreply@aosom.ca` 发来的 `Aosom Business: Your Aosom order has been shipped` 邮件里提取订单号和 UPS 物流单号。
+内置 Aosom 发货模板会同时创建加拿大和美国两条规则：`noreply@aosom.ca` 与 `noreply@aosom.com`。它会从发货邮件中提取订单号，并支持一封邮件内多个包裹、多个承运商和多个物流号，例如 UPS、FedEx、OnTrac、USPS、DHL 等。
 
 可在后台登录后访问 `GET /api/extraction/storage` 查看当前抽取结果存储状态；正常 Docker 部署应显示 `store: "mongo"`。
 
-创建 Aosom 抽取规则并立即扫描：
+创建 Aosom CA/US 抽取规则并立即扫描：
 
 ```bash
 curl -X POST "https://mail.yourdomain.com/api/extraction-rules/defaults/aosom-shipped" \

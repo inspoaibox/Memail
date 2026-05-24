@@ -2120,6 +2120,29 @@
                                         </div>
                                     </div>
                                     <div class="account-settings-list mt-3" id="extraction-rule-list"></div>
+                                    <div class="api-guide-panel mt-3" id="extraction-result-panel" style="display:none;">
+                                        <div class="api-guide-copy">
+                                            <h6 class="mb-0"><i class="bi bi-table me-1"></i><span id="extraction-result-title" data-i18n="extractionResults">抽取结果预览</span></h6>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="hideExtractionResults()">
+                                                <i class="bi bi-x-lg me-1"></i><span data-i18n="close">关闭</span>
+                                            </button>
+                                        </div>
+                                        <div class="small text-muted mb-2" id="extraction-result-summary"></div>
+                                        <div class="table-responsive">
+                                            <table class="table table-sm align-middle mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th data-i18n="orderNumber">订单号</th>
+                                                        <th data-i18n="trackingNumber">物流单号</th>
+                                                        <th data-i18n="carrier">承运商</th>
+                                                        <th data-i18n="sourceMail">来源邮件</th>
+                                                        <th data-i18n="extractedAt">抽取时间</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="extraction-result-body"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
                                     <div class="api-guide-panel mt-3">
                                         <div class="api-guide-copy">
                                             <h6 class="mb-0"><i class="bi bi-braces me-1"></i><span data-i18n="extractionApiGuide">数据抽取 API 调用说明</span></h6>
@@ -2416,6 +2439,14 @@
                 noExtractionRules: '暂无抽取规则',
                 scanNow: '立即扫描',
                 scanState: '扫描状态',
+                viewExtractionResults: '查看结果',
+                extractionResults: '抽取结果预览',
+                noExtractionResults: '暂无抽取结果',
+                orderNumber: '订单号',
+                trackingNumber: '物流单号',
+                carrier: '承运商',
+                sourceMail: '来源邮件',
+                extractedAt: '抽取时间',
                 extractionApiGuide: '数据抽取 API 调用说明',
                 extractionApiGuideHint: '用抽取规则监控指定邮箱、发件人、主题和正文内容，命中后会自动保存结构化结果。第三方系统使用设备 Token 读取结果。',
                 createExtractionTokenHint: '建议在“安全设置 → 设备 Token”创建权限为',
@@ -2774,6 +2805,14 @@
                 noExtractionRules: 'No extraction rules',
                 scanNow: 'Scan now',
                 scanState: 'Scan state',
+                viewExtractionResults: 'View results',
+                extractionResults: 'Extraction results',
+                noExtractionResults: 'No extracted results',
+                orderNumber: 'Order',
+                trackingNumber: 'Tracking number',
+                carrier: 'Carrier',
+                sourceMail: 'Source mail',
+                extractedAt: 'Extracted at',
                 extractionApiGuide: 'Extraction API Guide',
                 extractionApiGuideHint: 'Use extraction rules to monitor account, sender, subject and body content. Matched data is saved as structured results. Third-party systems read it with a device token.',
                 createExtractionTokenHint: 'Recommended: create a read-only',
@@ -6013,9 +6052,16 @@
             document.getElementById('extraction-order-regexes').value = [
                 'Order\\s+#\\s*([A-Z0-9-]+)\\s+is\\s+Shipped',
                 'Your\\s+Order\\s+#\\s*([A-Z0-9-]+)',
+                '\\bOrder\\s+(?:Date\\s+)?([A-Z0-9][A-Z0-9-]{5,})\\b',
             ].join('\n');
-            document.getElementById('extraction-tracking-regexes').value = '\\b(1Z[0-9A-Z]{16})\\b';
-            document.getElementById('extraction-carrier-regex').value = '\\b(UPS|FedEx|DHL|USPS|Canada Post|Purolator)\\b';
+            document.getElementById('extraction-tracking-regexes').value = [
+                '\\b(1Z[0-9A-Z]{16})\\b',
+                'Tracking\\s*(?:Number|#)?(?:\\s+(?:UPS|FedEx|OnTrac|USPS|DHL)){0,5}\\s+([A-Z0-9][A-Z0-9 -]{7,34}[A-Z0-9])',
+                '(?:UPS|FedEx|OnTrac|USPS|DHL)\\s+([A-Z0-9][A-Z0-9 -]{7,34}[A-Z0-9])',
+                '\\b(9[2345]\\d{18,24})\\b',
+                '\\b(\\d{12,22})\\b',
+            ].join('\n');
+            document.getElementById('extraction-carrier-regex').value = '\\b(UPS|FedEx|Federal Express|OnTrac|USPS|DHL|Canada Post|Purolator)\\b';
         }
 
         function resetExtractionRuleForm() {
@@ -6068,6 +6114,9 @@
                             <span class="mail-account-kind">${rule.enabled === false ? t('disabled') : t('enabled')}</span>
                             <button class="btn btn-sm p-0 text-primary" onclick="scanExtractionRule('${_escapeAttr(rule.id)}')" title="${t('scanNow')}">
                                 <i class="bi bi-search"></i>
+                            </button>
+                            <button class="btn btn-sm p-0 text-info" onclick="showExtractionResults('${_escapeAttr(rule.id)}')" title="${t('viewExtractionResults')}">
+                                <i class="bi bi-table"></i>
                             </button>
                             <button class="btn btn-sm p-0 text-secondary" onclick="editExtractionRule('${_escapeAttr(rule.id)}')" title="${t('editAccount')}">
                                 <i class="bi bi-pencil-square"></i>
@@ -6131,9 +6180,23 @@
         }
 
         async function createAosomExtractionRule() {
-            document.getElementById('extraction-rule-template').value = 'aosom_shipped';
-            applyExtractionTemplate();
-            await saveExtractionRule(true);
+            _clearKeywordSettingsAlert();
+            try {
+                const accountEmails = Array.from(document.querySelectorAll('.extraction-scope-account:checked')).map(cb => cb.value).filter(Boolean);
+                const resp = await fetch('/api/extraction-rules/defaults/aosom-shipped', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_emails: accountEmails, scan_now: true }),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('extractionRuleSaveFailed'));
+                extractionRules = data.rules || [];
+                renderExtractionRules();
+                if ((data.created_rules || [])[0]?.id) editExtractionRule(data.created_rules[0].id);
+                _showKeywordSettingsAlert('success', `${t('extractionRuleSaved')} · Aosom CA/US · ${t('scanNow')}: ${data.scan?.summary?.records || 0}`);
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('extractionRuleSaveFailed')}: ${e.message}`);
+            }
         }
 
         async function scanExtractionRule(ruleId) {
@@ -6144,8 +6207,75 @@
                 if (!data.success) throw new Error(data.message || t('extractionRuleSaveFailed'));
                 await loadExtractionRules();
                 _showKeywordSettingsAlert('success', `${t('scanNow')}: ${data.summary?.records || 0}`);
+                await showExtractionResults(ruleId);
             } catch (e) {
                 _showKeywordSettingsAlert('danger', `${t('extractionRuleSaveFailed')}: ${e.message}`);
+            }
+        }
+
+        function hideExtractionResults() {
+            const panel = document.getElementById('extraction-result-panel');
+            if (panel) panel.style.display = 'none';
+        }
+
+        function _formatExtractionResultRows(results) {
+            const rows = [];
+            (results || []).forEach(item => {
+                const message = item.message || {};
+                const shipments = Array.isArray(item.shipments) && item.shipments.length ? item.shipments : [{}];
+                shipments.forEach(shipment => {
+                    rows.push({
+                        orderNumber: item.order_number || '',
+                        trackingNumber: shipment.tracking_number || '',
+                        carrier: shipment.carrier || '',
+                        itemRef: shipment.item_ref || '',
+                        source: message.subject || '',
+                        account: message.account_email || '',
+                        date: message.date || '',
+                        extractedAt: item.extracted_at || item.updated_at || '',
+                    });
+                });
+            });
+            return rows;
+        }
+
+        function renderExtractionResults(ruleId, data) {
+            const panel = document.getElementById('extraction-result-panel');
+            const title = document.getElementById('extraction-result-title');
+            const summary = document.getElementById('extraction-result-summary');
+            const body = document.getElementById('extraction-result-body');
+            if (!panel || !summary || !body) return;
+            const rule = extractionRules.find(item => item.id === ruleId);
+            const rows = _formatExtractionResultRows(data?.results || []);
+            if (title) title.textContent = rule?.name ? `${t('extractionResults')} · ${rule.name}` : t('extractionResults');
+            summary.textContent = `${t('viewExtractionResults')}: ${data?.total || rows.length || 0} · ${data?.store || ''} · ${data?.generated_at || ''}`;
+            body.innerHTML = rows.length ? rows.map(row => `
+                <tr>
+                    <td class="font-monospace">${_escapeHtml(row.orderNumber || '-')}</td>
+                    <td>
+                        <div class="font-monospace">${_escapeHtml(row.trackingNumber || '-')}</div>
+                        ${row.itemRef ? `<div class="small text-muted">${_escapeHtml(row.itemRef)}</div>` : ''}
+                    </td>
+                    <td>${_escapeHtml(row.carrier || '-')}</td>
+                    <td>
+                        <div class="text-truncate" style="max-width:260px;" title="${_escapeAttr(row.source)}">${_escapeHtml(row.source || '-')}</div>
+                        <div class="small text-muted">${_escapeHtml(row.account || '')}${row.date ? ' · ' + _escapeHtml(row.date) : ''}</div>
+                    </td>
+                    <td class="small text-muted">${_escapeHtml(row.extractedAt || '')}</td>
+                </tr>`).join('') : `<tr><td colspan="5" class="text-muted text-center py-3">${t('noExtractionResults')}</td></tr>`;
+            panel.style.display = 'block';
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        async function showExtractionResults(ruleId) {
+            _clearKeywordSettingsAlert();
+            try {
+                const resp = await fetch(`/api/extraction/results?rule_id=${encodeURIComponent(ruleId)}&limit=100`);
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('extractionRuleLoadFailed'));
+                renderExtractionResults(ruleId, data);
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('extractionRuleLoadFailed')}: ${e.message}`);
             }
         }
 

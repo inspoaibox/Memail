@@ -249,11 +249,11 @@ Extraction rules are not hard-coded to one mail template. They can be adapted to
 - The background scanner stores a per-rule, per-account, per-folder UID cursor with a small lookback window, so large mailboxes are not rescanned from scratch every time.
 - Extraction results are stored in the MongoDB `extraction_results` collection by default, with pagination and filters for rule, order number, tracking number, and account email. Legacy settings-based results are migrated automatically.
 
-The built-in Aosom shipped-order template extracts order numbers and UPS tracking numbers from mail sent by `noreply@aosom.ca` with subject `Aosom Business: Your Aosom order has been shipped`.
+The built-in Aosom shipped-order template creates both Canada and US rules for `noreply@aosom.ca` and `noreply@aosom.com`. It extracts order numbers and supports multiple packages, carriers, and tracking numbers in one email, including UPS, FedEx, OnTrac, USPS, DHL, and similar shipment formats.
 
 After logging in as admin, use `GET /api/extraction/storage` to verify the active result store. A normal Docker deployment should report `store: "mongo"`.
 
-Create an Aosom extraction rule and scan immediately:
+Create Aosom CA/US extraction rules and scan immediately:
 
 ```bash
 curl -X POST "https://mail.yourdomain.com/api/extraction-rules/defaults/aosom-shipped" \

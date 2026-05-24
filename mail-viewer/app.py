@@ -2066,6 +2066,37 @@ def _bool_from_setting(value, default: bool = True) -> bool:
     return bool(value)
 
 
+AOSOM_ORDER_REGEXES = [
+    r"Order\s+#\s*([A-Z0-9-]+)\s+is\s+Shipped",
+    r"Your\s+Order\s+#\s*([A-Z0-9-]+)",
+    r"\bOrder\s+(?:Date\s+)?([A-Z0-9][A-Z0-9-]{5,})\b",
+]
+AOSOM_TRACKING_REGEXES = [
+    r"\b(1Z[0-9A-Z]{16})\b",
+    r"Tracking\s*(?:Number|#)?(?:\s+(?:UPS|FedEx|OnTrac|USPS|DHL)){0,5}\s+([A-Z0-9][A-Z0-9 -]{7,34}[A-Z0-9])",
+    r"(?:UPS|FedEx|OnTrac|USPS|DHL)\s+([A-Z0-9][A-Z0-9 -]{7,34}[A-Z0-9])",
+    r"\b(9[2345]\d{18,24})\b",
+    r"\b(\d{12,22})\b",
+]
+AOSOM_CARRIER_REGEX = r"\b(UPS|FedEx|Federal Express|OnTrac|USPS|DHL|Canada Post|Purolator)\b"
+
+
+def _aosom_shipped_defaults(sender_contains: str = "noreply@aosom.ca") -> dict:
+    sender = (sender_contains or "noreply@aosom.ca").strip().lower()
+    is_us = sender.endswith("@aosom.com")
+    return {
+        "name": "Aosom US 发货物流提取" if is_us else "Aosom CA 发货物流提取",
+        "sender_contains": sender,
+        "subject_contains": "" if is_us else "Aosom Business: Your Aosom order has been shipped",
+        "body_keywords": ["Tracking Number"],
+        "order_regex": AOSOM_ORDER_REGEXES[0],
+        "order_regexes": AOSOM_ORDER_REGEXES,
+        "tracking_regex": AOSOM_TRACKING_REGEXES[0],
+        "tracking_regexes": AOSOM_TRACKING_REGEXES,
+        "carrier_regex": AOSOM_CARRIER_REGEX,
+    }
+
+
 def _normalize_extraction_rule(item: dict) -> dict | None:
     if not isinstance(item, dict):
         return None
@@ -2075,37 +2106,29 @@ def _normalize_extraction_rule(item: dict) -> dict | None:
 
     defaults = {}
     if template == "aosom_shipped":
-        defaults = {
-            "name": "Aosom 发货物流提取",
-            "sender_contains": "noreply@aosom.ca",
-            "subject_contains": "Aosom Business: Your Aosom order has been shipped",
-            "order_regex": r"Order\s+#\s*([A-Z0-9-]+)\s+is\s+Shipped",
-            "order_regexes": [
-                r"Order\s+#\s*([A-Z0-9-]+)\s+is\s+Shipped",
-                r"Your\s+Order\s+#\s*([A-Z0-9-]+)",
-            ],
-            "tracking_regex": r"\b(1Z[0-9A-Z]{16})\b",
-            "tracking_regexes": [r"\b(1Z[0-9A-Z]{16})\b"],
-            "carrier_regex": r"\b(UPS|FedEx|DHL|USPS|Canada Post|Purolator)\b",
-        }
+        defaults = _aosom_shipped_defaults(str(item.get("sender_contains") or item.get("senderContains") or "noreply@aosom.ca"))
 
     name = str(item.get("name") or defaults.get("name") or "").strip()
     sender_contains = str(item.get("sender_contains") or item.get("senderContains") or defaults.get("sender_contains") or "").strip()
     subject_contains = str(item.get("subject_contains") or item.get("subjectContains") or defaults.get("subject_contains") or "").strip()
     subject_exact = str(item.get("subject_exact") or item.get("subjectExact") or "").strip()
-    order_regex = str(item.get("order_regex") or item.get("orderRegex") or defaults.get("order_regex") or "").strip()
-    tracking_regex = str(item.get("tracking_regex") or item.get("trackingRegex") or defaults.get("tracking_regex") or "").strip()
+    provided_order_regex = str(item.get("order_regex") or item.get("orderRegex") or "").strip()
+    provided_tracking_regex = str(item.get("tracking_regex") or item.get("trackingRegex") or "").strip()
+    order_regex = provided_order_regex or str(defaults.get("order_regex") or "").strip()
+    tracking_regex = provided_tracking_regex or str(defaults.get("tracking_regex") or "").strip()
     carrier_regex = str(item.get("carrier_regex") or item.get("carrierRegex") or defaults.get("carrier_regex") or "").strip()
-    keywords = _coerce_string_list(item.get("keywords", []), 30)
-    body_keywords = _coerce_string_list(item.get("body_keywords", item.get("bodyKeywords", [])), 30)
+    keywords = _coerce_string_list(item.get("keywords", defaults.get("keywords", [])), 30)
+    body_keywords = _coerce_string_list(item.get("body_keywords", item.get("bodyKeywords", defaults.get("body_keywords", []))), 30)
+    raw_order_regexes = item.get("order_regexes", item.get("orderRegexes"))
+    raw_tracking_regexes = item.get("tracking_regexes", item.get("trackingRegexes"))
     order_regexes = _coerce_regex_list(
-        item.get("order_regexes", item.get("orderRegexes", [])),
-        order_regex or defaults.get("order_regex", ""),
+        raw_order_regexes if raw_order_regexes is not None else defaults.get("order_regexes", []),
+        provided_order_regex or defaults.get("order_regex", ""),
         20,
     )
     tracking_regexes = _coerce_regex_list(
-        item.get("tracking_regexes", item.get("trackingRegexes", [])),
-        tracking_regex or defaults.get("tracking_regex", ""),
+        raw_tracking_regexes if raw_tracking_regexes is not None else defaults.get("tracking_regexes", []),
+        provided_tracking_regex or defaults.get("tracking_regex", ""),
         20,
     )
 
@@ -2300,6 +2323,31 @@ def _shipment_carrier_from_context(context: str, carrier_regex: str) -> str:
     return matches[-1].group(1 if matches[-1].groups() else 0).strip() if matches else ""
 
 
+def _normalize_tracking_number(value: str) -> str:
+    return re.sub(r"[\s-]+", "", str(value or "").strip().upper())
+
+
+def _valid_tracking_number(tracking: str, context: str, prefix: str = "") -> bool:
+    compact = _normalize_tracking_number(tracking)
+    if len(compact) < 8 or len(compact) > 35:
+        return False
+    if not re.fullmatch(r"[A-Z0-9]+", compact):
+        return False
+    lower_prefix = (prefix or "").lower()
+    lower_context = (context or "").lower()
+    if compact.startswith("1Z") and len(compact) == 18:
+        return True
+    if compact.startswith(("92", "93", "94", "95")) and len(compact) >= 20:
+        return True
+    if compact.isdigit():
+        if re.search(r"\b(call|phone|tel|fax|amount|date|order)\b.{0,24}$", lower_prefix, re.IGNORECASE):
+            return False
+        return bool(re.search(r"\b(tracking|fedex|federal express|ontrac|usps|ups|dhl)\b", lower_prefix[-100:], re.IGNORECASE))
+    if re.search(r"\b(ups|fedex|federal express|ontrac|usps|dhl|tracking)\b", lower_context, re.IGNORECASE):
+        return True
+    return not compact.isdigit()
+
+
 def _extract_shipments_from_text(text: str, tracking_regex: str, carrier_regex: str) -> list[dict]:
     shipments = []
     seen = set()
@@ -2309,16 +2357,20 @@ def _extract_shipments_from_text(text: str, tracking_regex: str, carrier_regex: 
         raise RuntimeError(f"物流单号正则表达式错误: {exc}") from exc
     for match in matches:
         tracking = match.group(1) if match.groups() else match.group(0)
-        tracking = str(tracking or "").strip()
-        if not tracking or tracking in seen:
-            continue
-        seen.add(tracking)
         context_start = max(0, match.start() - 160)
         context_end = min(len(text), match.end() + 120)
         context = text[context_start:context_end]
+        prefix = context[:match.start() - context_start]
+        tracking = _normalize_tracking_number(tracking)
+        if not tracking or tracking in seen or not _valid_tracking_number(tracking, context, prefix):
+            continue
+        seen.add(tracking)
         item_ref_match = re.match(r"\s*\(([^)]{1,120})\)", text[match.end():])
+        carrier = _shipment_carrier_from_context(context[:match.start() - context_start], carrier_regex) or _shipment_carrier_from_context(context, carrier_regex)
+        if carrier.lower() == "federal express":
+            carrier = "FedEx"
         shipments.append({
-            "carrier": _shipment_carrier_from_context(context[:match.start() - context_start], carrier_regex),
+            "carrier": carrier,
             "tracking_number": tracking,
             "item_ref": item_ref_match.group(1).strip() if item_ref_match else "",
             "context": re.sub(r"\s+", " ", context).strip()[:500],
@@ -4832,11 +4884,62 @@ def _save_extraction_rule_payload(data: dict) -> tuple[dict, int]:
 @login_required
 def save_aosom_shipped_extraction_rule():
     data = request.json or {}
-    data["template"] = "aosom_shipped"
-    if not data.get("name"):
-        data["name"] = "Aosom 发货物流提取"
-    payload, status = _save_extraction_rule_payload(data)
-    return jsonify(payload), status
+    account_emails = data.get("account_emails", data.get("accountEmails", []))
+    scan_now = _bool_from_setting(data.get("scan_now"), False)
+    settings = _read_viewer_settings()
+    existing_by_sender = {}
+    for item in _settings_list(settings, "extraction_rules"):
+        rule = _normalize_extraction_rule(item)
+        if rule and rule.get("template") == "aosom_shipped" and rule.get("sender_contains"):
+            existing_by_sender[rule["sender_contains"].lower()] = rule
+    variants = [
+        {"name": "Aosom CA 发货物流提取", "sender_contains": "noreply@aosom.ca", "subject_contains": "Aosom Business: Your Aosom order has been shipped"},
+        {"name": "Aosom US 发货物流提取", "sender_contains": "noreply@aosom.com", "subject_contains": ""},
+    ]
+    saved = []
+    scans = []
+    first_error = None
+    for variant in variants:
+        existing = existing_by_sender.get(variant["sender_contains"].lower())
+        payload_data = {
+            **data,
+            **variant,
+            "template": "aosom_shipped",
+            "account_emails": account_emails,
+            "scan_now": scan_now,
+        }
+        if existing:
+            payload_data["id"] = existing["id"]
+        payload, status = _save_extraction_rule_payload(payload_data)
+        if status >= 400:
+            first_error = payload
+            continue
+        if payload.get("rule"):
+            saved.append(payload["rule"])
+        if payload.get("scan"):
+            scans.append(payload["scan"])
+    settings = _read_viewer_settings()
+    rules = [
+        _public_extraction_rule(item)
+        for item in _settings_list(settings, "extraction_rules")
+        if _normalize_extraction_rule(item)
+    ]
+    if first_error and not saved:
+        return jsonify(first_error), 400
+    return jsonify({
+        "success": True,
+        "rules": rules,
+        "created_rules": saved,
+        "scan": {
+            "summary": {
+                "records": sum(_safe_int(scan.get("summary", {}).get("records"), 0) for scan in scans if isinstance(scan, dict)),
+                "matched": sum(_safe_int(scan.get("summary", {}).get("matched"), 0) for scan in scans if isinstance(scan, dict)),
+                "checked": sum(_safe_int(scan.get("summary", {}).get("checked"), 0) for scan in scans if isinstance(scan, dict)),
+                "failed": sum(_safe_int(scan.get("summary", {}).get("failed"), 0) for scan in scans if isinstance(scan, dict)),
+            },
+            "variants": scans,
+        } if scans else None,
+    })
 
 
 @app.route("/api/extraction-rules/<rule_id>", methods=["DELETE"])

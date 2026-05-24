@@ -34,6 +34,8 @@ public class BackgroundSyncService extends JobService {
     private static final long FLEX_MS = 5 * 60 * 1000L;
     private static final String PREFS = "memail_mobile";
     private static final String CHANNEL_MAIL = "memail_mail";
+    private static final int CACHE_PAGE_SIZE = 100;
+    private static final int DETAIL_CACHE_LIMIT = 20;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
@@ -153,7 +155,7 @@ public class BackgroundSyncService extends JobService {
             try {
                 List<Models.Mail> page = new ArrayList<>();
                 if ("external".equals(account.type)) {
-                    JSONObject data = api.get("/imap/api/accounts/" + encode(account.id) + "/mails?folder=INBOX&count=30&page=1&cacheOnly=1");
+                    JSONObject data = api.get("/imap/api/accounts/" + encode(account.id) + "/mails?folder=INBOX&count=" + CACHE_PAGE_SIZE + "&page=1&cacheOnly=1");
                     JSONArray arr = Json.array(data, "mails");
                     for (int i = 0; i < arr.length(); i++) {
                         page.add(Models.Mail.fromExternal(arr.optJSONObject(i), account.id, "INBOX"));
@@ -162,7 +164,7 @@ public class BackgroundSyncService extends JobService {
                     JSONObject data = api.post("/api/inbox/query", new JSONObject()
                         .put("email", account.email)
                         .put("offset", 0)
-                        .put("limit", 30)
+                        .put("limit", CACHE_PAGE_SIZE)
                         .put("unread_only", false));
                     JSONArray arr = Json.array(data, "messages");
                     for (int i = 0; i < arr.length(); i++) {
@@ -179,7 +181,9 @@ public class BackgroundSyncService extends JobService {
 
     private void cacheMailDetails(ApiClient api, LocalStore store, List<Models.Mail> page) {
         if (page == null || page.isEmpty()) return;
+        int cached = 0;
         for (Models.Mail mail : page) {
+            if (cached >= DETAIL_CACHE_LIMIT) break;
             if (mail == null || mail.id == null || mail.id.isEmpty()) continue;
             if ((mail.html != null && !mail.html.isEmpty()) || (mail.text != null && !mail.text.isEmpty())) continue;
             try {
@@ -193,6 +197,7 @@ public class BackgroundSyncService extends JobService {
                 }
                 Models.Mail detail = mergeDetail(mail, data);
                 store.upsertMailDetail(detail);
+                cached++;
             } catch (Exception ignored) {
                 // Detail caching is best-effort; list cache remains usable.
             }

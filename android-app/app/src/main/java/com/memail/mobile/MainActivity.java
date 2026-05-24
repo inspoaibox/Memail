@@ -124,6 +124,7 @@ public class MainActivity extends Activity {
     private int currentPage = 1;
     private int pageSize = 30;
     private boolean hasMore = false;
+    private boolean mailPageLoading = false;
     private String currentScreen = "boot";
     private Models.Mail currentDetailMail;
     private JSONObject currentDetailSource;
@@ -840,6 +841,7 @@ public class MainActivity extends Activity {
         LinearLayout list = column(0);
         list.setPadding(dp(8), 0, dp(8), dp(12));
         ScrollView scroll = new ScrollView(this);
+        attachAutoLoadMore(scroll);
         scroll.addView(list);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         if (mails.isEmpty()) {
@@ -847,13 +849,27 @@ public class MainActivity extends Activity {
         } else {
             for (Models.Mail mail : mails) list.addView(mailRow(mail));
             if (hasMore) {
-                TextView more = outlineButton("加载更多", v -> {
-                    currentPage += 1;
-                    loadMails(true);
-                });
+                TextView more = outlineButton(mailPageLoading ? "加载中..." : "继续加载", v -> loadNextMailPage());
                 list.addView(more);
             }
         }
+    }
+
+    private void attachAutoLoadMore(ScrollView scroll) {
+        if (scroll == null) return;
+        scroll.getViewTreeObserver().addOnScrollChangedListener(() -> {
+            if (!hasMore || mailPageLoading || !"list".equals(currentScreen)) return;
+            View child = scroll.getChildAt(0);
+            if (child == null) return;
+            int remaining = child.getBottom() - (scroll.getHeight() + scroll.getScrollY());
+            if (remaining <= dp(220)) loadNextMailPage();
+        });
+    }
+
+    private void loadNextMailPage() {
+        if (!hasMore || mailPageLoading) return;
+        currentPage += 1;
+        loadMails(true);
     }
 
     private LinearLayout searchBar() {
@@ -922,6 +938,8 @@ public class MainActivity extends Activity {
 
     private void loadMails(boolean silent) {
         if ((selectedAccount == null && selectedVirtualMode.isEmpty()) || selectedFolder == null) return;
+        if (mailPageLoading) return;
+        mailPageLoading = true;
         if (currentPage <= 1) {
             if (showCachedMailsIfAny()) {
                 silent = true;
@@ -998,7 +1016,10 @@ public class MainActivity extends Activity {
             if (currentPage <= 1) mails.clear();
             mails.addAll(next);
             return "ok";
-        }, result -> renderFoldersOrMails());
+        }, result -> {
+            mailPageLoading = false;
+            renderFoldersOrMails();
+        });
     }
 
     private boolean showCachedMailsIfAny() {
@@ -1501,7 +1522,7 @@ public class MainActivity extends Activity {
         WebView web = mailWebView();
         String body = wrapMailHtml(html.isEmpty() ? plainTextHtml(text) : html);
         web.loadDataWithBaseURL(api.baseUrl(), body, "text/html", "UTF-8", null);
-        bodyCard.addView(web, new LinearLayout.LayoutParams(-1, dp(720)));
+        bodyCard.addView(web, new LinearLayout.LayoutParams(-1, dp(760)));
         box.addView(bodyCard);
     }
 
@@ -2604,6 +2625,7 @@ public class MainActivity extends Activity {
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
+                    mailPageLoading = false;
                     if (visible) {
                         setLoading(false, "");
                         toast(e.getMessage());
@@ -2861,23 +2883,35 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                view.postDelayed(() -> view.evaluateJavascript(
-                    "(function(){return Math.max(document.body.scrollHeight,document.documentElement.scrollHeight);})()",
+                resizeMailWebView(view, 120);
+                resizeMailWebView(view, 320);
+                resizeMailWebView(view, 900);
+                resizeMailWebView(view, 1800);
+                resizeMailWebView(view, 3200);
+            }
+        });
+        return web;
+    }
+
+    private void resizeMailWebView(WebView view, long delayMs) {
+        if (view == null) return;
+        view.postDelayed(() -> view.evaluateJavascript(
+                    "(function(){var b=document.body||{},e=document.documentElement||{},s=document.scrollingElement||{};"
+                        + "return Math.max(b.scrollHeight||0,b.offsetHeight||0,e.clientHeight||0,e.scrollHeight||0,e.offsetHeight||0,s.scrollHeight||0);})()",
                     value -> {
                         try {
-                            int cssHeight = (int) Math.ceil(Double.parseDouble(value.replace("\"", "")));
-                            int px = Math.max(dp(260), (int) (cssHeight * getResources().getDisplayMetrics().density) + dp(28));
+                            String clean = value == null ? "" : value.replace("\"", "").trim();
+                            if (clean.isEmpty() || "null".equals(clean)) return;
+                            int cssHeight = (int) Math.ceil(Double.parseDouble(clean));
+                            int px = Math.max(dp(320), (int) (cssHeight * getResources().getDisplayMetrics().density) + dp(56));
                             ViewGroup.LayoutParams lp = view.getLayoutParams();
-                            if (lp != null && Math.abs(lp.height - px) > dp(24)) {
-                                lp.height = Math.min(px, dp(2400));
+                            if (lp != null && Math.abs(lp.height - px) > dp(16)) {
+                                lp.height = px;
                                 view.setLayoutParams(lp);
                             }
                         } catch (Exception ignored) {
                         }
-                    }), 120);
-            }
-        });
-        return web;
+                    }), delayMs);
     }
 
     private static String wrapMailHtml(String body) {
