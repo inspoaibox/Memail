@@ -17,6 +17,7 @@ import uuid
 import requests
 import bleach
 from pymongo import ASCENDING, DESCENDING, MongoClient, UpdateOne
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 from functools import wraps
 from datetime import datetime, timezone, timedelta
 from html.parser import HTMLParser
@@ -2646,7 +2647,10 @@ def _migrate_extraction_results_to_mongo(settings: dict | None = None):
             UpdateOne({"id": item["id"]}, {"$set": item, "$setOnInsert": {"created_at": item.get("extracted_at") or _iso_now()}}, upsert=True)
             for item in legacy_results
         ]
-        collection.bulk_write(operations, ordered=False)
+        try:
+            collection.bulk_write(operations, ordered=False)
+        except BulkWriteError as exc:
+            app.logger.warning("历史抽取结果迁移存在重复键，已跳过重复项继续迁移: %s", exc.details)
         settings["extraction_results_migrated_at"] = _iso_now()
         settings["extraction_results_legacy_count"] = len(legacy_results)
         settings["extraction_results"] = []
@@ -2738,7 +2742,10 @@ def _cleanup_duplicate_extraction_results(collection=None, max_docs: int = 5000)
             result = collection.delete_many({"_id": {"$in": delete_ids}})
             deleted_count = int(result.deleted_count or 0)
         if set_ops:
-            collection.bulk_write(set_ops, ordered=False)
+            try:
+                collection.bulk_write(set_ops, ordered=False)
+            except (BulkWriteError, DuplicateKeyError) as exc:
+                app.logger.warning("数据抽取重复结果键修正失败，已保留查询层去重: %s", exc)
         if deleted_count:
             return deleted_count
     except Exception as exc:
@@ -2772,6 +2779,10 @@ def _extraction_result_matches_rule_scope(item: dict, rule: dict | None = None, 
         for email in normalized.get("account_emails", [])
         if _normalize_mailbox_address(email)
     }
+    if account_emails and account_email.lower() not in account_emails:
+        return False
+    if sender_contains and sender_contains in sender.lower():
+        return True
     has_scope = False
     if sender_contains:
         has_scope = True
@@ -2785,10 +2796,6 @@ def _extraction_result_matches_rule_scope(item: dict, rule: dict | None = None, 
         has_scope = True
         if subject_contains not in subject.lower():
             return False
-    if account_emails:
-        has_scope = True
-        if account_email.lower() not in account_emails:
-            return False
     if has_scope:
         return True
     return bool(rule_template and rule_template != "custom" and item_template == rule_template)
@@ -2798,29 +2805,33 @@ def _delete_extraction_results(rule_id: str = "", rule: dict | None = None) -> i
     collection = _extraction_results_collection()
     if collection is None:
         return 0
-    _migrate_extraction_results_to_mongo()
-    if not rule_id and not rule:
-        result = collection.delete_many({})
-        return int(result.deleted_count or 0)
-    deleted_count = 0
-    if rule_id:
-        result = collection.delete_many({"rule_id": rule_id})
-        deleted_count += int(result.deleted_count or 0)
-    if rule:
-        candidate_query = {}
-        rule_template = str(rule.get("template") or "").strip().lower()
-        if rule_template:
-            candidate_query["template"] = rule_template
-        candidate_ids = []
-        cursor = collection.find(candidate_query, {"_id": 1, "id": 1, "rule_id": 1, "template": 1, "message": 1, "account_email": 1, "subject": 1, "from": 1}).limit(20000)
-        for doc in cursor:
-            if _extraction_result_matches_rule_scope(doc, rule):
-                candidate_ids.append(doc["_id"])
-        if candidate_ids:
-            result = collection.delete_many({"_id": {"$in": candidate_ids}})
+    try:
+        _migrate_extraction_results_to_mongo()
+        if not rule_id and not rule:
+            result = collection.delete_many({})
+            return int(result.deleted_count or 0)
+        deleted_count = 0
+        if rule_id:
+            result = collection.delete_many({"rule_id": rule_id})
             deleted_count += int(result.deleted_count or 0)
-    _cleanup_duplicate_extraction_results(collection)
-    return deleted_count
+        if rule:
+            candidate_query = {}
+            rule_template = str(rule.get("template") or "").strip().lower()
+            if rule_template:
+                candidate_query["template"] = rule_template
+            candidate_ids = []
+            cursor = collection.find(candidate_query, {"_id": 1, "id": 1, "rule_id": 1, "template": 1, "message": 1, "account_email": 1, "subject": 1, "from": 1}).limit(20000)
+            for doc in cursor:
+                if _extraction_result_matches_rule_scope(doc, rule):
+                    candidate_ids.append(doc["_id"])
+            if candidate_ids:
+                result = collection.delete_many({"_id": {"$in": candidate_ids}})
+                deleted_count += int(result.deleted_count or 0)
+        _cleanup_duplicate_extraction_results(collection)
+        return deleted_count
+    except Exception as exc:
+        app.logger.warning("删除抽取规则关联结果失败，规则删除将继续: rule_id=%s error=%s", rule_id, exc, exc_info=True)
+        return 0
 
 
 def _query_extraction_results(
