@@ -2394,6 +2394,7 @@ def _extract_shipments_from_patterns(text: str, tracking_regexes: list[str], car
 def _extraction_record_id(rule: dict, account: dict, mail: dict, order_number: str, shipments: list[dict]) -> str:
     tracking_part = ",".join(sorted({str(item.get("tracking_number") or "").strip().upper() for item in shipments if item.get("tracking_number")}))
     raw = "|".join([
+        str(rule.get("id") or ""),
         str(rule.get("template") or "custom"),
         _normalize_mailbox_address(account.get("email", "")) or str(account.get("id") or ""),
         str(order_number or ""),
@@ -2411,6 +2412,7 @@ def _extraction_result_identity(item: dict) -> str:
         if shipment.get("tracking_number")
     }))
     raw = "|".join([
+        str(public.get("rule_id") or ""),
         str(public.get("template") or "custom"),
         _normalize_mailbox_address(message.get("account_email") or "") or str(message.get("account_id") or ""),
         str(public.get("order_number") or ""),
@@ -2555,6 +2557,7 @@ def _aggregate_public_extraction_results_by_order(items: list[dict]) -> list[dic
         account_key = _normalize_mailbox_address(message.get("account_email") or "") or str(message.get("account_id") or "")
         if order_number:
             raw_key = "|".join([
+                str(public.get("rule_id") or "").strip(),
                 str(public.get("template") or "custom").strip().lower(),
                 account_key.lower(),
                 order_number.lower(),
@@ -2758,80 +2761,20 @@ def _extraction_result_matches_rule_scope(item: dict, rule: dict | None = None, 
         return False
     public = _public_extraction_result(item)
     item_rule_id = str(public.get("rule_id") or item.get("rule_id") or "")
-    if rule_id and item_rule_id == rule_id:
-        return True
-    if not isinstance(rule, dict):
-        return False
-    normalized = _normalize_extraction_rule(rule) or rule
-    rule_template = str(normalized.get("template") or "").strip().lower()
-    item_template = str(public.get("template") or item.get("template") or "").strip().lower()
-    if rule_template and item_template and item_template != rule_template:
-        return False
-    message = public.get("message") if isinstance(public.get("message"), dict) else {}
-    sender = _normalize_message_party(message.get("from") or item.get("from") or "")
-    subject = str(message.get("subject") or item.get("subject") or "").strip()
-    account_email = _normalize_mailbox_address(message.get("account_email") or item.get("account_email") or "")
-    sender_contains = str(normalized.get("sender_contains") or "").strip().lower()
-    subject_contains = str(normalized.get("subject_contains") or "").strip().lower()
-    subject_exact = str(normalized.get("subject_exact") or "").strip().lower()
-    account_emails = {
-        _normalize_mailbox_address(email).lower()
-        for email in normalized.get("account_emails", [])
-        if _normalize_mailbox_address(email)
-    }
-    if account_emails and account_email.lower() not in account_emails:
-        return False
-    if sender_contains and sender_contains in sender.lower():
-        return True
-    has_scope = False
-    if sender_contains:
-        has_scope = True
-        if sender_contains not in sender.lower():
-            return False
-    if subject_exact:
-        has_scope = True
-        if subject.lower() != subject_exact:
-            return False
-    if subject_contains:
-        has_scope = True
-        if subject_contains not in subject.lower():
-            return False
-    if has_scope:
-        return True
-    return bool(rule_template and rule_template != "custom" and item_template == rule_template)
+    return bool(rule_id and item_rule_id == str(rule_id))
 
 
 def _delete_extraction_results(rule_id: str = "", rule: dict | None = None) -> int:
     collection = _extraction_results_collection()
     if collection is None:
         return 0
-    try:
-        _migrate_extraction_results_to_mongo()
-        if not rule_id and not rule:
-            result = collection.delete_many({})
-            return int(result.deleted_count or 0)
-        deleted_count = 0
-        if rule_id:
-            result = collection.delete_many({"rule_id": rule_id})
-            deleted_count += int(result.deleted_count or 0)
-        if rule:
-            candidate_query = {}
-            rule_template = str(rule.get("template") or "").strip().lower()
-            if rule_template:
-                candidate_query["template"] = rule_template
-            candidate_ids = []
-            cursor = collection.find(candidate_query, {"_id": 1, "id": 1, "rule_id": 1, "template": 1, "message": 1, "account_email": 1, "subject": 1, "from": 1}).limit(20000)
-            for doc in cursor:
-                if _extraction_result_matches_rule_scope(doc, rule):
-                    candidate_ids.append(doc["_id"])
-            if candidate_ids:
-                result = collection.delete_many({"_id": {"$in": candidate_ids}})
-                deleted_count += int(result.deleted_count or 0)
-        _cleanup_duplicate_extraction_results(collection)
-        return deleted_count
-    except Exception as exc:
-        app.logger.warning("删除抽取规则关联结果失败，规则删除将继续: rule_id=%s error=%s", rule_id, exc, exc_info=True)
-        return 0
+    if not rule_id and not rule:
+        result = collection.delete_many({})
+        return int(result.deleted_count or 0)
+    if rule_id:
+        result = collection.delete_many({"rule_id": rule_id})
+        return int(result.deleted_count or 0)
+    return 0
 
 
 def _query_extraction_results(
@@ -2852,7 +2795,7 @@ def _query_extraction_results(
         ]
         results = _dedupe_public_extraction_results(results)
         if rule_id:
-            results = [item for item in results if item.get("rule_id") == rule_id]
+            results = [item for item in results if str(item.get("rule_id") or "") == rule_id]
         if order_number:
             results = [item for item in results if str(item.get("order_number") or "").lower() == order_number.lower()]
         if tracking_number:
@@ -2867,7 +2810,10 @@ def _query_extraction_results(
             ]
         results = _aggregate_public_extraction_results_by_order(results)
         return results[offset:offset + limit], len(results), "settings"
-    _migrate_extraction_results_to_mongo()
+    try:
+        _migrate_extraction_results_to_mongo()
+    except Exception as exc:
+        app.logger.warning("数据抽取结果迁移失败，查询将继续读取现有集合: %s", exc, exc_info=True)
     query = {}
     if rule_id:
         query["rule_id"] = rule_id
@@ -2877,7 +2823,6 @@ def _query_extraction_results(
         query["tracking_numbers"] = {"$regex": f"^{re.escape(tracking_number)}$", "$options": "i"}
     if account_email:
         query["account_email"] = {"$regex": f"^{re.escape(account_email)}$", "$options": "i"}
-    _cleanup_duplicate_extraction_results(collection)
     cursor = collection.find(query, {"_id": 0}).sort([
         ("message_timestamp", DESCENDING),
         ("message_date", DESCENDING),
