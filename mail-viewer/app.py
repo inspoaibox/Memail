@@ -2391,9 +2391,8 @@ def _extract_shipments_from_patterns(text: str, tracking_regexes: list[str], car
 
 
 def _extraction_record_id(rule: dict, account: dict, mail: dict, order_number: str, shipments: list[dict]) -> str:
-    tracking_part = ",".join(item.get("tracking_number", "") for item in shipments)
+    tracking_part = ",".join(sorted({str(item.get("tracking_number") or "").strip().upper() for item in shipments if item.get("tracking_number")}))
     raw = "|".join([
-        str(rule.get("id") or ""),
         str(account.get("id") or ""),
         str(mail.get("folder") or ""),
         str(mail.get("uid") or mail.get("id") or ""),
@@ -2401,6 +2400,24 @@ def _extraction_record_id(rule: dict, account: dict, mail: dict, order_number: s
         tracking_part,
     ])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _extraction_result_identity(item: dict) -> str:
+    public = _public_extraction_result(item)
+    message = public.get("message") if isinstance(public.get("message"), dict) else {}
+    tracking_part = ",".join(sorted({
+        str(shipment.get("tracking_number") or "").strip().upper()
+        for shipment in public.get("shipments", [])
+        if shipment.get("tracking_number")
+    }))
+    raw = "|".join([
+        str(message.get("account_id") or ""),
+        str(message.get("folder") or ""),
+        str(message.get("uid") or ""),
+        str(public.get("order_number") or ""),
+        tracking_part,
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32] if raw.strip("|") else public.get("id", "")
 
 
 def _extract_records_from_message(rule: dict, account: dict, mail: dict, detail: dict) -> list[dict]:
@@ -2475,6 +2492,9 @@ def _extraction_result_document(item: dict) -> dict:
     public = _public_extraction_result(item)
     if not public.get("id"):
         return {}
+    identity = _extraction_result_identity(public)
+    if identity:
+        public["id"] = identity
     message = public.get("message") if isinstance(public.get("message"), dict) else {}
     message_date = str(message.get("date") or "")
     parsed_date = _safe_iso_datetime(message_date)
@@ -2485,6 +2505,7 @@ def _extraction_result_document(item: dict) -> dict:
     ]
     doc = {
         **public,
+        "natural_key": public.get("id", ""),
         "tracking_numbers": tracking_numbers,
         "account_id": str(message.get("account_id") or ""),
         "account_email": _normalize_mailbox_address(message.get("account_email") or ""),
@@ -2496,6 +2517,29 @@ def _extraction_result_document(item: dict) -> dict:
         "message_timestamp": parsed_date.timestamp() if parsed_date else 0,
     }
     return doc
+
+
+def _dedupe_public_extraction_results(items: list[dict]) -> list[dict]:
+    by_key = {}
+    for item in items or []:
+        public = _public_extraction_result(item)
+        key = _extraction_result_identity(public)
+        if not key:
+            key = public.get("id", "")
+        if not key:
+            continue
+        public["id"] = key
+        old = by_key.get(key)
+        if not old:
+            by_key[key] = public
+            continue
+        old_time = str(old.get("updated_at") or old.get("extracted_at") or "")
+        new_time = str(public.get("updated_at") or public.get("extracted_at") or "")
+        if new_time >= old_time:
+            if old.get("extracted_at") and not public.get("extracted_at"):
+                public["extracted_at"] = old["extracted_at"]
+            by_key[key] = public
+    return list(by_key.values())
 
 
 def _extraction_results_collection():
@@ -2512,6 +2556,10 @@ def _extraction_results_collection():
             _EXTRACTION_MONGO_CLIENT.admin.command("ping")
             collection = _EXTRACTION_MONGO_CLIENT[MONGO_DB_NAME]["extraction_results"]
             collection.create_index([("id", ASCENDING)], unique=True, background=True)
+            try:
+                collection.create_index([("natural_key", ASCENDING)], unique=True, sparse=True, background=True)
+            except Exception as index_exc:
+                app.logger.warning("数据抽取 natural_key 唯一索引暂不可用，查询仍会去重: %s", index_exc)
             collection.create_index([("rule_id", ASCENDING), ("message_timestamp", DESCENDING), ("message_date", DESCENDING)], background=True)
             collection.create_index([("order_number", ASCENDING)], background=True)
             collection.create_index([("tracking_numbers", ASCENDING)], background=True)
@@ -2553,17 +2601,18 @@ def _migrate_extraction_results_to_mongo(settings: dict | None = None):
 
 
 def _merge_extraction_results_settings(settings: dict, records: list[dict]) -> list[dict]:
-    existing = [
+    existing = _dedupe_public_extraction_results([
         _public_extraction_result(item)
         for item in _settings_list(settings, "extraction_results")
         if isinstance(item, dict) and item.get("id")
-    ]
+    ])
     by_id = {item["id"]: item for item in existing if item.get("id")}
     now = _iso_now()
     for record in records:
         public = _public_extraction_result(record)
         if not public.get("id"):
             continue
+        public["id"] = _extraction_result_identity(public) or public["id"]
         old = by_id.get(public["id"], {})
         public["updated_at"] = now
         if old.get("extracted_at"):
@@ -2592,7 +2641,9 @@ def _merge_extraction_results(settings: dict, records: list[dict]) -> list[dict]
         doc = _extraction_result_document(record)
         if not doc.get("id"):
             continue
-        old = collection.find_one({"id": doc["id"]}, {"extracted_at": 1})
+        old = collection.find_one({"natural_key": doc["id"]}, {"extracted_at": 1})
+        if not old:
+            old = collection.find_one({"id": doc["id"]}, {"extracted_at": 1})
         doc["updated_at"] = now
         if old and old.get("extracted_at"):
             doc["extracted_at"] = old["extracted_at"]
@@ -2600,11 +2651,42 @@ def _merge_extraction_results(settings: dict, records: list[dict]) -> list[dict]
     if not docs:
         return []
     operations = [
-        UpdateOne({"id": item["id"]}, {"$set": item, "$setOnInsert": {"created_at": item.get("extracted_at") or now}}, upsert=True)
+        UpdateOne({"natural_key": item["id"]}, {"$set": item, "$setOnInsert": {"created_at": item.get("extracted_at") or now}}, upsert=True)
         for item in docs
     ]
     collection.bulk_write(operations, ordered=False)
+    _cleanup_duplicate_extraction_results(collection)
     return [_public_extraction_result(item) for item in docs]
+
+
+def _cleanup_duplicate_extraction_results(collection=None, max_docs: int = 5000) -> int:
+    collection = collection or _extraction_results_collection()
+    if collection is None:
+        return 0
+    try:
+        docs = list(collection.find({}, {"_id": 1, "id": 1, "natural_key": 1, "message": 1, "order_number": 1, "shipments": 1, "updated_at": 1, "extracted_at": 1}).sort([("updated_at", DESCENDING)]).limit(max_docs))
+        by_key = {}
+        delete_ids = []
+        set_ops = []
+        for doc in docs:
+            public = _public_extraction_result(doc)
+            key = doc.get("natural_key") or _extraction_result_identity(public)
+            if not key:
+                continue
+            if not doc.get("natural_key") or doc.get("id") != key:
+                set_ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": {"natural_key": key, "id": key}}))
+            if key in by_key:
+                delete_ids.append(doc["_id"])
+            else:
+                by_key[key] = doc["_id"]
+        if set_ops:
+            collection.bulk_write(set_ops, ordered=False)
+        if delete_ids:
+            result = collection.delete_many({"_id": {"$in": delete_ids}})
+            return int(result.deleted_count or 0)
+    except Exception as exc:
+        app.logger.warning("数据抽取重复结果清理失败: %s", exc)
+    return 0
 
 
 def _delete_extraction_results(rule_id: str = "") -> int:
@@ -2633,6 +2715,7 @@ def _query_extraction_results(
             for item in _settings_list(settings, "extraction_results")
             if isinstance(item, dict) and item.get("id")
         ]
+        results = _dedupe_public_extraction_results(results)
         if rule_id:
             results = [item for item in results if item.get("rule_id") == rule_id]
         if order_number:
@@ -2658,13 +2741,16 @@ def _query_extraction_results(
         query["tracking_numbers"] = {"$regex": f"^{re.escape(tracking_number)}$", "$options": "i"}
     if account_email:
         query["account_email"] = {"$regex": f"^{re.escape(account_email)}$", "$options": "i"}
-    total = collection.count_documents(query)
+    if not any([rule_id, order_number, tracking_number, account_email]):
+        _cleanup_duplicate_extraction_results(collection)
     cursor = collection.find(query, {"_id": 0}).sort([
         ("message_timestamp", DESCENDING),
         ("message_date", DESCENDING),
         ("updated_at", DESCENDING),
-    ]).skip(offset).limit(limit)
-    return [_public_extraction_result(item) for item in cursor], total, "mongo"
+    ]).limit(min(5000, max(limit + offset, limit * 5)))
+    results = _dedupe_public_extraction_results([_public_extraction_result(item) for item in cursor])
+    total = len(results)
+    return results[offset:offset + limit], total, "mongo"
 
 
 def _fetch_external_mail_list(account_id: str, limit: int) -> list[dict]:
