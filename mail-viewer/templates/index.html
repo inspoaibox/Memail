@@ -2061,6 +2061,67 @@
                                     <div class="account-settings-list" id="keyword-rule-list"></div>
                                     <div class="api-guide-panel mt-3">
                                         <div class="api-guide-copy">
+                                            <h6 class="mb-0"><i class="bi bi-box-arrow-in-down-right me-1"></i><span data-i18n="extractionRuleForm">数据抽取规则</span></h6>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetExtractionRuleForm()">
+                                                <i class="bi bi-plus-lg me-1"></i><span data-i18n="newRule">新建规则</span>
+                                            </button>
+                                        </div>
+                                        <input type="hidden" id="extraction-rule-id">
+                                        <div class="row g-2">
+                                            <div class="col-12 col-md-6">
+                                                <label class="form-label" for="extraction-rule-name" data-i18n="ruleName">规则名称</label>
+                                                <input type="text" class="form-control form-control-sm" id="extraction-rule-name" data-i18n-ph="extractionRuleNamePlaceholder" placeholder="例如：Aosom 发货物流">
+                                            </div>
+                                            <div class="col-12 col-md-6">
+                                                <label class="form-label" for="extraction-rule-template" data-i18n="template">模板</label>
+                                                <select class="form-select form-select-sm" id="extraction-rule-template" onchange="applyExtractionTemplate()">
+                                                    <option value="custom" data-i18n="customRule">自定义</option>
+                                                    <option value="aosom_shipped">Aosom shipped</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-12 col-md-6">
+                                                <label class="form-label" for="extraction-sender-contains" data-i18n="senderContains">发件人包含</label>
+                                                <input type="text" class="form-control form-control-sm" id="extraction-sender-contains" placeholder="noreply@aosom.ca">
+                                            </div>
+                                            <div class="col-12 col-md-6">
+                                                <label class="form-label" for="extraction-subject-contains" data-i18n="subjectContains">主题包含</label>
+                                                <input type="text" class="form-control form-control-sm" id="extraction-subject-contains" placeholder="Aosom Business">
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label" for="extraction-body-keywords" data-i18n="bodyKeywords">正文关键词</label>
+                                                <textarea class="form-control form-control-sm" id="extraction-body-keywords" rows="2" data-i18n-ph="bodyKeywordsPlaceholder" placeholder="每行一个，例如：Tracking Number"></textarea>
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label" for="extraction-order-regexes" data-i18n="orderRegexes">订单号正则</label>
+                                                <textarea class="form-control form-control-sm font-monospace" id="extraction-order-regexes" rows="2" placeholder="Order\\s+#\\s*([A-Z0-9-]+)"></textarea>
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label" for="extraction-tracking-regexes" data-i18n="trackingRegexes">物流单号正则</label>
+                                                <textarea class="form-control form-control-sm font-monospace" id="extraction-tracking-regexes" rows="2" placeholder="\\b(1Z[0-9A-Z]{16})\\b"></textarea>
+                                            </div>
+                                            <div class="col-12 col-md-6">
+                                                <label class="form-label" for="extraction-carrier-regex" data-i18n="carrierRegex">承运商正则</label>
+                                                <input type="text" class="form-control form-control-sm font-monospace" id="extraction-carrier-regex" placeholder="UPS|FedEx|DHL">
+                                            </div>
+                                            <div class="col-12 col-md-6">
+                                                <label class="form-label" for="extraction-scan-limit" data-i18n="scanLimit">单账号扫描上限</label>
+                                                <input type="number" class="form-control form-control-sm" id="extraction-scan-limit" min="20" max="1000" value="300">
+                                            </div>
+                                        </div>
+                                        <div class="mt-2" id="extraction-rule-scope-controls"></div>
+                                        <div class="d-flex flex-wrap gap-2 mt-3">
+                                            <button class="btn btn-primary btn-sm" onclick="saveExtractionRule(false)"><i class="bi bi-save me-1"></i><span data-i18n="saveRule">保存规则</span></button>
+                                            <button class="btn btn-outline-primary btn-sm" onclick="saveExtractionRule(true)"><i class="bi bi-search me-1"></i><span data-i18n="saveAndScan">保存并扫描</span></button>
+                                            <button class="btn btn-outline-secondary btn-sm" onclick="createAosomExtractionRule()"><i class="bi bi-lightning me-1"></i><span data-i18n="useAosomTemplate">使用 Aosom 模板</span></button>
+                                            <label class="form-check-label small ms-auto">
+                                                <input class="form-check-input" type="checkbox" id="extraction-rule-enabled" checked>
+                                                <span data-i18n="enabled">启用</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="account-settings-list mt-3" id="extraction-rule-list"></div>
+                                    <div class="api-guide-panel mt-3">
+                                        <div class="api-guide-copy">
                                             <h6 class="mb-0"><i class="bi bi-braces me-1"></i><span data-i18n="extractionApiGuide">数据抽取 API 调用说明</span></h6>
                                             <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyExtractionApiExample()">
                                                 <i class="bi bi-clipboard me-1"></i><span data-i18n="copyExample">复制示例</span>
@@ -2334,6 +2395,27 @@
                 selectAccounts: '选择邮箱',
                 selectGroup: '选择分组',
                 keywordMatchHint: '命中后只显示在关键词分组，不发送通知。',
+                extractionRuleForm: '数据抽取规则',
+                extractionRuleNamePlaceholder: '例如：Aosom 发货物流',
+                newRule: '新建规则',
+                template: '模板',
+                customRule: '自定义',
+                senderContains: '发件人包含',
+                subjectContains: '主题包含',
+                bodyKeywords: '正文关键词',
+                bodyKeywordsPlaceholder: '每行一个，例如：Tracking Number',
+                orderRegexes: '订单号正则',
+                trackingRegexes: '物流单号正则',
+                carrierRegex: '承运商正则',
+                scanLimit: '单账号扫描上限',
+                saveAndScan: '保存并扫描',
+                useAosomTemplate: '使用 Aosom 模板',
+                extractionRuleSaved: '抽取规则已保存',
+                extractionRuleLoadFailed: '抽取规则加载失败',
+                extractionRuleSaveFailed: '抽取规则保存失败',
+                noExtractionRules: '暂无抽取规则',
+                scanNow: '立即扫描',
+                scanState: '扫描状态',
                 extractionApiGuide: '数据抽取 API 调用说明',
                 extractionApiGuideHint: '用抽取规则监控指定邮箱、发件人、主题和正文内容，命中后会自动保存结构化结果。第三方系统使用设备 Token 读取结果。',
                 createExtractionTokenHint: '建议在“安全设置 → 设备 Token”创建权限为',
@@ -2671,6 +2753,27 @@
                 selectAccounts: 'Select accounts',
                 selectGroup: 'Select group',
                 keywordMatchHint: 'Matches are shown in keyword groups only; no notification is sent.',
+                extractionRuleForm: 'Extraction Rules',
+                extractionRuleNamePlaceholder: 'e.g. Aosom shipment tracking',
+                newRule: 'New rule',
+                template: 'Template',
+                customRule: 'Custom',
+                senderContains: 'Sender contains',
+                subjectContains: 'Subject contains',
+                bodyKeywords: 'Body keywords',
+                bodyKeywordsPlaceholder: 'One per line, e.g. Tracking Number',
+                orderRegexes: 'Order regexes',
+                trackingRegexes: 'Tracking regexes',
+                carrierRegex: 'Carrier regex',
+                scanLimit: 'Scan limit per account',
+                saveAndScan: 'Save and scan',
+                useAosomTemplate: 'Use Aosom template',
+                extractionRuleSaved: 'Extraction rule saved',
+                extractionRuleLoadFailed: 'Failed to load extraction rules',
+                extractionRuleSaveFailed: 'Failed to save extraction rule',
+                noExtractionRules: 'No extraction rules',
+                scanNow: 'Scan now',
+                scanState: 'Scan state',
                 extractionApiGuide: 'Extraction API Guide',
                 extractionApiGuideHint: 'Use extraction rules to monitor account, sender, subject and body content. Matched data is saved as structured results. Third-party systems read it with a device token.',
                 createExtractionTokenHint: 'Recommended: create a read-only',
@@ -3026,6 +3129,7 @@
         let aiChannels = [];
         let aiDefaultModel = {};
         let keywordRules = [];
+        let extractionRules = [];
         let suppressAccountClick = false;
         let currentComposeSender = null;
         let currentComposeDraftId = '';
@@ -5869,6 +5973,195 @@
                 .filter((item, index, arr) => arr.findIndex(x => x.toLowerCase() === item.toLowerCase()) === index);
         }
 
+        function _parseMultilineInput(value) {
+            return String(value || '')
+                .split(/\n+/)
+                .map(item => item.trim())
+                .filter(Boolean)
+                .filter((item, index, arr) => arr.indexOf(item) === index);
+        }
+
+        function renderExtractionScopeControls(rule = null) {
+            const holder = document.getElementById('extraction-rule-scope-controls');
+            if (!holder) return;
+            const accounts = _allAccountOptions().filter(account => account.key.startsWith('external:'));
+            const selectedEmails = new Set((rule?.account_emails || []).map(item => String(item).toLowerCase()));
+            holder.innerHTML = `
+                <label class="form-label">${t('selectAccounts')}</label>
+                <div class="account-settings-list" style="max-height:130px;">
+                    ${accounts.map(account => `
+                        <label class="account-settings-row mb-0">
+                            <input class="form-check-input extraction-scope-account" type="checkbox" value="${_escapeAttr(account.subtitle)}" ${selectedEmails.has(String(account.subtitle).toLowerCase()) ? 'checked' : ''}>
+                            <span class="flex-grow-1 min-w-0">
+                                <span class="mail-account-title">${_escapeHtml(account.label)}</span>
+                                <span class="mail-account-subtitle">${_escapeHtml(account.subtitle)} · ${_escapeHtml(account.group)}</span>
+                            </span>
+                        </label>`).join('') || `<div class="account-settings-empty">${t('queryHint')}</div>`}
+                </div>
+                <div class="small text-muted mt-1">${t('keywordMatchHint')}</div>`;
+        }
+
+        function applyExtractionTemplate() {
+            const template = document.getElementById('extraction-rule-template')?.value || 'custom';
+            if (template !== 'aosom_shipped') return;
+            if (!document.getElementById('extraction-rule-name').value.trim()) {
+                document.getElementById('extraction-rule-name').value = 'Aosom 发货物流提取';
+            }
+            document.getElementById('extraction-sender-contains').value = 'noreply@aosom.ca';
+            document.getElementById('extraction-subject-contains').value = 'Aosom Business: Your Aosom order has been shipped';
+            document.getElementById('extraction-body-keywords').value = 'Tracking Number';
+            document.getElementById('extraction-order-regexes').value = [
+                'Order\\s+#\\s*([A-Z0-9-]+)\\s+is\\s+Shipped',
+                'Your\\s+Order\\s+#\\s*([A-Z0-9-]+)',
+            ].join('\n');
+            document.getElementById('extraction-tracking-regexes').value = '\\b(1Z[0-9A-Z]{16})\\b';
+            document.getElementById('extraction-carrier-regex').value = '\\b(UPS|FedEx|DHL|USPS|Canada Post|Purolator)\\b';
+        }
+
+        function resetExtractionRuleForm() {
+            document.getElementById('extraction-rule-id').value = '';
+            document.getElementById('extraction-rule-name').value = '';
+            document.getElementById('extraction-rule-template').value = 'custom';
+            document.getElementById('extraction-sender-contains').value = '';
+            document.getElementById('extraction-subject-contains').value = '';
+            document.getElementById('extraction-body-keywords').value = '';
+            document.getElementById('extraction-order-regexes').value = '';
+            document.getElementById('extraction-tracking-regexes').value = '';
+            document.getElementById('extraction-carrier-regex').value = '';
+            document.getElementById('extraction-scan-limit').value = '300';
+            document.getElementById('extraction-rule-enabled').checked = true;
+            renderExtractionScopeControls();
+        }
+
+        function editExtractionRule(ruleId) {
+            const rule = extractionRules.find(item => item.id === ruleId);
+            if (!rule) return;
+            document.getElementById('extraction-rule-id').value = rule.id || '';
+            document.getElementById('extraction-rule-name').value = rule.name || '';
+            document.getElementById('extraction-rule-template').value = rule.template || 'custom';
+            document.getElementById('extraction-sender-contains').value = rule.sender_contains || '';
+            document.getElementById('extraction-subject-contains').value = rule.subject_contains || '';
+            document.getElementById('extraction-body-keywords').value = (rule.body_keywords || []).join('\n');
+            document.getElementById('extraction-order-regexes').value = (rule.order_regexes || (rule.order_regex ? [rule.order_regex] : [])).join('\n');
+            document.getElementById('extraction-tracking-regexes').value = (rule.tracking_regexes || (rule.tracking_regex ? [rule.tracking_regex] : [])).join('\n');
+            document.getElementById('extraction-carrier-regex').value = rule.carrier_regex || '';
+            document.getElementById('extraction-scan-limit').value = rule.scan_limit || 300;
+            document.getElementById('extraction-rule-enabled').checked = rule.enabled !== false;
+            renderExtractionScopeControls(rule);
+        }
+
+        function renderExtractionRules() {
+            const list = document.getElementById('extraction-rule-list');
+            if (!list) return;
+            list.innerHTML = extractionRules.length ? extractionRules.map(rule => {
+                const accountText = (rule.account_emails || []).length ? `${(rule.account_emails || []).length} ${t('scopeAccounts')}` : t('scopeAll');
+                const stateCount = rule.scan_state ? Object.keys(rule.scan_state).length : 0;
+                return `
+                    <div class="account-settings-row">
+                        <span class="mail-account-provider-icon"><i class="bi bi-box-arrow-in-down-right"></i></span>
+                        <span class="flex-grow-1 min-w-0">
+                            <span class="mail-account-title">${_escapeHtml(rule.name || '')}</span>
+                            <span class="mail-account-subtitle">${_escapeHtml(accountText)} · ${_escapeHtml(rule.template || 'custom')} · ${t('scanLimit')} ${rule.scan_limit || 300}</span>
+                            <span class="mail-account-subtitle">${t('scanState')}: ${stateCount} · ${_escapeHtml(rule.last_scan_at || '')} ${rule.last_scan_error ? '· ' + _escapeHtml(rule.last_scan_error) : ''}</span>
+                        </span>
+                        <span class="account-settings-row-actions">
+                            <span class="mail-account-kind">${rule.enabled === false ? t('disabled') : t('enabled')}</span>
+                            <button class="btn btn-sm p-0 text-primary" onclick="scanExtractionRule('${_escapeAttr(rule.id)}')" title="${t('scanNow')}">
+                                <i class="bi bi-search"></i>
+                            </button>
+                            <button class="btn btn-sm p-0 text-secondary" onclick="editExtractionRule('${_escapeAttr(rule.id)}')" title="${t('editAccount')}">
+                                <i class="bi bi-pencil-square"></i>
+                            </button>
+                            <button class="btn btn-sm p-0 text-danger" onclick="deleteExtractionRule('${_escapeAttr(rule.id)}')" title="${t('delete')}">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </span>
+                    </div>`;
+            }).join('') : `<div class="account-settings-empty">${t('noExtractionRules')}</div>`;
+        }
+
+        async function loadExtractionRules() {
+            try {
+                const resp = await fetch('/api/extraction-rules');
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('extractionRuleLoadFailed'));
+                extractionRules = data.rules || [];
+                renderExtractionScopeControls(extractionRules.find(item => item.id === document.getElementById('extraction-rule-id')?.value) || null);
+                renderExtractionRules();
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('extractionRuleLoadFailed')}: ${e.message}`);
+            }
+        }
+
+        function _extractionRulePayload(scanNow = false) {
+            return {
+                id: document.getElementById('extraction-rule-id').value || undefined,
+                name: document.getElementById('extraction-rule-name').value.trim(),
+                template: document.getElementById('extraction-rule-template').value || 'custom',
+                sender_contains: document.getElementById('extraction-sender-contains').value.trim(),
+                subject_contains: document.getElementById('extraction-subject-contains').value.trim(),
+                body_keywords: _parseKeywordInput(document.getElementById('extraction-body-keywords').value),
+                order_regexes: _parseMultilineInput(document.getElementById('extraction-order-regexes').value),
+                tracking_regexes: _parseMultilineInput(document.getElementById('extraction-tracking-regexes').value),
+                carrier_regex: document.getElementById('extraction-carrier-regex').value.trim(),
+                scan_limit: Number(document.getElementById('extraction-scan-limit').value || 300),
+                account_emails: Array.from(document.querySelectorAll('.extraction-scope-account:checked')).map(cb => cb.value).filter(Boolean),
+                enabled: document.getElementById('extraction-rule-enabled').checked,
+                scan_now: scanNow,
+            };
+        }
+
+        async function saveExtractionRule(scanNow = false) {
+            _clearKeywordSettingsAlert();
+            try {
+                const resp = await fetch('/api/extraction-rules', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(_extractionRulePayload(scanNow)),
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('extractionRuleSaveFailed'));
+                extractionRules = data.rules || [];
+                renderExtractionRules();
+                if (data.rule?.id) editExtractionRule(data.rule.id);
+                _showKeywordSettingsAlert('success', scanNow && data.scan ? `${t('extractionRuleSaved')} · ${t('scanNow')}: ${data.scan.summary?.records || 0}` : t('extractionRuleSaved'));
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('extractionRuleSaveFailed')}: ${e.message}`);
+            }
+        }
+
+        async function createAosomExtractionRule() {
+            document.getElementById('extraction-rule-template').value = 'aosom_shipped';
+            applyExtractionTemplate();
+            await saveExtractionRule(true);
+        }
+
+        async function scanExtractionRule(ruleId) {
+            _clearKeywordSettingsAlert();
+            try {
+                const resp = await fetch(`/api/extraction-rules/${encodeURIComponent(ruleId)}/scan`, { method: 'POST' });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('extractionRuleSaveFailed'));
+                await loadExtractionRules();
+                _showKeywordSettingsAlert('success', `${t('scanNow')}: ${data.summary?.records || 0}`);
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('extractionRuleSaveFailed')}: ${e.message}`);
+            }
+        }
+
+        async function deleteExtractionRule(ruleId) {
+            try {
+                const resp = await fetch(`/api/extraction-rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.message || t('deleteFailed'));
+                extractionRules = data.rules || [];
+                resetExtractionRuleForm();
+                renderExtractionRules();
+            } catch (e) {
+                _showKeywordSettingsAlert('danger', `${t('deleteFailed')}: ${e.message}`);
+            }
+        }
+
         function resetKeywordRuleForm() {
             document.getElementById('keyword-rule-id').value = '';
             document.getElementById('keyword-rule-name').value = '';
@@ -6285,7 +6578,7 @@
             _getSettingsModal().show();
             _switchSettingsTab(tab);
             _updateBrowserNotificationStatus();
-            await Promise.all([loadSettings(), loadAiSettings(), loadTranslationSettings(), loadSecuritySettings(), loadKeywordRules()]);
+            await Promise.all([loadSettings(), loadAiSettings(), loadTranslationSettings(), loadSecuritySettings(), loadKeywordRules(), loadExtractionRules()]);
             renderAccountSettingsLists();
             renderBrowserNotificationGroups();
             handleAiProviderChange();
@@ -6367,6 +6660,7 @@
             await loadDomains();
             await loadMailboxes();
             await loadKeywordRules();
+            await loadExtractionRules();
             _updateFolderChrome();
             externalStatusTimer = window.setInterval(refreshExternalAccountStatuses, 60000);
             restartAutoRefreshIfNeeded();

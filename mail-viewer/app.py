@@ -16,6 +16,7 @@ import time
 import uuid
 import requests
 import bleach
+from pymongo import ASCENDING, DESCENDING, MongoClient, UpdateOne
 from functools import wraps
 from datetime import datetime, timezone, timedelta
 from html.parser import HTMLParser
@@ -75,9 +76,14 @@ TRANSLATION_SERVICE_TIMEOUT_SECONDS = int(os.getenv("TRANSLATION_SERVICE_TIMEOUT
 TRANSLATION_CACHE_LIMIT = int(os.getenv("TRANSLATION_CACHE_LIMIT", "500"))
 TRANSLATION_CACHE_MAX_CHARS = int(os.getenv("TRANSLATION_CACHE_MAX_CHARS", str(2 * 1024 * 1024)))
 MOBILE_PUSH_POLL_SECONDS = int(os.getenv("MOBILE_PUSH_POLL_SECONDS", "20"))
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017").strip()
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME") or os.getenv("DB_NAME", "mailserver")
 EXTRACTION_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTRACTION_SCAN_INTERVAL_SECONDS", "300"))
 EXTRACTION_SCAN_LIMIT = int(os.getenv("EXTRACTION_SCAN_LIMIT", "300"))
+EXTRACTION_SCAN_PAGE_SIZE = min(200, max(20, int(os.getenv("EXTRACTION_SCAN_PAGE_SIZE", "100"))))
+EXTRACTION_LOOKBACK_PER_SCOPE = min(50, max(0, int(os.getenv("EXTRACTION_LOOKBACK_PER_SCOPE", "8"))))
 EXTRACTION_RESULT_LIMIT = int(os.getenv("EXTRACTION_RESULT_LIMIT", "5000"))
+EXTRACTION_RESULT_STORE = os.getenv("EXTRACTION_RESULT_STORE", "mongo").strip().lower()
 _MOBILE_EVENT_SUBSCRIBERS: set[queue.Queue] = set()
 _MOBILE_EVENT_LOCK = threading.Lock()
 _MOBILE_EVENT_MONITOR_STARTED = False
@@ -86,6 +92,10 @@ _MOBILE_EVENT_LAST_FINGERPRINT = ""
 _EXTRACTION_SCAN_STARTED = False
 _EXTRACTION_SCAN_RUNNING = False
 _EXTRACTION_SCAN_LOCK = threading.Lock()
+_EXTRACTION_MONGO_CLIENT = None
+_EXTRACTION_MONGO_READY = False
+_EXTRACTION_MIGRATION_DONE = False
+_EXTRACTION_MONGO_LOCK = threading.Lock()
 _EMAIL_ALLOWED_TAGS = [
     "a", "abbr", "b", "blockquote", "br", "caption", "center", "code", "col",
     "colgroup", "div", "em", "font",
@@ -2037,6 +2047,17 @@ def _coerce_string_list(value, limit: int = 100) -> list[str]:
     return result[:limit]
 
 
+def _coerce_regex_list(value, fallback: str = "", limit: int = 20) -> list[str]:
+    items = _coerce_string_list(value, limit)
+    if not items and fallback:
+        items = [fallback]
+    cleaned = []
+    for regex in items:
+        if regex and regex not in cleaned:
+            cleaned.append(regex[:500])
+    return cleaned[:limit]
+
+
 def _bool_from_setting(value, default: bool = True) -> bool:
     if value is None:
         return default
@@ -2059,7 +2080,12 @@ def _normalize_extraction_rule(item: dict) -> dict | None:
             "sender_contains": "noreply@aosom.ca",
             "subject_contains": "Aosom Business: Your Aosom order has been shipped",
             "order_regex": r"Order\s+#\s*([A-Z0-9-]+)\s+is\s+Shipped",
+            "order_regexes": [
+                r"Order\s+#\s*([A-Z0-9-]+)\s+is\s+Shipped",
+                r"Your\s+Order\s+#\s*([A-Z0-9-]+)",
+            ],
             "tracking_regex": r"\b(1Z[0-9A-Z]{16})\b",
+            "tracking_regexes": [r"\b(1Z[0-9A-Z]{16})\b"],
             "carrier_regex": r"\b(UPS|FedEx|DHL|USPS|Canada Post|Purolator)\b",
         }
 
@@ -2071,10 +2097,21 @@ def _normalize_extraction_rule(item: dict) -> dict | None:
     tracking_regex = str(item.get("tracking_regex") or item.get("trackingRegex") or defaults.get("tracking_regex") or "").strip()
     carrier_regex = str(item.get("carrier_regex") or item.get("carrierRegex") or defaults.get("carrier_regex") or "").strip()
     keywords = _coerce_string_list(item.get("keywords", []), 30)
+    body_keywords = _coerce_string_list(item.get("body_keywords", item.get("bodyKeywords", [])), 30)
+    order_regexes = _coerce_regex_list(
+        item.get("order_regexes", item.get("orderRegexes", [])),
+        order_regex or defaults.get("order_regex", ""),
+        20,
+    )
+    tracking_regexes = _coerce_regex_list(
+        item.get("tracking_regexes", item.get("trackingRegexes", [])),
+        tracking_regex or defaults.get("tracking_regex", ""),
+        20,
+    )
 
-    if not name or not tracking_regex:
+    if not name or not tracking_regexes:
         return None
-    if not any([sender_contains, subject_contains, subject_exact, keywords]):
+    if not any([sender_contains, subject_contains, subject_exact, keywords, body_keywords]):
         return None
 
     raw_match_mode = str(item.get("keyword_match_mode") or item.get("keywordMatchMode") or "any").strip().lower()
@@ -2096,11 +2133,15 @@ def _normalize_extraction_rule(item: dict) -> dict | None:
         "subject_contains": subject_contains[:240],
         "subject_exact": subject_exact[:240],
         "keywords": keywords,
+        "body_keywords": body_keywords,
         "keyword_match_mode": keyword_match_mode,
-        "order_regex": order_regex[:500],
-        "tracking_regex": tracking_regex[:500],
+        "order_regex": (order_regexes[0] if order_regexes else "")[:500],
+        "order_regexes": order_regexes,
+        "tracking_regex": (tracking_regexes[0] if tracking_regexes else "")[:500],
+        "tracking_regexes": tracking_regexes,
         "carrier_regex": carrier_regex[:500],
         "scan_limit": scan_limit,
+        "scan_state": item.get("scan_state") if isinstance(item.get("scan_state"), dict) else item.get("scanState") if isinstance(item.get("scanState"), dict) else {},
         "created_at": item.get("created_at") or item.get("createdAt") or now,
         "updated_at": item.get("updated_at") or item.get("updatedAt") or now,
         "last_scan_at": item.get("last_scan_at") or item.get("lastScanAt") or "",
@@ -2122,11 +2163,15 @@ def _public_extraction_rule(item: dict) -> dict:
         "subject_contains": normalized.get("subject_contains", ""),
         "subject_exact": normalized.get("subject_exact", ""),
         "keywords": normalized.get("keywords", []),
+        "body_keywords": normalized.get("body_keywords", []),
         "keyword_match_mode": normalized.get("keyword_match_mode", "any"),
         "order_regex": normalized.get("order_regex", ""),
+        "order_regexes": normalized.get("order_regexes", []),
         "tracking_regex": normalized.get("tracking_regex", ""),
+        "tracking_regexes": normalized.get("tracking_regexes", []),
         "carrier_regex": normalized.get("carrier_regex", ""),
         "scan_limit": normalized.get("scan_limit", EXTRACTION_SCAN_LIMIT),
+        "scan_state": normalized.get("scan_state", {}),
         "created_at": normalized.get("created_at", ""),
         "updated_at": normalized.get("updated_at", ""),
         "last_scan_at": normalized.get("last_scan_at", ""),
@@ -2191,6 +2236,18 @@ def _mail_envelope_matches_extraction_rule(rule: dict, mail: dict, include_keywo
     return True
 
 
+def _keywords_match(rule: dict, keywords: list[str], text: str) -> bool:
+    if not keywords:
+        return True
+    haystack = (text or "").lower()
+    matched = [str(keyword).lower() in haystack for keyword in keywords if str(keyword).strip()]
+    if not matched:
+        return True
+    if rule.get("keyword_match_mode") == "all":
+        return all(matched)
+    return any(matched)
+
+
 def _message_detail_text(detail: dict, mail: dict | None = None) -> str:
     mail = mail or {}
     parts = [
@@ -2210,13 +2267,11 @@ def _mail_detail_matches_extraction_rule(rule: dict, detail: dict, mail: dict) -
     }, include_keywords=False):
         return False
     keywords = [str(item).lower() for item in rule.get("keywords", []) if str(item).strip()]
-    if not keywords:
+    body_keywords = [str(item).lower() for item in rule.get("body_keywords", []) if str(item).strip()]
+    if not keywords and not body_keywords:
         return True
     text = _message_detail_text(detail, mail).lower()
-    matched = [keyword in text for keyword in keywords]
-    if rule.get("keyword_match_mode") == "all":
-        return all(matched)
-    return any(matched)
+    return _keywords_match(rule, keywords, text) and _keywords_match(rule, body_keywords, text)
 
 
 def _find_unique_regex(regex: str, text: str, flags=re.IGNORECASE) -> list[str]:
@@ -2271,6 +2326,18 @@ def _extract_shipments_from_text(text: str, tracking_regex: str, carrier_regex: 
     return shipments
 
 
+def _extract_shipments_from_patterns(text: str, tracking_regexes: list[str], carrier_regex: str) -> list[dict]:
+    shipments = []
+    seen = set()
+    for regex in tracking_regexes:
+        for shipment in _extract_shipments_from_text(text, regex, carrier_regex):
+            tracking = shipment.get("tracking_number", "")
+            if tracking and tracking not in seen:
+                seen.add(tracking)
+                shipments.append(shipment)
+    return shipments
+
+
 def _extraction_record_id(rule: dict, account: dict, mail: dict, order_number: str, shipments: list[dict]) -> str:
     tracking_part = ",".join(item.get("tracking_number", "") for item in shipments)
     raw = "|".join([
@@ -2286,8 +2353,14 @@ def _extraction_record_id(rule: dict, account: dict, mail: dict, order_number: s
 
 def _extract_records_from_message(rule: dict, account: dict, mail: dict, detail: dict) -> list[dict]:
     text = _message_detail_text(detail, mail)
-    order_numbers = _find_unique_regex(rule.get("order_regex", ""), text) if rule.get("order_regex") else [""]
-    shipments = _extract_shipments_from_text(text, rule.get("tracking_regex", ""), rule.get("carrier_regex", ""))
+    order_numbers = []
+    for regex in rule.get("order_regexes", []) or ([rule.get("order_regex", "")] if rule.get("order_regex") else []):
+        order_numbers.extend(value for value in _find_unique_regex(regex, text) if value not in order_numbers)
+    shipments = _extract_shipments_from_patterns(
+        text,
+        rule.get("tracking_regexes", []) or ([rule.get("tracking_regex", "")] if rule.get("tracking_regex") else []),
+        rule.get("carrier_regex", ""),
+    )
     if not shipments:
         return []
     if not order_numbers:
@@ -2346,7 +2419,88 @@ def _public_extraction_result(item: dict) -> dict:
     }
 
 
-def _merge_extraction_results(settings: dict, records: list[dict]) -> list[dict]:
+def _extraction_result_document(item: dict) -> dict:
+    public = _public_extraction_result(item)
+    if not public.get("id"):
+        return {}
+    message = public.get("message") if isinstance(public.get("message"), dict) else {}
+    message_date = str(message.get("date") or "")
+    parsed_date = _safe_iso_datetime(message_date)
+    tracking_numbers = [
+        shipment.get("tracking_number")
+        for shipment in public.get("shipments", [])
+        if shipment.get("tracking_number")
+    ]
+    doc = {
+        **public,
+        "tracking_numbers": tracking_numbers,
+        "account_id": str(message.get("account_id") or ""),
+        "account_email": _normalize_mailbox_address(message.get("account_email") or ""),
+        "folder": str(message.get("folder") or ""),
+        "uid": str(message.get("uid") or ""),
+        "subject": str(message.get("subject") or ""),
+        "from": str(message.get("from") or ""),
+        "message_date": message_date,
+        "message_timestamp": parsed_date.timestamp() if parsed_date else 0,
+    }
+    return doc
+
+
+def _extraction_results_collection():
+    global _EXTRACTION_MONGO_CLIENT, _EXTRACTION_MONGO_READY
+    if EXTRACTION_RESULT_STORE in {"settings", "file", "json"} or not MONGO_URL:
+        return None
+    if _EXTRACTION_MONGO_READY and _EXTRACTION_MONGO_CLIENT is not None:
+        return _EXTRACTION_MONGO_CLIENT[MONGO_DB_NAME]["extraction_results"]
+    with _EXTRACTION_MONGO_LOCK:
+        if _EXTRACTION_MONGO_READY and _EXTRACTION_MONGO_CLIENT is not None:
+            return _EXTRACTION_MONGO_CLIENT[MONGO_DB_NAME]["extraction_results"]
+        try:
+            _EXTRACTION_MONGO_CLIENT = MongoClient(MONGO_URL, serverSelectionTimeoutMS=3000)
+            _EXTRACTION_MONGO_CLIENT.admin.command("ping")
+            collection = _EXTRACTION_MONGO_CLIENT[MONGO_DB_NAME]["extraction_results"]
+            collection.create_index([("id", ASCENDING)], unique=True, background=True)
+            collection.create_index([("rule_id", ASCENDING), ("message_timestamp", DESCENDING), ("message_date", DESCENDING)], background=True)
+            collection.create_index([("order_number", ASCENDING)], background=True)
+            collection.create_index([("tracking_numbers", ASCENDING)], background=True)
+            collection.create_index([("account_email", ASCENDING), ("message_timestamp", DESCENDING), ("message_date", DESCENDING)], background=True)
+            collection.create_index([("updated_at", DESCENDING)], background=True)
+            _EXTRACTION_MONGO_READY = True
+            return collection
+        except Exception as exc:
+            _EXTRACTION_MONGO_READY = False
+            app.logger.warning("数据抽取 Mongo 存储不可用，临时回退 settings 存储: %s", exc)
+            return None
+
+
+def _migrate_extraction_results_to_mongo(settings: dict | None = None):
+    global _EXTRACTION_MIGRATION_DONE
+    if _EXTRACTION_MIGRATION_DONE:
+        return
+    collection = _extraction_results_collection()
+    if collection is None:
+        return
+    settings = settings or _read_viewer_settings()
+    legacy_results = [
+        _extraction_result_document(item)
+        for item in _settings_list(settings, "extraction_results")
+        if isinstance(item, dict) and item.get("id")
+    ]
+    legacy_results = [item for item in legacy_results if item.get("id")]
+    if legacy_results:
+        operations = [
+            UpdateOne({"id": item["id"]}, {"$set": item, "$setOnInsert": {"created_at": item.get("extracted_at") or _iso_now()}}, upsert=True)
+            for item in legacy_results
+        ]
+        collection.bulk_write(operations, ordered=False)
+        settings["extraction_results_migrated_at"] = _iso_now()
+        settings["extraction_results_legacy_count"] = len(legacy_results)
+        settings["extraction_results"] = []
+        _write_viewer_settings(settings)
+    _EXTRACTION_MIGRATION_DONE = True
+
+
+def _merge_extraction_results_settings(settings: dict, records: list[dict]) -> list[dict]:
     existing = [
         _public_extraction_result(item)
         for item in _settings_list(settings, "extraction_results")
@@ -2375,10 +2529,108 @@ def _merge_extraction_results(settings: dict, records: list[dict]) -> list[dict]
     return merged
 
 
+def _merge_extraction_results(settings: dict, records: list[dict]) -> list[dict]:
+    collection = _extraction_results_collection()
+    if collection is None:
+        return _merge_extraction_results_settings(settings, records)
+    _migrate_extraction_results_to_mongo(settings)
+    now = _iso_now()
+    docs = []
+    for record in records:
+        doc = _extraction_result_document(record)
+        if not doc.get("id"):
+            continue
+        old = collection.find_one({"id": doc["id"]}, {"extracted_at": 1})
+        doc["updated_at"] = now
+        if old and old.get("extracted_at"):
+            doc["extracted_at"] = old["extracted_at"]
+        docs.append(doc)
+    if not docs:
+        return []
+    operations = [
+        UpdateOne({"id": item["id"]}, {"$set": item, "$setOnInsert": {"created_at": item.get("extracted_at") or now}}, upsert=True)
+        for item in docs
+    ]
+    collection.bulk_write(operations, ordered=False)
+    return [_public_extraction_result(item) for item in docs]
+
+
+def _delete_extraction_results(rule_id: str = "") -> int:
+    collection = _extraction_results_collection()
+    if collection is None:
+        return 0
+    _migrate_extraction_results_to_mongo()
+    query = {"rule_id": rule_id} if rule_id else {}
+    result = collection.delete_many(query)
+    return int(result.deleted_count or 0)
+
+
+def _query_extraction_results(
+    rule_id: str = "",
+    order_number: str = "",
+    tracking_number: str = "",
+    account_email: str = "",
+    limit: int = 200,
+    offset: int = 0,
+) -> tuple[list[dict], int, str]:
+    collection = _extraction_results_collection()
+    if collection is None:
+        settings = _read_viewer_settings()
+        results = [
+            _public_extraction_result(item)
+            for item in _settings_list(settings, "extraction_results")
+            if isinstance(item, dict) and item.get("id")
+        ]
+        if rule_id:
+            results = [item for item in results if item.get("rule_id") == rule_id]
+        if order_number:
+            results = [item for item in results if str(item.get("order_number") or "").lower() == order_number.lower()]
+        if tracking_number:
+            results = [
+                item for item in results
+                if any(str(ship.get("tracking_number") or "").lower() == tracking_number.lower() for ship in item.get("shipments", []))
+            ]
+        if account_email:
+            results = [
+                item for item in results
+                if str((item.get("message") or {}).get("account_email") or "").lower() == account_email.lower()
+            ]
+        return results[offset:offset + limit], len(results), "settings"
+    _migrate_extraction_results_to_mongo()
+    query = {}
+    if rule_id:
+        query["rule_id"] = rule_id
+    if order_number:
+        query["order_number"] = {"$regex": f"^{re.escape(order_number)}$", "$options": "i"}
+    if tracking_number:
+        query["tracking_numbers"] = {"$regex": f"^{re.escape(tracking_number)}$", "$options": "i"}
+    if account_email:
+        query["account_email"] = {"$regex": f"^{re.escape(account_email)}$", "$options": "i"}
+    total = collection.count_documents(query)
+    cursor = collection.find(query, {"_id": 0}).sort([
+        ("message_timestamp", DESCENDING),
+        ("message_date", DESCENDING),
+        ("updated_at", DESCENDING),
+    ]).skip(offset).limit(limit)
+    return [_public_extraction_result(item) for item in cursor], total, "mongo"
+
+
 def _fetch_external_mail_list(account_id: str, limit: int) -> list[dict]:
     resp = http_session.get(
         urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{quote(str(account_id), safe='')}/mails"),
         params={"folder": "__memail_all__", "count": limit, "offset": 0, "cacheOnly": 1},
+        timeout=25,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(_response_error(resp, f"邮件列表读取失败 HTTP {resp.status_code}"))
+    payload = resp.json()
+    return payload.get("mails", []) if isinstance(payload, dict) else []
+
+
+def _fetch_external_mail_page(account_id: str, count: int, offset: int) -> list[dict]:
+    resp = http_session.get(
+        urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{quote(str(account_id), safe='')}/mails"),
+        params={"folder": "__memail_all__", "count": count, "offset": offset, "cacheOnly": 1},
         timeout=25,
     )
     if resp.status_code != 200:
@@ -2402,31 +2654,117 @@ def _fetch_external_mail_detail(account_id: str, mail: dict) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _mail_uid_number(mail: dict) -> int:
+    return max(0, _safe_int(mail.get("uid") or mail.get("id"), 0))
+
+
+def _extraction_scope_key(account_id: str, folder: str) -> str:
+    raw = f"{account_id}:{folder or 'INBOX'}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _extraction_candidate_mails(rule: dict, account_id: str) -> tuple[list[dict], int]:
+    scan_state = rule.get("scan_state") if isinstance(rule.get("scan_state"), dict) else {}
+    by_key = {}
+    checked = 0
+    offset = 0
+    max_pages = max(1, (rule.get("scan_limit", EXTRACTION_SCAN_LIMIT) + EXTRACTION_SCAN_PAGE_SIZE - 1) // EXTRACTION_SCAN_PAGE_SIZE)
+    for _ in range(max_pages):
+        page = _fetch_external_mail_page(account_id, EXTRACTION_SCAN_PAGE_SIZE, offset)
+        if not page:
+            break
+        checked += len(page)
+        for mail in page:
+            if not isinstance(mail, dict):
+                continue
+            folder = str(mail.get("folder") or "INBOX")
+            uid = _mail_uid_number(mail)
+            scope_key = _extraction_scope_key(account_id, folder)
+            state = scan_state.get(scope_key, {}) if isinstance(scan_state.get(scope_key), dict) else {}
+            high_uid = _safe_int(state.get("highest_uid") or state.get("highestUid"), 0)
+            recent = state.get("recent_uids") if isinstance(state.get("recent_uids"), list) else []
+            if uid and uid <= high_uid and str(uid) not in {str(item) for item in recent}:
+                continue
+            dedupe_key = f"{folder}:{uid or mail.get('id') or offset}"
+            by_key[dedupe_key] = mail
+        if len(page) < EXTRACTION_SCAN_PAGE_SIZE:
+            break
+        offset += EXTRACTION_SCAN_PAGE_SIZE
+    return list(by_key.values()), checked
+
+
+def _update_extraction_scan_state(rule: dict, account_id: str, mails: list[dict]):
+    scan_state = rule.get("scan_state") if isinstance(rule.get("scan_state"), dict) else {}
+    for mail in mails:
+        if not isinstance(mail, dict):
+            continue
+        uid = _mail_uid_number(mail)
+        if not uid:
+            continue
+        folder = str(mail.get("folder") or "INBOX")
+        scope_key = _extraction_scope_key(account_id, folder)
+        state = scan_state.get(scope_key, {}) if isinstance(scan_state.get(scope_key), dict) else {}
+        recent = [str(item) for item in state.get("recent_uids", []) if str(item)]
+        uid_text = str(uid)
+        if uid_text not in recent:
+            recent.insert(0, uid_text)
+        scan_state[scope_key] = {
+            "account_id": str(account_id),
+            "folder": folder,
+            "highest_uid": max(_safe_int(state.get("highest_uid") or state.get("highestUid"), 0), uid),
+            "recent_uids": recent[:EXTRACTION_LOOKBACK_PER_SCOPE],
+            "updated_at": _iso_now(),
+        }
+    rule["scan_state"] = dict(list(scan_state.items())[-2000:])
+
+
 def _scan_extraction_rule(rule: dict) -> tuple[list[dict], dict]:
     normalized = _normalize_extraction_rule(rule)
     if not normalized or not normalized.get("enabled", True):
-        return [], {"checked": 0, "matched": 0, "records": 0}
+        return [], {"checked": 0, "matched": 0, "records": 0, "failed": 0}
     records = []
     checked = 0
     matched = 0
+    failed = 0
     for account in _external_accounts_for_extraction():
         if not _account_matches_extraction_rule(normalized, account):
             continue
         account_id = str(account.get("id") or "")
         if not account_id:
             continue
-        for mail in _fetch_external_mail_list(account_id, normalized.get("scan_limit", EXTRACTION_SCAN_LIMIT)):
+        try:
+            mails, account_checked = _extraction_candidate_mails(normalized, account_id)
+            checked += account_checked
+        except Exception as exc:
+            failed += 1
+            app.logger.warning("邮件数据抽取读取列表失败: rule=%s account=%s error=%s", normalized.get("name"), account_id, exc)
+            continue
+        processed_mails = []
+        for mail in mails:
             if not isinstance(mail, dict):
                 continue
-            checked += 1
+            processed_mails.append(mail)
             if not _mail_envelope_matches_extraction_rule(normalized, mail, include_keywords=False):
                 continue
-            detail = _fetch_external_mail_detail(account_id, mail)
-            if not _mail_detail_matches_extraction_rule(normalized, detail, mail):
-                continue
-            matched += 1
-            records.extend(_extract_records_from_message(normalized, account, mail, detail))
-    return records, {"checked": checked, "matched": matched, "records": len(records)}
+            try:
+                detail = _fetch_external_mail_detail(account_id, mail)
+                if not _mail_detail_matches_extraction_rule(normalized, detail, mail):
+                    continue
+                matched += 1
+                records.extend(_extract_records_from_message(normalized, account, mail, detail))
+            except Exception as exc:
+                failed += 1
+                app.logger.warning(
+                    "邮件数据抽取读取详情失败: rule=%s account=%s uid=%s error=%s",
+                    normalized.get("name"),
+                    account_id,
+                    mail.get("uid") or mail.get("id") or "",
+                    exc,
+                )
+        _update_extraction_scan_state(normalized, account_id, processed_mails)
+    if isinstance(rule, dict):
+        rule["scan_state"] = normalized.get("scan_state", {})
+    return records, {"checked": checked, "matched": matched, "records": len(records), "failed": failed}
 
 
 def _run_extraction_scan_once(rule_id: str = "") -> dict:
@@ -2439,7 +2777,7 @@ def _run_extraction_scan_once(rule_id: str = "") -> dict:
     if rule_id:
         rules = [item for item in rules if item.get("id") == rule_id]
     records = []
-    summary = {"rules": 0, "checked": 0, "matched": 0, "records": 0, "errors": []}
+    summary = {"rules": 0, "checked": 0, "matched": 0, "records": 0, "failed": 0, "errors": []}
     for rule in rules:
         summary["rules"] += 1
         try:
@@ -2448,9 +2786,10 @@ def _run_extraction_scan_once(rule_id: str = "") -> dict:
             summary["checked"] += stats.get("checked", 0)
             summary["matched"] += stats.get("matched", 0)
             summary["records"] += stats.get("records", 0)
+            summary["failed"] += stats.get("failed", 0)
             rule["last_scan_at"] = _iso_now()
             rule["last_scan_count"] = stats.get("records", 0)
-            rule["last_scan_error"] = ""
+            rule["last_scan_error"] = f"{stats.get('failed', 0)} 封邮件读取失败" if stats.get("failed", 0) else ""
         except Exception as exc:
             message = str(exc)
             rule["last_scan_at"] = _iso_now()
@@ -4462,6 +4801,7 @@ def _save_extraction_rule_payload(data: dict) -> tuple[dict, int]:
         incoming["last_scan_at"] = existing.get("last_scan_at", "")
         incoming["last_scan_count"] = existing.get("last_scan_count", 0)
         incoming["last_scan_error"] = existing.get("last_scan_error", "")
+        incoming["scan_state"] = existing.get("scan_state", {})
         existing.update(incoming)
     else:
         rules.append(incoming)
@@ -4472,6 +4812,13 @@ def _save_extraction_rule_payload(data: dict) -> tuple[dict, int]:
     scan_result = None
     if _bool_from_setting(data.get("scan_now"), False):
         scan_result = _run_extraction_scan_once(incoming["id"])
+        settings = _read_viewer_settings()
+        rules = [
+            _normalize_extraction_rule(item)
+            for item in _settings_list(settings, "extraction_rules")
+        ]
+        rules = [item for item in rules if item]
+        incoming = next((item for item in rules if item.get("id") == incoming["id"]), incoming)
 
     return {
         "success": True,
@@ -4501,10 +4848,15 @@ def delete_extraction_rule(rule_id):
         for item in _settings_list(settings, "extraction_rules")
     ]
     rules = [item for item in rules if item and item.get("id") != rule_id]
+    deleted_results = _delete_extraction_results(rule_id)
+    settings["extraction_results"] = [
+        item for item in _settings_list(settings, "extraction_results")
+        if isinstance(item, dict) and str(item.get("rule_id") or "") != rule_id
+    ]
     settings["extraction_rules"] = rules
-    _touch_sync_event(settings, "extraction_rule.deleted", {"id": rule_id})
+    _touch_sync_event(settings, "extraction_rule.deleted", {"id": rule_id, "deleted_results": deleted_results})
     _write_viewer_settings(settings)
-    return jsonify({"success": True, "rules": [_public_extraction_rule(item) for item in rules]})
+    return jsonify({"success": True, "deleted_results": deleted_results, "rules": [_public_extraction_rule(item) for item in rules]})
 
 
 @app.route("/api/extraction-rules/<rule_id>/scan", methods=["POST"])
@@ -4527,40 +4879,54 @@ def scan_extraction_rules():
 @app.route("/api/extraction-results", methods=["GET"])
 @extraction_api_required
 def list_extraction_results():
-    settings = _read_viewer_settings()
-    results = [
-        _public_extraction_result(item)
-        for item in _settings_list(settings, "extraction_results")
-        if isinstance(item, dict) and item.get("id")
-    ]
     rule_id = str(request.args.get("rule_id") or "").strip()
     order_number = str(request.args.get("order_number") or "").strip().lower()
     tracking_number = str(request.args.get("tracking_number") or "").strip().lower()
     account_email = _normalize_mailbox_address(request.args.get("account_email") or "").lower()
-    if rule_id:
-        results = [item for item in results if item.get("rule_id") == rule_id]
-    if order_number:
-        results = [item for item in results if str(item.get("order_number") or "").lower() == order_number]
-    if tracking_number:
-        results = [
-            item for item in results
-            if any(str(ship.get("tracking_number") or "").lower() == tracking_number for ship in item.get("shipments", []))
-        ]
-    if account_email:
-        results = [
-            item for item in results
-            if str((item.get("message") or {}).get("account_email") or "").lower() == account_email
-        ]
     limit = min(1000, max(1, _safe_int(request.args.get("limit"), 200)))
     offset = max(0, _safe_int(request.args.get("offset"), 0))
-    page = results[offset:offset + limit]
+    page, total, store = _query_extraction_results(
+        rule_id=rule_id,
+        order_number=order_number,
+        tracking_number=tracking_number,
+        account_email=account_email,
+        limit=limit,
+        offset=offset,
+    )
     return jsonify({
         "success": True,
-        "total": len(results),
+        "total": total,
         "offset": offset,
         "limit": limit,
+        "store": store,
         "results": page,
         "generated_at": _iso_now(),
+    })
+
+
+@app.route("/api/extraction/storage", methods=["GET"])
+@login_required
+def get_extraction_storage_status():
+    settings = _read_viewer_settings()
+    collection = _extraction_results_collection()
+    if collection is None:
+        return jsonify({
+            "success": True,
+            "store": "settings",
+            "mongo": False,
+            "legacy_results": len(_settings_list(settings, "extraction_results")),
+            "migrated_at": settings.get("extraction_results_migrated_at", ""),
+        })
+    _migrate_extraction_results_to_mongo(settings)
+    return jsonify({
+        "success": True,
+        "store": "mongo",
+        "mongo": True,
+        "database": MONGO_DB_NAME,
+        "collection": "extraction_results",
+        "total": collection.count_documents({}),
+        "legacy_results": len(_settings_list(_read_viewer_settings(), "extraction_results")),
+        "migrated_at": _read_viewer_settings().get("extraction_results_migrated_at", ""),
     })
 
 

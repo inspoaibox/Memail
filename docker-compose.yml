@@ -89,6 +89,9 @@ services:
       - AI_TRANSLATION_TIMEOUT_SECONDS=${AI_TRANSLATION_TIMEOUT_SECONDS:-45}
       - TRANSLATION_SERVICE_TIMEOUT_SECONDS=${TRANSLATION_SERVICE_TIMEOUT_SECONDS:-12}
       - IMAP_MAIL_BASE_URL=http://imap-mail:3939
+      - MONGO_URL=mongodb://mongodb:27017
+      - MONGO_DB_NAME=${DB_NAME:-mailserver}
+      - EXTRACTION_RESULT_STORE=${EXTRACTION_RESULT_STORE:-mongo}
     volumes:
       - viewer_data:/data
     healthcheck:
@@ -98,6 +101,8 @@ services:
       retries: 3
       start_period: 20s
     depends_on:
+      mongodb:
+        condition: service_healthy
       mail-service:
         condition: service_healthy
       imap-mail:

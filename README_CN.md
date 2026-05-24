@@ -238,9 +238,20 @@ Authorization: Bearer memail_dev_xxx
 
 ### 邮件数据抽取 API
 
-设置页的“关键词规则”区域提供了“数据抽取 API 调用说明”和可复制示例。第三方系统建议使用“安全设置 → 设备 Token”生成 `extraction:read` 只读 Token，只用于读取抽取结果；创建或扫描规则仍应使用后台登录或完整客户端 Token。
+设置页的“关键词规则”区域提供了“数据抽取规则”表单和“数据抽取 API 调用说明”。第三方系统建议使用“安全设置 → 设备 Token”生成 `extraction:read` 只读 Token，只用于读取抽取结果；创建或扫描规则仍应使用后台登录或完整客户端 Token。
+
+抽取规则不是固定模板硬编码，可以按不同邮件 HTML、纯文本模板或标题格式配置：
+
+- 发件人包含、主题包含、正文关键词用于先筛选命中邮件。
+- 订单号正则支持多行，每行一个模板。
+- 物流单号正则支持多行，每行一个模板。
+- 承运商正则会从物流号附近文本提取承运商。
+- 后台扫描按规则、账号、文件夹保存 UID 游标，并保留少量回扫窗口，避免大邮箱每次重扫。
+- 抽取结果默认保存到 MongoDB 的 `extraction_results` 集合，支持按规则、订单号、物流号、邮箱分页过滤；旧版 settings 中的结果会自动迁移到 MongoDB。
 
 内置 Aosom 发货模板可以从 `noreply@aosom.ca` 发来的 `Aosom Business: Your Aosom order has been shipped` 邮件里提取订单号和 UPS 物流单号。
+
+可在后台登录后访问 `GET /api/extraction/storage` 查看当前抽取结果存储状态；正常 Docker 部署应显示 `store: "mongo"`。
 
 创建 Aosom 抽取规则并立即扫描：
 

@@ -238,9 +238,20 @@ Authorization: Bearer memail_dev_xxx
 
 ### Mail Data Extraction API
 
-The Web UI “Keyword Rules” settings pane includes an “Extraction API Guide” with copyable examples. For third-party systems, create an `extraction:read` read-only token in “Security → Device Tokens”. Rule creation and manual scans should still use a logged-in admin session or a full client token.
+The Web UI “Keyword Rules” settings pane includes an “Extraction Rules” form and an “Extraction API Guide” with copyable examples. For third-party systems, create an `extraction:read` read-only token in “Security → Device Tokens”. Rule creation and manual scans should still use a logged-in admin session or a full client token.
+
+Extraction rules are not hard-coded to one mail template. They can be adapted to different HTML, plain-text, or subject formats:
+
+- Sender contains, subject contains, and body keywords pre-filter candidate mail.
+- Order regexes support multiple lines, one template per line.
+- Tracking regexes support multiple lines, one template per line.
+- Carrier regex extracts the carrier near a tracking number.
+- The background scanner stores a per-rule, per-account, per-folder UID cursor with a small lookback window, so large mailboxes are not rescanned from scratch every time.
+- Extraction results are stored in the MongoDB `extraction_results` collection by default, with pagination and filters for rule, order number, tracking number, and account email. Legacy settings-based results are migrated automatically.
 
 The built-in Aosom shipped-order template extracts order numbers and UPS tracking numbers from mail sent by `noreply@aosom.ca` with subject `Aosom Business: Your Aosom order has been shipped`.
+
+After logging in as admin, use `GET /api/extraction/storage` to verify the active result store. A normal Docker deployment should report `store: "mongo"`.
 
 Create an Aosom extraction rule and scan immediately:
 
