@@ -6044,15 +6044,16 @@
             const template = document.getElementById('extraction-rule-template')?.value || 'custom';
             if (template !== 'aosom_shipped') return;
             if (!document.getElementById('extraction-rule-name').value.trim()) {
-                document.getElementById('extraction-rule-name').value = 'Aosom 发货物流提取';
+                document.getElementById('extraction-rule-name').value = 'Aosom CA/US 发货物流提取';
             }
-            document.getElementById('extraction-sender-contains').value = 'noreply@aosom.ca';
-            document.getElementById('extraction-subject-contains').value = 'Aosom Business: Your Aosom order has been shipped';
-            document.getElementById('extraction-body-keywords').value = 'Tracking Number';
+            document.getElementById('extraction-sender-contains').value = 'noreply@aosom.ca,noreply@aosom.com';
+            document.getElementById('extraction-subject-contains').value = '';
+            document.getElementById('extraction-body-keywords').value = 'Tracking Number\nshipped';
             document.getElementById('extraction-order-regexes').value = [
-                'Order\\s+#\\s*([A-Z0-9-]+)\\s+is\\s+Shipped',
                 'Your\\s+Order\\s+#\\s*([A-Z0-9-]+)',
-                '\\bOrder\\s+(?:Date\\s+)?([A-Z0-9][A-Z0-9-]{5,})\\b',
+                '\\bOrder\\s*#\\s*([A-Z0-9-]+)\\b',
+                '\\bOrder\\s*Date\\s*[\\r\\n\\t ]+([A-Z0-9][A-Z0-9-]{5,})\\b',
+                '\\bOrder\\s*(?:Number|No\\.?)\\s*[:#]?\\s*([A-Z0-9][A-Z0-9-]{5,})\\b',
             ].join('\n');
             document.getElementById('extraction-tracking-regexes').value = [
                 '\\b(1Z[0-9A-Z]{16})\\b',

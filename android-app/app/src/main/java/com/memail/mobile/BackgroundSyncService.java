@@ -14,13 +14,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -30,12 +29,13 @@ import java.util.concurrent.Executors;
 
 public class BackgroundSyncService extends JobService {
     private static final int JOB_ID = 22051;
+    private static final int JOB_ID_NOW = 22052;
     private static final long PERIODIC_MS = 15 * 60 * 1000L;
     private static final long FLEX_MS = 5 * 60 * 1000L;
     private static final String PREFS = "memail_mobile";
     private static final String CHANNEL_MAIL = "memail_mail";
     private static final int CACHE_PAGE_SIZE = 100;
-    private static final int DETAIL_CACHE_LIMIT = 20;
+    private static final int MAX_EMPTY_PAGES = 2;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
@@ -50,6 +50,10 @@ public class BackgroundSyncService extends JobService {
             .build();
         try {
             scheduler.schedule(info);
+            scheduler.schedule(new JobInfo.Builder(JOB_ID_NOW, new ComponentName(context, BackgroundSyncService.class))
+                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                .setOverrideDeadline(0)
+                .build());
         } catch (Exception ignored) {
             // Scheduling is a cache optimization; app startup must never depend on it.
         }
@@ -58,7 +62,10 @@ public class BackgroundSyncService extends JobService {
     static void cancel(Context context) {
         if (context == null) return;
         JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-        if (scheduler != null) scheduler.cancel(JOB_ID);
+        if (scheduler != null) {
+            scheduler.cancel(JOB_ID);
+            scheduler.cancel(JOB_ID_NOW);
+        }
     }
 
     @Override
@@ -101,7 +108,7 @@ public class BackgroundSyncService extends JobService {
             if (!accounts.isEmpty()) {
                 int oldUnread = prefs.getInt("last_unread_total", 0);
                 store.replaceAccounts(accounts);
-                cacheInboxPages(api, store, accounts);
+                cacheAllMailboxPages(api, store, accounts);
                 prefs.edit()
                     .putLong("last_bootstrap_refresh_at", System.currentTimeMillis())
                     .putInt("last_unread_total", totalUnread(accounts))
@@ -150,46 +157,99 @@ public class BackgroundSyncService extends JobService {
         return result;
     }
 
-    private void cacheInboxPages(ApiClient api, LocalStore store, List<Models.Account> accounts) {
+    private void cacheAllMailboxPages(ApiClient api, LocalStore store, List<Models.Account> accounts) {
         for (Models.Account account : accounts) {
             try {
-                List<Models.Mail> page = new ArrayList<>();
                 if ("external".equals(account.type)) {
-                    JSONObject data = api.get("/imap/api/accounts/" + encode(account.id) + "/mails?folder=INBOX&count=" + CACHE_PAGE_SIZE + "&page=1&cacheOnly=1");
-                    JSONArray arr = Json.array(data, "mails");
-                    for (int i = 0; i < arr.length(); i++) {
-                        page.add(Models.Mail.fromExternal(arr.optJSONObject(i), account.id, "INBOX"));
-                    }
+                    cacheExternalAccount(api, store, account);
                 } else if ("local".equals(account.type)) {
-                    JSONObject data = api.post("/api/inbox/query", new JSONObject()
-                        .put("email", account.email)
-                        .put("offset", 0)
-                        .put("limit", CACHE_PAGE_SIZE)
-                        .put("unread_only", false));
-                    JSONArray arr = Json.array(data, "messages");
-                    for (int i = 0; i < arr.length(); i++) {
-                        page.add(Models.Mail.fromLocal(arr.optJSONObject(i), account.id, "inbox"));
-                    }
+                    cacheLocalAccount(api, store, account);
                 }
-                store.upsertMails(page);
-                cacheMailDetails(api, store, page);
             } catch (Exception ignored) {
                 // One mailbox failing must not block the rest of the background cache.
             }
         }
     }
 
+    private void cacheExternalAccount(ApiClient api, LocalStore store, Models.Account account) throws Exception {
+        JSONObject folderData = api.get("/imap/api/accounts/" + encode(account.id) + "/folders");
+        JSONArray folders = Json.arrayAny(folderData, "items", "folders", "data");
+        List<String> folderPaths = new ArrayList<>();
+        if (folders.length() == 0) folderPaths.add("INBOX");
+        for (int i = 0; i < folders.length(); i++) {
+            JSONObject item = folders.optJSONObject(i);
+            if (item == null || item.optBoolean("noselect", false)) continue;
+            String path = Json.anyStr(item, "path", "name");
+            if (!path.isEmpty()) folderPaths.add(path);
+        }
+        for (String folder : folderPaths) {
+            int page = 1;
+            int emptyPages = 0;
+            boolean hasMore = true;
+            while (hasMore && emptyPages < MAX_EMPTY_PAGES) {
+                JSONObject data = api.get("/imap/api/accounts/" + encode(account.id)
+                    + "/mails?folder=" + encode(folder)
+                    + "&count=" + CACHE_PAGE_SIZE
+                    + "&page=" + page
+                    + "&cacheOnly=1");
+                JSONArray arr = Json.array(data, "mails");
+                List<Models.Mail> mails = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    mails.add(Models.Mail.fromExternal(arr.optJSONObject(i), account.id, folder));
+                }
+                store.upsertMails(mails);
+                cacheMailDetails(api, store, mails);
+                emptyPages = mails.isEmpty() ? emptyPages + 1 : 0;
+                hasMore = data.optBoolean("hasMore", false) || page * CACHE_PAGE_SIZE < data.optInt("total", 0);
+                page++;
+            }
+        }
+    }
+
+    private void cacheLocalAccount(ApiClient api, LocalStore store, Models.Account account) throws Exception {
+        cacheLocalFolder(api, store, account, "inbox", false);
+        cacheLocalFolder(api, store, account, "sent", false);
+    }
+
+    private void cacheLocalFolder(ApiClient api, LocalStore store, Models.Account account, String folder, boolean unreadOnly) throws Exception {
+        int offset = 0;
+        int emptyPages = 0;
+        boolean hasMore = true;
+        while (hasMore && emptyPages < MAX_EMPTY_PAGES) {
+            JSONObject body = new JSONObject()
+                .put("email", account.email)
+                .put("offset", offset)
+                .put("limit", CACHE_PAGE_SIZE)
+                .put("unread_only", unreadOnly);
+            JSONObject data = "sent".equals(folder)
+                ? api.post("/api/sent/query", body)
+                : api.post("/api/inbox/query", body);
+            JSONArray arr = Json.array(data, "messages");
+            List<Models.Mail> mails = new ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) {
+                mails.add(Models.Mail.fromLocal(arr.optJSONObject(i), account.id, folder));
+            }
+            store.upsertMails(mails);
+            cacheMailDetails(api, store, mails);
+            emptyPages = mails.isEmpty() ? emptyPages + 1 : 0;
+            int total = data.optInt("total", offset + mails.size());
+            offset += CACHE_PAGE_SIZE;
+            hasMore = offset < total;
+        }
+    }
+
     private void cacheMailDetails(ApiClient api, LocalStore store, List<Models.Mail> page) {
         if (page == null || page.isEmpty()) return;
-        int cached = 0;
         for (Models.Mail mail : page) {
-            if (cached >= DETAIL_CACHE_LIMIT) break;
             if (mail == null || mail.id == null || mail.id.isEmpty()) continue;
-            if ((mail.html != null && !mail.html.isEmpty()) || (mail.text != null && !mail.text.isEmpty())) continue;
             try {
                 JSONObject data;
                 if ("external".equals(mail.accountType)) {
                     data = api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder) + "&markSeen=0");
+                } else if ("sent".equals(mail.folder)) {
+                    data = api.post("/api/sent/detail", new JSONObject()
+                        .put("email", mail.accountId)
+                        .put("message_id", mail.id));
                 } else {
                     data = api.post("/api/inbox/detail", new JSONObject()
                         .put("email", mail.accountId)
@@ -197,7 +257,6 @@ public class BackgroundSyncService extends JobService {
                 }
                 Models.Mail detail = mergeDetail(mail, data);
                 store.upsertMailDetail(detail);
-                cached++;
             } catch (Exception ignored) {
                 // Detail caching is best-effort; list cache remains usable.
             }
@@ -288,7 +347,7 @@ public class BackgroundSyncService extends JobService {
     }
 
     private static String encode(String value) {
-        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8).replace("+", "%20");
+        return Uri.encode(value == null ? "" : value);
     }
 
     private static String nonEmpty(String value, String fallback) {

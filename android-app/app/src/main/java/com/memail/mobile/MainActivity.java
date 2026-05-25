@@ -1,11 +1,14 @@
 package com.memail.mobile;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -23,9 +26,13 @@ import android.text.Html;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.Window;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebViewClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -46,20 +53,28 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
-import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 public class MainActivity extends Activity {
     private static final int BG = Color.rgb(245, 248, 248);
@@ -82,6 +97,7 @@ public class MainActivity extends Activity {
     private static final int REQ_PICK_ATTACHMENT = 4107;
     private static final int MAX_MOBILE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
     private static final int KEYWORD_SCAN_LIMIT = 600;
+    private static final int MOBILE_TRANSLATE_CHUNK_CHARS = 4600;
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final ApiClient api = new ApiClient();
@@ -89,6 +105,7 @@ public class MainActivity extends Activity {
     private final List<Models.Folder> folders = new ArrayList<>();
     private final List<Models.Mail> mails = new ArrayList<>();
     private final List<Models.KeywordRule> keywordRules = new ArrayList<>();
+    private final Object listLock = new Object();
 
     private SharedPreferences prefs;
     private LocalStore store;
@@ -125,6 +142,9 @@ public class MainActivity extends Activity {
     private int pageSize = 30;
     private boolean hasMore = false;
     private boolean mailPageLoading = false;
+    private String activeMailLoadKey = "";
+    private String activeDetailLoadKey = "";
+    private String activeTranslationLoadKey = "";
     private String currentScreen = "boot";
     private Models.Mail currentDetailMail;
     private JSONObject currentDetailSource;
@@ -195,6 +215,7 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    @SuppressLint("GestureBackNavigation")
     public void onBackPressed() {
         if ("detail".equals(currentScreen) || "translation".equals(currentScreen) || "compose".equals(currentScreen)) {
             navIndex = 1;
@@ -763,24 +784,23 @@ public class MainActivity extends Activity {
         selectedKeywordRule = null;
         selectedVirtualMode = "";
         selectedFolder = null;
-        folders.clear();
+        replaceFolderList(new ArrayList<>());
         searchQuery = "";
         currentPage = 1;
         hasMore = false;
         List<Models.Folder> cachedFolders = store.readFolders(account.type, account.id);
         if (!cachedFolders.isEmpty()) {
-            folders.addAll(cachedFolders);
+            replaceFolderList(cachedFolders);
             selectedFolder = pickDefaultFolder(account.id);
             renderFoldersOrMails();
             showCachedMailsIfAny();
         } else {
-            mails.clear();
+            replaceMailList(new ArrayList<>(), true);
         }
         if ("local".equals(account.type)) {
             List<Models.Folder> fixed = localFolders(account);
-            folders.clear();
-            folders.addAll(fixed);
-            store.replaceFolders(account, folders);
+            replaceFolderList(fixed);
+            store.replaceFolders(account, fixed);
             if (selectedFolder == null) selectedFolder = pickDefaultFolder(account.id);
             renderFoldersOrMails();
             loadMails(false);
@@ -788,18 +808,19 @@ public class MainActivity extends Activity {
         }
         runAsync("加载文件夹...", () -> {
             JSONArray arr = asArray(api.get("/imap/api/accounts/" + encode(account.id) + "/folders"));
-            folders.clear();
-            folders.add(folder("external", account.id, "drafts", "草稿箱", 0));
-            folders.add(folder("external", account.id, "outbox", "发送失败", 0));
+            List<Models.Folder> loadedFolders = new ArrayList<>();
+            loadedFolders.add(folder("external", account.id, "drafts", "草稿箱", 0));
+            loadedFolders.add(folder("external", account.id, "outbox", "发送失败", 0));
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject item = arr.optJSONObject(i);
                 String path = Json.anyStr(item, "path", "name");
                 if (path.isEmpty()) continue;
-                folders.add(folder("external", account.id, path, Json.anyStr(item, "name", "path"), 0));
+                loadedFolders.add(folder("external", account.id, path, Json.anyStr(item, "name", "path"), 0));
             }
-            store.replaceFolders(account, folders);
-            return "ok";
+            store.replaceFolders(account, loadedFolders);
+            return new JSONObject().put("folders", folderListToJson(loadedFolders));
         }, result -> {
+            replaceFolderList(foldersFromJson(Json.array(result, "folders")));
             selectedFolder = pickDefaultFolder(account.id);
             renderFoldersOrMails();
             loadMails(false);
@@ -817,13 +838,14 @@ public class MainActivity extends Activity {
     }
 
     private Models.Folder pickDefaultFolder(String accountId) {
-        for (Models.Folder folder : folders) {
+        List<Models.Folder> snapshot = folderSnapshot();
+        for (Models.Folder folder : snapshot) {
             if ("INBOX".equalsIgnoreCase(folder.path)) return folder;
         }
-        for (Models.Folder folder : folders) {
+        for (Models.Folder folder : snapshot) {
             if (!"drafts".equals(folder.path) && !"outbox".equals(folder.path)) return folder;
         }
-        return folders.isEmpty() ? folder("external", accountId, "INBOX", "INBOX", 0) : folders.get(0);
+        return snapshot.isEmpty() ? folder("external", accountId, "INBOX", "INBOX", 0) : snapshot.get(0);
     }
 
     private void renderFoldersOrMails() {
@@ -844,12 +866,15 @@ public class MainActivity extends Activity {
         attachAutoLoadMore(scroll);
         scroll.addView(list);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        if (mails.isEmpty()) {
+        List<Models.Mail> mailRows = mailSnapshot();
+        boolean showMore = hasMore;
+        boolean loadingMore = mailPageLoading;
+        if (mailRows.isEmpty()) {
             list.addView(empty("暂无邮件"));
         } else {
-            for (Models.Mail mail : mails) list.addView(mailRow(mail));
-            if (hasMore) {
-                TextView more = outlineButton(mailPageLoading ? "加载中..." : "继续加载", v -> loadNextMailPage());
+            for (Models.Mail mail : mailRows) list.addView(mailRow(mail));
+            if (showMore) {
+                TextView more = outlineButton(loadingMore ? "加载中..." : "继续加载", v -> loadNextMailPage());
                 list.addView(more);
             }
         }
@@ -920,7 +945,8 @@ public class MainActivity extends Activity {
         chips.setPadding(dp(10), dp(7), dp(10), dp(7));
         chips.setBackgroundColor(Color.WHITE);
         scroll.addView(chips);
-        for (Models.Folder folder : folders) {
+        List<Models.Folder> folderRows = folderSnapshot();
+        for (Models.Folder folder : folderRows) {
             TextView chip = actionText(folder.name, folder == selectedFolder);
             chip.setOnClickListener(v -> {
                 selectedFolder = folder;
@@ -938,17 +964,20 @@ public class MainActivity extends Activity {
 
     private void loadMails(boolean silent) {
         if ((selectedAccount == null && selectedVirtualMode.isEmpty()) || selectedFolder == null) return;
-        if (mailPageLoading) return;
+        final String requestKey = mailLoadKey();
+        if (mailPageLoading && requestKey.equals(activeMailLoadKey)) return;
         mailPageLoading = true;
+        activeMailLoadKey = requestKey;
         if (currentPage <= 1) {
             if (showCachedMailsIfAny()) {
                 silent = true;
             } else {
-                mails.clear();
+                replaceMailList(new ArrayList<>(), true);
                 hasMore = false;
                 renderFoldersOrMails();
             }
         }
+        boolean keepExistingKeyword = "keyword".equals(selectedVirtualMode) && currentPage <= 1 && !mailSnapshot().isEmpty();
         runAsync(silent ? null : "加载邮件...", () -> {
             List<Models.Mail> next = new ArrayList<>();
             hasMore = false;
@@ -1009,24 +1038,45 @@ public class MainActivity extends Activity {
                 }
             }
             store.upsertMails(next);
-            if ("keyword".equals(selectedVirtualMode) && currentPage <= 1 && next.isEmpty() && !mails.isEmpty()) {
-                hasMore = false;
-                return "kept_cached_keyword";
-            }
-            if (currentPage <= 1) mails.clear();
-            mails.addAll(next);
-            return "ok";
+            return new JSONObject()
+                .put("mails", mailListToJson(next))
+                .put("keepCachedKeyword", keepExistingKeyword && next.isEmpty());
         }, result -> {
-            mailPageLoading = false;
+            boolean isLatestRequest = requestKey.equals(activeMailLoadKey);
+            if (isLatestRequest) mailPageLoading = false;
+            if (!isLatestRequest || !requestKey.equals(mailLoadKey())) return;
+            if (!result.optBoolean("keepCachedKeyword", false)) {
+                replaceMailList(mailsFromJson(Json.array(result, "mails")), currentPage <= 1);
+            } else {
+                hasMore = false;
+            }
+            if (!"list".equals(currentScreen) || !requestKey.equals(mailLoadKey())) return;
             renderFoldersOrMails();
         });
+    }
+
+    private String mailLoadKey() {
+        String accountKey = selectedAccount == null
+            ? "virtual"
+            : nonEmpty(selectedAccount.type, "") + ":" + nonEmpty(selectedAccount.id, "");
+        String folderKey = selectedFolder == null
+            ? ""
+            : nonEmpty(selectedFolder.accountType, "") + ":" + nonEmpty(selectedFolder.path, "");
+        String keywordKey = selectedKeywordRule == null ? "" : nonEmpty(selectedKeywordRule.id, "");
+        return accountKey
+            + "|" + folderKey
+            + "|" + nonEmpty(selectedVirtualMode, "")
+            + "|" + nonEmpty(selectedGroup, "")
+            + "|" + keywordKey
+            + "|" + nonEmpty(searchQuery, "")
+            + "|" + currentPage
+            + "|" + pageSize;
     }
 
     private boolean showCachedMailsIfAny() {
         List<Models.Mail> cached = cachedMails();
         if (cached.isEmpty()) return false;
-        mails.clear();
-        mails.addAll(cached);
+        replaceMailList(cached, true);
         hasMore = cached.size() >= pageSize;
         renderFoldersOrMails();
         return true;
@@ -1215,6 +1265,14 @@ public class MainActivity extends Activity {
             + "|" + nonEmpty(mail.id, "")
             + "|" + nonEmpty(mail.subject, "")
             + "|" + nonEmpty(mail.date, "");
+    }
+
+    private String mailActionKey(Models.Mail mail) {
+        if (mail == null) return "";
+        return nonEmpty(mail.accountType, "")
+            + "|" + nonEmpty(mail.accountId, "")
+            + "|" + nonEmpty(mail.folder, "")
+            + "|" + nonEmpty(mail.id, "");
     }
 
     private boolean matchesSearch(Models.Mail mail) {
@@ -1415,6 +1473,8 @@ public class MainActivity extends Activity {
     }
 
     private void loadDetail(Models.Mail mail) {
+        activeTranslationLoadKey = "";
+        activeDetailLoadKey = mailActionKey(mail);
         if ("draft".equals(mail.kind) || "outbox".equals(mail.kind)) {
             renderLocalMessageDetail(mail);
             return;
@@ -1422,28 +1482,35 @@ public class MainActivity extends Activity {
         Models.Mail cached = store.readMailDetail(mail);
         if (cached != null && (!cached.html.isEmpty() || !cached.text.isEmpty())) {
             renderLocalMessageDetail(cached);
-            fetchAndCacheDetail(mail, true);
+            fetchAndCacheDetail(mail, true, activeDetailLoadKey);
             return;
         }
-        fetchAndCacheDetail(mail, false);
+        renderDetailLoading(cached == null ? mail : cached);
+        fetchAndCacheDetail(mail, false, activeDetailLoadKey);
+    }
+
+    private void fetchAndCacheDetail(Models.Mail mail, boolean silent, String requestKey) {
+        runAsync(silent ? null : "加载正文...", () -> fetchDetailData(mail), data -> {
+            Models.Mail merged = mergeDetailIntoMail(mail, data);
+            store.upsertMailDetail(merged);
+            if (!requestKey.equals(activeDetailLoadKey) || !sameMail(currentDetailMail, mail)) return;
+            if (!"detail".equals(currentScreen)) return;
+            renderDetail(merged, data);
+        });
     }
 
     private void fetchAndCacheDetail(Models.Mail mail, boolean silent) {
-        runAsync(silent ? null : "打开邮件...", () -> {
-            if ("external".equals(mail.accountType)) {
-                return api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder));
-            }
-            if ("sent".equals(mail.folder)) {
-                return api.post("/api/sent/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
-            }
-            return api.post("/api/inbox/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
-        }, data -> {
-            Models.Mail merged = mergeDetailIntoMail(mail, data);
-            store.upsertMailDetail(merged);
-            if (!silent || currentDetailMail == null || sameMail(currentDetailMail, mail)) {
-                renderDetail(merged, data);
-            }
-        });
+        fetchAndCacheDetail(mail, silent, mailActionKey(mail));
+    }
+
+    private JSONObject fetchDetailData(Models.Mail mail) throws Exception {
+        if ("external".equals(mail.accountType)) {
+            return api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder) + "&markSeen=0");
+        }
+        if ("sent".equals(mail.folder)) {
+            return api.post("/api/sent/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
+        }
+        return api.post("/api/inbox/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
     }
 
     private void renderLocalMessageDetail(Models.Mail mail) {
@@ -1457,6 +1524,19 @@ public class MainActivity extends Activity {
             // JSONObject only fails for invalid numeric values; string mail fields are safe here.
         }
         renderDetail(mail, data);
+    }
+
+    private void renderDetailLoading(Models.Mail mail) {
+        currentScreen = "detail";
+        currentDetailMail = mail;
+        currentDetailSource = new JSONObject();
+        setHeader("邮件详情", mail.sender);
+        content.removeAllViews();
+        LinearLayout box = column(dp(10));
+        box.setPadding(dp(14), dp(10), dp(14), dp(18));
+        content.addView(box, new LinearLayout.LayoutParams(-1, -1));
+        box.addView(detailHeaderCard(mail, mail.sender, mail.to, mail.date));
+        box.addView(empty("正在加载完整正文..."));
     }
 
     private Models.Mail mergeDetailIntoMail(Models.Mail base, JSONObject data) {
@@ -1492,6 +1572,7 @@ public class MainActivity extends Activity {
     private void renderDetail(Models.Mail mail, JSONObject data) {
         currentScreen = "detail";
         currentDetailMail = mail;
+        activeDetailLoadKey = mailActionKey(mail);
         setHeader("邮件详情", mail.sender);
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
@@ -1506,7 +1587,7 @@ public class MainActivity extends Activity {
         JSONObject source = detail == null ? data : detail;
         currentDetailSource = source;
         String html = Json.str(source, "html");
-        String text = Json.str(source, "text");
+        String text = nonEmpty(Json.str(source, "text"), nonEmpty(mail.text, mail.preview));
         String senderText = nonEmpty(mail.sender, Json.anyStr(source, "from", "from_address"));
         String dateText = nonEmpty(mail.date, Json.anyStr(source, "date", "createdAt", "created_at"));
         String toText = Json.anyStr(source, "to", "to_address");
@@ -1561,39 +1642,66 @@ public class MainActivity extends Activity {
     }
 
     private View detailActionStrip(Models.Mail mail, JSONObject source) {
-        HorizontalScrollView actionScroll = new HorizontalScrollView(this);
-        actionScroll.setHorizontalScrollBarEnabled(false);
-        actionScroll.setFillViewport(false);
-        actionScroll.setPadding(0, 0, 0, 0);
+        return detailActionStrip(mail, source, false);
+    }
+
+    private View detailActionStrip(Models.Mail mail, JSONObject source, boolean translationMode) {
         LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.setOrientation(LinearLayout.VERTICAL);
         actions.setPadding(dp(2), dp(2), dp(2), dp(2));
-        actionScroll.addView(actions);
+        List<TextView> buttons = new ArrayList<>();
+        if (translationMode) {
+            buttons.add(detailAction("原", "查看原文", v -> showOriginalMail(mail, source)));
+        }
         if ("draft".equals(mail.kind)) {
-            actions.addView(detailAction("✎", "继续编辑", v -> {
+            buttons.add(detailAction("✎", "继续编辑", v -> {
                 composeSender = findMailAccount(mail);
                 renderComposeEditor(mail.to, mail.subject, mail.text, mail.id);
             }));
-            actions.addView(detailAction("×", "删除草稿", v -> deleteDraft(mail)));
+            buttons.add(detailAction("×", "删除草稿", v -> deleteDraft(mail)));
         } else if ("outbox".equals(mail.kind)) {
-            actions.addView(detailAction("↻", "重试", v -> retryOutbox(mail)));
-            actions.addView(detailAction("✎", "编辑再发", v -> {
+            buttons.add(detailAction("↻", "重试", v -> retryOutbox(mail)));
+            buttons.add(detailAction("✎", "编辑再发", v -> {
                 composeSender = findMailAccount(mail);
                 renderComposeEditor(mail.to, mail.subject, mail.text, "");
             }));
-            actions.addView(detailAction("×", "删除记录", v -> deleteOutbox(mail)));
+            buttons.add(detailAction("×", "删除记录", v -> deleteOutbox(mail)));
         } else if (!"sent".equals(mail.folder)) {
-            actions.addView(detailAction(mail.seen ? "○" : "✓", mail.seen ? "标未读" : "标已读", v -> toggleSeen(mail)));
-            actions.addView(detailAction(mail.favorite ? "★" : "☆", mail.favorite ? "取消星标" : "星标", v -> toggleFavorite(mail)));
+            buttons.add(detailAction(mail.seen ? "○" : "✓", mail.seen ? "标未读" : "标已读", v -> toggleSeen(mail)));
+            buttons.add(detailAction(mail.favorite ? "★" : "☆", mail.favorite ? "取消星标" : "星标", v -> toggleFavorite(mail)));
         }
         if (!"draft".equals(mail.kind) && !"outbox".equals(mail.kind)) {
-            actions.addView(detailAction("译", "翻译", v -> translateMail(mail, source)));
-            actions.addView(detailAction("↩", "回复", v -> renderComposeFor(mail, "回复：" + mail.subject)));
-            actions.addView(detailAction("↪", "转发", v -> renderComposeFor(mail, "转发：" + mail.subject)));
-            if (!"sent".equals(mail.folder)) actions.addView(detailAction("×", "删除", v -> confirmDelete(mail)));
+            if (!translationMode) buttons.add(detailAction("译", "翻译", v -> translateMail(mail)));
+            buttons.add(detailAction("⧉", "复制", v -> copyMailContent(mail)));
+            buttons.add(detailAction("↩", "回复", v -> renderComposeFor(mail, "回复：" + mail.subject)));
+            buttons.add(detailAction("↪", "转发", v -> renderComposeFor(mail, "转发：" + mail.subject)));
+            if (!"sent".equals(mail.folder)) buttons.add(detailAction("×", "删除", v -> confirmDelete(mail)));
         }
-        return actionScroll;
+        LinearLayout row = null;
+        for (int i = 0; i < buttons.size(); i++) {
+            if (i % 3 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.START);
+                actions.addView(row, new LinearLayout.LayoutParams(-1, -2));
+            }
+            row.addView(buttons.get(i), new LinearLayout.LayoutParams(0, dp(42), 1));
+        }
+        return actions;
+    }
+
+    private void showOriginalMail(Models.Mail mail, JSONObject source) {
+        Models.Mail cachedMail = store.readMailDetail(mail);
+        Models.Mail sourceMail = cachedMail == null ? mail : cachedMail;
+        JSONObject data = mailToSourceJson(sourceMail);
+        try {
+            String sourceHtml = Json.str(source, "html");
+            String sourceText = Json.str(source, "text");
+            if (!sourceHtml.isEmpty()) data.put("html", sourceHtml);
+            if (!sourceText.isEmpty()) data.put("text", sourceText);
+        } catch (Exception ignored) {
+        }
+        renderDetail(sourceMail, data);
     }
 
     private void toggleSeen(Models.Mail mail) {
@@ -1640,21 +1748,48 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void translateMail(Models.Mail mail, JSONObject source) {
-        String sourceHash = translationSourceHash(mail, source);
+    private void translateMail(Models.Mail mail) {
+        String requestKey = mailActionKey(mail) + "|translate|" + System.nanoTime();
+        activeTranslationLoadKey = requestKey;
+        Models.Mail cachedMail = store.readMailDetail(mail);
+        Models.Mail sourceMail = cachedMail == null ? mail : cachedMail;
+        if (!hasFullBody(sourceMail)) {
+            runAsync("加载正文后翻译...", () -> {
+                JSONObject detail = fetchDetailData(mail);
+                Models.Mail merged = mergeDetailIntoMail(mail, detail);
+                store.upsertMailDetail(merged);
+                JSONObject source = detailSource(detail);
+                return new JSONObject()
+                    .put("source", source)
+                    .put("mail", mailToJson(merged));
+            }, result -> {
+                if (!requestKey.equals(activeTranslationLoadKey) || !sameMail(currentDetailMail, mail)) return;
+                Models.Mail merged = mailFromJson(Json.obj(result, "mail"));
+                translateMailWithSource(merged, Json.obj(result, "source"), requestKey);
+            });
+            return;
+        }
+        translateMailWithSource(sourceMail, mailToSourceJson(sourceMail), requestKey);
+    }
+
+    private void translateMailWithSource(Models.Mail mail, JSONObject source) {
+        String requestKey = activeTranslationLoadKey.isEmpty()
+            ? mailActionKey(mail) + "|translate|" + System.nanoTime()
+            : activeTranslationLoadKey;
+        activeTranslationLoadKey = requestKey;
+        translateMailWithSource(mail, source, requestKey);
+    }
+
+    private void translateMailWithSource(Models.Mail mail, JSONObject source, String requestKey) {
+        String sourceHash = translationSourceHash(mail, source, mobileTranslatorIdentity());
         LocalStore.TranslationCache cached = store.readTranslation(mail, sourceHash);
         if (cached != null) {
+            if (!requestKey.equals(activeTranslationLoadKey) || !sameMail(currentDetailMail, mail)) return;
             showTranslation(mail, source, cached.translation, cached.format, true);
             return;
         }
-        runAsync("翻译中...", () -> api.post("/api/ai/translate", new JSONObject()
-            .put("subject", mail.subject)
-            .put("text", Json.str(source, "text"))
-            .put("html", Json.str(source, "html"))
-            .put("account_type", mail.accountType)
-            .put("account_id", mail.accountId)
-            .put("folder", mail.folder)
-            .put("message_id", mail.id)), result -> {
+        runAsync("手机端翻译中...", () -> callMobileTranslator(mail, source), result -> {
+            if (!requestKey.equals(activeTranslationLoadKey) || !sameMail(currentDetailMail, mail)) return;
             String translated = Json.str(result, "translation");
             String format = Json.str(result, "format");
             store.saveTranslation(
@@ -1668,6 +1803,335 @@ public class MainActivity extends Activity {
             );
             showTranslation(mail, source, translated, format, result.optBoolean("cached"));
         });
+    }
+
+    private JSONObject callMobileTranslator(Models.Mail mail, JSONObject source) throws Exception {
+        String provider = prefs.getString("mobile_translate_provider", "baidu");
+        boolean enabled = prefs.getBoolean("mobile_translate_enabled", false);
+        if (!enabled) throw new Exception("请先在手机端设置里开启并配置翻译");
+        String html = Json.str(source, "html");
+        if (html.isEmpty() && mail != null) html = nonEmpty(mail.html, "");
+        if (!html.trim().isEmpty()) {
+            return mobileTranslatorResult(provider, translateHtmlPreservingLayout(html, provider), "html");
+        }
+        String text = mobileTranslationSourceText(mail, source);
+        if (text.isEmpty()) throw new Exception("没有可翻译的正文内容");
+        return mobileTranslatorResult(provider, translatePlainTextWithMobileProvider(provider, text), "text");
+    }
+
+    private JSONObject mobileTranslatorResult(String provider, String translated, String format) throws Exception {
+        return new JSONObject()
+            .put("translation", translated)
+            .put("format", format)
+            .put("engine", "mobile")
+            .put("provider", provider)
+            .put("model", "tencent".equals(provider) ? "tencent-tmt" : "baidu-general");
+    }
+
+    private String translatePlainTextWithMobileProvider(String provider, String text) throws Exception {
+        if ("tencent".equals(provider)) return Json.str(callTencentTranslate(text), "translation");
+        return Json.str(callBaiduTranslate(text), "translation");
+    }
+
+    private String mobileTranslationSourceText(Models.Mail mail, JSONObject source) {
+        return mailBodyTextForCopy(mail, source);
+    }
+
+    private JSONObject callBaiduTranslate(String text) throws Exception {
+        String appId = prefs.getString("mobile_baidu_app_id", "").trim();
+        String key = prefs.getString("mobile_baidu_key", "").trim();
+        if (appId.isEmpty() || key.isEmpty()) throw new Exception("请先配置百度翻译 AppID 和密钥");
+        StringBuilder translated = new StringBuilder();
+        for (String chunk : splitTranslationChunks(text, MOBILE_TRANSLATE_CHUNK_CHARS)) {
+            String part = callBaiduTranslateChunk(appId, key, chunk);
+            if (translated.length() > 0) translated.append('\n');
+            translated.append(part);
+        }
+        return new JSONObject()
+            .put("translation", translated.toString())
+            .put("format", "text")
+            .put("engine", "mobile")
+            .put("provider", "baidu")
+            .put("model", "baidu-general");
+    }
+
+    private String callBaiduTranslateChunk(String appId, String key, String text) throws Exception {
+        String salt = String.valueOf(System.currentTimeMillis());
+        String sign = md5(appId + text + salt + key);
+        String body = "q=" + formEncode(text)
+            + "&from=auto&to=zh"
+            + "&appid=" + formEncode(appId)
+            + "&salt=" + formEncode(salt)
+            + "&sign=" + formEncode(sign);
+        JSONObject data = httpJson("POST", "https://fanyi-api.baidu.com/api/trans/vip/translate", body, "application/x-www-form-urlencoded", null);
+        JSONArray arr = Json.array(data, "trans_result");
+        if (arr.length() == 0) throw new Exception(Json.anyStr(data, "error_msg", "message", "百度翻译失败"));
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            if (item == null) continue;
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(Json.str(item, "dst"));
+        }
+        return sb.toString();
+    }
+
+    private JSONObject callTencentTranslate(String text) throws Exception {
+        String secretId = prefs.getString("mobile_tencent_secret_id", "").trim();
+        String secretKey = prefs.getString("mobile_tencent_secret_key", "").trim();
+        String region = prefs.getString("mobile_tencent_region", "ap-guangzhou").trim();
+        if (secretId.isEmpty() || secretKey.isEmpty()) throw new Exception("请先配置腾讯翻译 SecretId 和 SecretKey");
+        StringBuilder translated = new StringBuilder();
+        for (String chunk : splitTranslationChunks(text, MOBILE_TRANSLATE_CHUNK_CHARS)) {
+            String part = callTencentTranslateChunk(secretId, secretKey, region, chunk);
+            if (translated.length() > 0) translated.append('\n');
+            translated.append(part);
+        }
+        return new JSONObject()
+            .put("translation", translated.toString())
+            .put("format", "text")
+            .put("engine", "mobile")
+            .put("provider", "tencent")
+            .put("model", "tencent-tmt");
+    }
+
+    private String callTencentTranslateChunk(String secretId, String secretKey, String region, String text) throws Exception {
+        long timestamp = System.currentTimeMillis() / 1000L;
+        JSONObject payload = new JSONObject()
+            .put("SourceText", text)
+            .put("Source", "auto")
+            .put("Target", "zh")
+            .put("ProjectId", 0);
+        String body = payload.toString();
+        String authorization = tencentAuthorization(secretId, secretKey, timestamp, body);
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Authorization", authorization);
+        headers.put("Host", "tmt.tencentcloudapi.com");
+        headers.put("X-TC-Action", "TextTranslate");
+        headers.put("X-TC-Version", "2018-03-21");
+        headers.put("X-TC-Timestamp", String.valueOf(timestamp));
+        headers.put("X-TC-Region", region.isEmpty() ? "ap-guangzhou" : region);
+        JSONObject data = httpJson("POST", "https://tmt.tencentcloudapi.com", body, "application/json; charset=utf-8", headers);
+        JSONObject response = Json.obj(data, "Response");
+        String translated = Json.str(response, "TargetText");
+        if (translated.isEmpty()) {
+            JSONObject error = Json.obj(response, "Error");
+            throw new Exception(nonEmpty(Json.str(error, "Message"), "腾讯翻译失败"));
+        }
+        return translated;
+    }
+
+    private List<String> splitTranslationChunks(String text, int chunkChars) {
+        List<String> chunks = new ArrayList<>();
+        String value = text == null ? "" : text;
+        int safeSize = Math.max(1000, chunkChars);
+        int start = 0;
+        while (start < value.length()) {
+            int end = Math.min(value.length(), start + safeSize);
+            if (end < value.length()) {
+                int cut = value.lastIndexOf("\n\n", end);
+                if (cut <= start + safeSize / 3) cut = value.lastIndexOf('\n', end);
+                if (cut <= start + safeSize / 3) cut = value.lastIndexOf('。', end);
+                if (cut <= start + safeSize / 3) cut = value.lastIndexOf('.', end);
+                if (cut > start + safeSize / 3) end = cut + 1;
+            }
+            String chunk = value.substring(start, end).trim();
+            if (!chunk.isEmpty()) chunks.add(chunk);
+            start = end;
+        }
+        return chunks;
+    }
+
+    private String translateHtmlPreservingLayout(String html, String provider) throws Exception {
+        if (html == null || html.trim().isEmpty()) return "";
+        Map<String, String> translatedCache = new LinkedHashMap<>();
+        StringBuilder out = new StringBuilder(html.length() + 1024);
+        String rawTag = "";
+        int index = 0;
+        while (index < html.length()) {
+            int tagStart = html.indexOf('<', index);
+            if (tagStart < 0) {
+                appendTranslatedHtmlText(out, html.substring(index), provider, translatedCache, rawTag.isEmpty());
+                break;
+            }
+            if (tagStart > index) {
+                appendTranslatedHtmlText(out, html.substring(index, tagStart), provider, translatedCache, rawTag.isEmpty());
+            }
+            int tagEnd = findHtmlTagEnd(html, tagStart);
+            if (tagEnd < 0) {
+                out.append(html.substring(tagStart));
+                break;
+            }
+            String tag = html.substring(tagStart, tagEnd + 1);
+            String tagName = htmlTagName(tag);
+            boolean closing = tag.startsWith("</");
+            out.append(tag);
+            if (!tagName.isEmpty()) {
+                if (!rawTag.isEmpty()) {
+                    if (closing && tagName.equals(rawTag)) rawTag = "";
+                } else if (!closing && isRawHtmlTag(tagName)) {
+                    rawTag = tagName;
+                }
+            }
+            index = tagEnd + 1;
+        }
+        return out.toString();
+    }
+
+    private void appendTranslatedHtmlText(
+        StringBuilder out,
+        String fragment,
+        String provider,
+        Map<String, String> translatedCache,
+        boolean translatable
+    ) throws Exception {
+        if (fragment == null || fragment.isEmpty()) return;
+        if (!translatable) {
+            out.append(fragment);
+            return;
+        }
+        String sourceText = normalizeHtmlTextNode(htmlToPlainText(fragment));
+        if (!htmlTextNeedsTranslation(sourceText)) {
+            out.append(fragment);
+            return;
+        }
+        int leading = leadingWhitespace(fragment);
+        int trailing = trailingWhitespace(fragment, leading);
+        String prefix = fragment.substring(0, leading);
+        String suffix = fragment.substring(fragment.length() - trailing);
+        String core = fragment.substring(leading, fragment.length() - trailing);
+        String normalizedCore = normalizeHtmlTextNode(htmlToPlainText(core));
+        if (!htmlTextNeedsTranslation(normalizedCore)) {
+            out.append(fragment);
+            return;
+        }
+        String translated = translatedCache.get(normalizedCore);
+        if (translated == null) {
+            translated = translatePlainTextWithMobileProvider(provider, normalizedCore);
+            translatedCache.put(normalizedCore, translated);
+        }
+        out.append(prefix)
+            .append(escape(translated).replace("\n", "<br>"))
+            .append(suffix);
+    }
+
+    private static int findHtmlTagEnd(String html, int start) {
+        char quote = 0;
+        for (int i = start + 1; i < html.length(); i++) {
+            char ch = html.charAt(i);
+            if (quote != 0) {
+                if (ch == quote) quote = 0;
+            } else if (ch == '"' || ch == '\'') {
+                quote = ch;
+            } else if (ch == '>') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String htmlTagName(String tag) {
+        if (tag == null || tag.length() < 3 || tag.charAt(0) != '<') return "";
+        int i = 1;
+        if (i < tag.length() && tag.charAt(i) == '/') i++;
+        while (i < tag.length() && Character.isWhitespace(tag.charAt(i))) i++;
+        if (i >= tag.length() || tag.charAt(i) == '!' || tag.charAt(i) == '?') return "";
+        int start = i;
+        while (i < tag.length()) {
+            char ch = tag.charAt(i);
+            if (!Character.isLetterOrDigit(ch) && ch != '-' && ch != ':') break;
+            i++;
+        }
+        return tag.substring(start, i).toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean isRawHtmlTag(String tagName) {
+        return "script".equals(tagName)
+            || "style".equals(tagName)
+            || "template".equals(tagName)
+            || "svg".equals(tagName)
+            || "head".equals(tagName);
+    }
+
+    private static String normalizeHtmlTextNode(String value) {
+        if (value == null) return "";
+        return value
+            .replace('\u00a0', ' ')
+            .replaceAll("[ \\t\\x0B\\f\\r]+", " ")
+            .replaceAll("\\n{3,}", "\n\n")
+            .trim();
+    }
+
+    private static boolean htmlTextNeedsTranslation(String value) {
+        if (value == null) return false;
+        String text = value.trim();
+        if (text.length() < 2) return false;
+        boolean hasLetter = false;
+        boolean hasLowercase = false;
+        boolean hasDigit = false;
+        boolean hasWhitespace = false;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (Character.isLetter(ch)) hasLetter = true;
+            if (Character.isLowerCase(ch)) hasLowercase = true;
+            if (Character.isDigit(ch)) hasDigit = true;
+            if (Character.isWhitespace(ch)) hasWhitespace = true;
+        }
+        if (!hasLetter) return false;
+        if (!hasWhitespace && hasDigit && text.length() <= 80) return false;
+        if (!hasWhitespace && !hasLowercase && text.length() <= 12) return false;
+        return true;
+    }
+
+    private static int leadingWhitespace(String value) {
+        int count = 0;
+        while (count < value.length() && Character.isWhitespace(value.charAt(count))) count++;
+        return count;
+    }
+
+    private static int trailingWhitespace(String value, int leading) {
+        int count = 0;
+        int index = value.length() - 1;
+        while (index >= leading && Character.isWhitespace(value.charAt(index))) {
+            count++;
+            index--;
+        }
+        return count;
+    }
+
+    private void copyMailContent(Models.Mail mail) {
+        Models.Mail cachedMail = store.readMailDetail(mail);
+        Models.Mail sourceMail = cachedMail == null ? mail : cachedMail;
+        if (!hasFullBody(sourceMail)) {
+            runAsync("加载正文后复制...", () -> {
+                JSONObject detail = fetchDetailData(mail);
+                Models.Mail merged = mergeDetailIntoMail(mail, detail);
+                store.upsertMailDetail(merged);
+                return new JSONObject()
+                    .put("source", detailSource(detail))
+                    .put("mail", mailToJson(merged));
+            }, result -> {
+                Models.Mail merged = mailFromJson(Json.obj(result, "mail"));
+                copyMailContentToClipboard(merged, Json.obj(result, "source"));
+            });
+            return;
+        }
+        copyMailContentToClipboard(sourceMail, mailToSourceJson(sourceMail));
+    }
+
+    private void copyMailContentToClipboard(Models.Mail mail, JSONObject source) {
+        String content = mailBodyTextForCopy(mail, source);
+        if (content.trim().isEmpty()) {
+            toast("没有可复制的正文内容");
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            toast("系统剪贴板不可用");
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("Memail 邮件正文", content));
+        toast("邮件内容已复制");
     }
 
     private void showTranslation(Models.Mail mail, JSONObject source, String translated, String format, boolean cached) {
@@ -1685,10 +2149,14 @@ public class MainActivity extends Activity {
         content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
 
         box.addView(detailHeaderCard(mail, nonEmpty(mail.sender, Json.anyStr(source, "from", "from_address")), Json.anyStr(source, "to", "to_address"), nonEmpty(mail.date, Json.anyStr(source, "date", "createdAt", "created_at"))));
+        box.addView(detailActionStrip(mail, source, true));
         box.addView(readingSection(cached ? "中文翻译 · 已缓存" : "中文翻译", "html".equals(format) ? translated : plainTextHtml(translated), dp(520)));
 
-        String originalHtml = Json.str(source, "html");
-        String originalText = Json.str(source, "text");
+        Models.Mail cachedMail = store.readMailDetail(mail);
+        String originalHtml = nonEmpty(Json.str(source, "html"), cachedMail == null ? "" : cachedMail.html);
+        if (originalHtml.isEmpty()) originalHtml = nonEmpty(mail.html, "");
+        String originalText = nonEmpty(Json.str(source, "text"), cachedMail == null ? "" : cachedMail.text);
+        if (originalText.isEmpty()) originalText = nonEmpty(mail.text, mail.preview);
         box.addView(readingSection("原文", originalHtml.isEmpty() ? plainTextHtml(originalText) : originalHtml, dp(620)));
     }
 
@@ -1708,7 +2176,7 @@ public class MainActivity extends Activity {
             }
             return api.post("/api/inbox/delete", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
         }, result -> {
-            mails.remove(mail);
+            removeMailFromList(mail);
             store.deleteMail(mail);
             toast("已删除");
             renderFoldersOrMails();
@@ -1717,7 +2185,7 @@ public class MainActivity extends Activity {
 
     private void deleteDraft(Models.Mail mail) {
         runAsync("删除草稿...", () -> api.delete("/api/drafts/" + mail.id), result -> {
-            mails.remove(mail);
+            removeMailFromList(mail);
             store.deleteMail(mail);
             toast("草稿已删除");
             renderFoldersOrMails();
@@ -1726,7 +2194,7 @@ public class MainActivity extends Activity {
 
     private void retryOutbox(Models.Mail mail) {
         runAsync("重试发送...", () -> api.post("/api/outbox/" + mail.id + "/retry", new JSONObject()), result -> {
-            mails.remove(mail);
+            removeMailFromList(mail);
             toast("重试发送成功");
             renderFoldersOrMails();
         });
@@ -1734,7 +2202,7 @@ public class MainActivity extends Activity {
 
     private void deleteOutbox(Models.Mail mail) {
         runAsync("删除记录...", () -> api.delete("/api/outbox/" + mail.id), result -> {
-            mails.remove(mail);
+            removeMailFromList(mail);
             store.deleteMail(mail);
             toast("发送失败记录已删除");
             renderFoldersOrMails();
@@ -1753,6 +2221,141 @@ public class MainActivity extends Activity {
         String toValue = source == null ? "" : cleanAddress(source.sender);
         String bodyValue = source == null ? "" : "\n\n---- 原邮件 ----\n" + nonEmpty(source.preview, "");
         renderComposeEditor(toValue, subject, bodyValue, "");
+    }
+
+    private JSONObject detailSource(JSONObject data) {
+        JSONObject detail = data == null ? null : data.optJSONObject("detail");
+        return detail == null ? (data == null ? new JSONObject() : data) : detail;
+    }
+
+    private boolean hasFullBody(Models.Mail mail) {
+        return mail != null
+            && ((mail.html != null && !mail.html.isEmpty()) || (mail.text != null && !mail.text.isEmpty()));
+    }
+
+    private JSONObject mailToSourceJson(Models.Mail mail) {
+        JSONObject data = new JSONObject();
+        try {
+            data.put("html", mail == null ? "" : mail.html);
+            data.put("text", mail == null ? "" : mail.text);
+            data.put("to", mail == null ? "" : mail.to);
+            data.put("error", mail == null ? "" : mail.error);
+            data.put("from", mail == null ? "" : mail.sender);
+            data.put("subject", mail == null ? "" : mail.subject);
+            data.put("date", mail == null ? "" : mail.date);
+        } catch (Exception ignored) {
+        }
+        return data;
+    }
+
+    private String mailBodyTextForCopy(Models.Mail mail, JSONObject source) {
+        String text = Json.str(source, "text");
+        if (text.isEmpty() && mail != null) text = nonEmpty(mail.text, "");
+        if (!text.trim().isEmpty()) return normalizeCopiedText(text);
+        String html = Json.str(source, "html");
+        if (html.isEmpty() && mail != null) html = nonEmpty(mail.html, "");
+        if (!html.trim().isEmpty()) return normalizeCopiedText(htmlToPlainText(html));
+        return normalizeCopiedText(mail == null ? "" : nonEmpty(mail.preview, ""));
+    }
+
+    private String htmlToPlainText(String html) {
+        if (html == null || html.isEmpty()) return "";
+        if (Build.VERSION.SDK_INT >= 24) {
+            return Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY).toString();
+        }
+        return Html.fromHtml(html).toString();
+    }
+
+    private String normalizeCopiedText(String value) {
+        if (value == null) return "";
+        return value
+            .replace('\u00a0', ' ')
+            .replaceAll("[ \\t\\x0B\\f\\r]+\\n", "\n")
+            .replaceAll("\\n{3,}", "\n\n")
+            .trim();
+    }
+
+    private JSONObject httpJson(String method, String urlText, String body, String contentType, Map<String, String> headers) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(urlText).openConnection();
+        conn.setConnectTimeout(12000);
+        conn.setReadTimeout(45000);
+        conn.setRequestMethod(method);
+        conn.setRequestProperty("Accept", "application/json");
+        if (contentType != null && !contentType.isEmpty()) conn.setRequestProperty("Content-Type", contentType);
+        if (headers != null) {
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                conn.setRequestProperty(entry.getKey(), entry.getValue());
+            }
+        }
+        if (body != null) {
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            conn.setDoOutput(true);
+            conn.setFixedLengthStreamingMode(bytes.length);
+            try (java.io.OutputStream output = conn.getOutputStream()) {
+                output.write(bytes);
+            }
+        }
+        int code = conn.getResponseCode();
+        String text = readHttpText(code >= 400 ? conn.getErrorStream() : conn.getInputStream());
+        conn.disconnect();
+        if (code >= 400) throw new Exception("翻译接口 HTTP " + code + ": " + text);
+        return new JSONObject(text == null || text.trim().isEmpty() ? "{}" : text);
+    }
+
+    private static String readHttpText(InputStream input) throws Exception {
+        if (input == null) return "";
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String formEncode(String value) {
+        return Uri.encode(value == null ? "" : value);
+    }
+
+    private static String md5(String value) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("MD5");
+        return hex(digest.digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private static String tencentAuthorization(String secretId, String secretKey, long timestamp, String payload) throws Exception {
+        String service = "tmt";
+        String host = "tmt.tencentcloudapi.com";
+        String date = utcDate(timestamp);
+        String canonicalHeaders = "content-type:application/json; charset=utf-8\nhost:" + host + "\n";
+        String signedHeaders = "content-type;host";
+        String hashedPayload = sha256(payload);
+        String canonicalRequest = "POST\n/\n\n" + canonicalHeaders + "\n" + signedHeaders + "\n" + hashedPayload;
+        String credentialScope = date + "/" + service + "/tc3_request";
+        String stringToSign = "TC3-HMAC-SHA256\n" + timestamp + "\n" + credentialScope + "\n" + sha256(canonicalRequest);
+        byte[] secretDate = hmacSha256(("TC3" + secretKey).getBytes(StandardCharsets.UTF_8), date);
+        byte[] secretService = hmacSha256(secretDate, service);
+        byte[] secretSigning = hmacSha256(secretService, "tc3_request");
+        String signature = hex(hmacSha256(secretSigning, stringToSign));
+        return "TC3-HMAC-SHA256 Credential=" + secretId + "/" + credentialScope
+            + ", SignedHeaders=" + signedHeaders
+            + ", Signature=" + signature;
+    }
+
+    private static byte[] hmacSha256(byte[] key, String value) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(key, "HmacSHA256"));
+        return mac.doFinal(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String utcDate(long timestamp) {
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        format.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return format.format(new Date(timestamp * 1000L));
+    }
+
+    private static String hex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 
     private void renderComposeEditor(String toValue, String subjectValue, String bodyValue, String draftId) {
@@ -2307,6 +2910,9 @@ public class MainActivity extends Activity {
         box.addView(sectionHeader("新邮件通知", notifyEnabled ? "已开启" : "已关闭"));
         box.addView(settingsNotificationCard(enabledGroups));
 
+        box.addView(sectionHeader("手机端翻译", mobileTranslateSummary()));
+        box.addView(settingsMobileTranslationCard());
+
         box.addView(sectionHeader("安全", "仅退出当前手机"));
         box.addView(settingsSecurityCard());
     }
@@ -2390,6 +2996,103 @@ public class MainActivity extends Activity {
             card.addView(settingsGroupRow(group, enabled, groupUnread(group)));
         }
         return card;
+    }
+
+    private View settingsMobileTranslationCard() {
+        LinearLayout card = panel(dp(14), dp(10));
+        card.setBackground(bg(Color.WHITE, 24, SOFT_LINE, 1));
+
+        boolean enabled = prefs.getBoolean("mobile_translate_enabled", false);
+        String provider = prefs.getString("mobile_translate_provider", "baidu");
+        card.addView(settingsRow(
+            "译",
+            "手机端翻译",
+            enabled ? "已开启" : "未开启",
+            "开启后手机直接调用所选翻译渠道，不再使用服务端 AI 默认模型",
+            v -> {
+                prefs.edit().putBoolean("mobile_translate_enabled", !enabled).apply();
+                renderSettings();
+            },
+            enabled ? "关闭" : "开启",
+            true
+        ));
+        card.addView(settingsDivider());
+
+        LinearLayout providers = new LinearLayout(this);
+        providers.setOrientation(LinearLayout.HORIZONTAL);
+        providers.setPadding(dp(4), dp(10), dp(4), dp(8));
+        TextView baidu = settingsProviderButton("百度翻译", "baidu".equals(provider), v -> {
+            prefs.edit().putString("mobile_translate_provider", "baidu").apply();
+            renderSettings();
+        });
+        TextView tencent = settingsProviderButton("腾讯翻译", "tencent".equals(provider), v -> {
+            prefs.edit().putString("mobile_translate_provider", "tencent").apply();
+            renderSettings();
+        });
+        providers.addView(baidu, new LinearLayout.LayoutParams(0, dp(42), 1));
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, dp(42), 1);
+        tp.setMargins(dp(8), 0, 0, 0);
+        providers.addView(tencent, tp);
+        card.addView(providers);
+
+        if ("tencent".equals(provider)) {
+            EditText secretId = input("腾讯 SecretId", prefs.getString("mobile_tencent_secret_id", ""), false);
+            EditText secretKey = input("腾讯 SecretKey", prefs.getString("mobile_tencent_secret_key", ""), true);
+            EditText region = input("地域，例如 ap-guangzhou", prefs.getString("mobile_tencent_region", "ap-guangzhou"), false);
+            card.addView(secretId);
+            card.addView(secretKey);
+            card.addView(region);
+            card.addView(settingsSaveButton("保存腾讯翻译配置", v -> {
+                prefs.edit()
+                    .putString("mobile_tencent_secret_id", secretId.getText().toString().trim())
+                    .putString("mobile_tencent_secret_key", secretKey.getText().toString().trim())
+                    .putString("mobile_tencent_region", nonEmpty(region.getText().toString().trim(), "ap-guangzhou"))
+                    .putString("mobile_translate_provider", "tencent")
+                    .putBoolean("mobile_translate_enabled", true)
+                    .apply();
+                toast("手机端腾讯翻译配置已保存");
+                renderSettings();
+            }));
+        } else {
+            EditText appId = input("百度翻译 AppID", prefs.getString("mobile_baidu_app_id", ""), false);
+            EditText key = input("百度翻译密钥", prefs.getString("mobile_baidu_key", ""), true);
+            card.addView(appId);
+            card.addView(key);
+            card.addView(settingsSaveButton("保存百度翻译配置", v -> {
+                prefs.edit()
+                    .putString("mobile_baidu_app_id", appId.getText().toString().trim())
+                    .putString("mobile_baidu_key", key.getText().toString().trim())
+                    .putString("mobile_translate_provider", "baidu")
+                    .putBoolean("mobile_translate_enabled", true)
+                    .apply();
+                toast("手机端百度翻译配置已保存");
+                renderSettings();
+            }));
+        }
+        return card;
+    }
+
+    private TextView settingsProviderButton(String label, boolean active, View.OnClickListener listener) {
+        TextView btn = text(label, 14, active ? Color.WHITE : PRIMARY_DARK, true);
+        btn.setGravity(Gravity.CENTER);
+        btn.setBackground(bg(active ? PRIMARY : Color.rgb(242, 247, 247), 18, active ? PRIMARY : LINE, 1));
+        btn.setOnClickListener(listener);
+        return btn;
+    }
+
+    private TextView settingsSaveButton(String label, View.OnClickListener listener) {
+        TextView btn = primaryButton(label);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(48));
+        lp.setMargins(0, dp(8), 0, dp(2));
+        btn.setLayoutParams(lp);
+        btn.setOnClickListener(listener);
+        return btn;
+    }
+
+    private String mobileTranslateSummary() {
+        if (!prefs.getBoolean("mobile_translate_enabled", false)) return "未开启";
+        String provider = prefs.getString("mobile_translate_provider", "baidu");
+        return "tencent".equals(provider) ? "腾讯翻译" : "百度翻译";
     }
 
     private View settingsSecurityCard() {
@@ -2621,7 +3324,11 @@ public class MainActivity extends Activity {
                 JSONObject object = result instanceof JSONObject ? (JSONObject) result : new JSONObject().put("value", String.valueOf(result));
                 runOnUiThread(() -> {
                     if (visible) setLoading(false, "");
-                    success.accept(object);
+                    try {
+                        success.accept(object);
+                    } catch (Exception uiError) {
+                        toast("界面渲染失败: " + nonEmpty(uiError.getMessage(), uiError.getClass().getSimpleName()));
+                    }
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -2840,6 +3547,132 @@ public class MainActivity extends Activity {
         return folder;
     }
 
+    private List<Models.Folder> folderSnapshot() {
+        synchronized (listLock) {
+            return new ArrayList<>(folders);
+        }
+    }
+
+    private List<Models.Mail> mailSnapshot() {
+        synchronized (listLock) {
+            return new ArrayList<>(mails);
+        }
+    }
+
+    private void replaceFolderList(List<Models.Folder> next) {
+        synchronized (listLock) {
+            folders.clear();
+            if (next != null) folders.addAll(next);
+        }
+    }
+
+    private void replaceMailList(List<Models.Mail> next, boolean clearFirst) {
+        synchronized (listLock) {
+            if (clearFirst) mails.clear();
+            if (next != null) mails.addAll(next);
+        }
+    }
+
+    private void removeMailFromList(Models.Mail target) {
+        synchronized (listLock) {
+            for (int i = mails.size() - 1; i >= 0; i--) {
+                if (sameMail(mails.get(i), target)) mails.remove(i);
+            }
+        }
+    }
+
+    private JSONArray folderListToJson(List<Models.Folder> items) throws Exception {
+        JSONArray arr = new JSONArray();
+        if (items == null) return arr;
+        for (Models.Folder item : items) {
+            arr.put(new JSONObject()
+                .put("accountType", item.accountType)
+                .put("accountId", item.accountId)
+                .put("path", item.path)
+                .put("name", item.name)
+                .put("count", item.count));
+        }
+        return arr;
+    }
+
+    private List<Models.Folder> foldersFromJson(JSONArray arr) {
+        List<Models.Folder> list = new ArrayList<>();
+        if (arr == null) return list;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            if (item == null) continue;
+            list.add(folder(
+                Json.anyStr(item, "accountType", "account_type"),
+                Json.anyStr(item, "accountId", "account_id"),
+                Json.str(item, "path"),
+                Json.str(item, "name"),
+                item.optInt("count", 0)
+            ));
+        }
+        return list;
+    }
+
+    private JSONArray mailListToJson(List<Models.Mail> items) throws Exception {
+        JSONArray arr = new JSONArray();
+        if (items == null) return arr;
+        for (Models.Mail item : items) {
+            arr.put(mailToJson(item));
+        }
+        return arr;
+    }
+
+    private JSONObject mailToJson(Models.Mail item) throws Exception {
+        if (item == null) return new JSONObject();
+        return new JSONObject()
+            .put("accountType", item.accountType)
+            .put("accountId", item.accountId)
+            .put("folder", item.folder)
+            .put("id", item.id)
+            .put("sender", item.sender)
+            .put("subject", item.subject)
+            .put("preview", item.preview)
+            .put("date", item.date)
+            .put("kind", item.kind)
+            .put("to", item.to)
+            .put("text", item.text)
+            .put("html", item.html)
+            .put("error", item.error)
+            .put("seen", item.seen)
+            .put("favorite", item.favorite);
+    }
+
+    private List<Models.Mail> mailsFromJson(JSONArray arr) {
+        List<Models.Mail> list = new ArrayList<>();
+        if (arr == null) return list;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            if (item == null) continue;
+            list.add(mailFromJson(item));
+        }
+        return list;
+    }
+
+    private Models.Mail mailFromJson(JSONObject item) {
+        Models.Mail mail = new Models.Mail();
+        if (item == null) return mail;
+        mail.accountType = Json.anyStr(item, "accountType", "account_type");
+        mail.accountId = Json.anyStr(item, "accountId", "account_id");
+        mail.folder = Json.str(item, "folder");
+        mail.id = Json.str(item, "id");
+        mail.sender = Json.str(item, "sender");
+        mail.subject = Json.str(item, "subject");
+        mail.preview = Json.str(item, "preview");
+        mail.date = Json.str(item, "date");
+        mail.kind = Json.str(item, "kind");
+        mail.to = Json.str(item, "to");
+        mail.text = Json.str(item, "text");
+        mail.html = Json.str(item, "html");
+        mail.error = Json.str(item, "error");
+        mail.seen = item.optBoolean("seen", true);
+        mail.favorite = item.optBoolean("favorite", false);
+        return mail;
+    }
+
     private JSONArray asArray(JSONObject object) {
         JSONArray arr = object.optJSONArray("items");
         if (arr == null) arr = object.optJSONArray("folders");
@@ -2848,7 +3681,7 @@ public class MainActivity extends Activity {
     }
 
     private static String encode(String value) {
-        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8).replace("+", "%20");
+        return Uri.encode(value == null ? "" : value);
     }
 
     private static String join(List<String> values, String separator) {
@@ -2873,24 +3706,118 @@ public class MainActivity extends Activity {
         WebSettings settings = web.getSettings();
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
+        settings.setSupportZoom(true);
         settings.setTextZoom(106);
-        settings.setBuiltInZoomControls(false);
+        settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
+        settings.setDomStorageEnabled(true);
+        web.setInitialScale(100);
+        web.setFocusable(true);
+        web.setFocusableInTouchMode(true);
+        web.setNestedScrollingEnabled(true);
         web.setBackgroundColor(Color.TRANSPARENT);
         web.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        web.setVerticalScrollBarEnabled(false);
-        web.setHorizontalScrollBarEnabled(false);
+        web.setVerticalScrollBarEnabled(true);
+        web.setHorizontalScrollBarEnabled(true);
+        ScaleGestureDetector scaleDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override
+            public boolean onScaleBegin(ScaleGestureDetector detector) {
+                requestAncestorTouchInterception(web, true);
+                web.requestFocusFromTouch();
+                return true;
+            }
+
+            @Override
+            public boolean onScale(ScaleGestureDetector detector) {
+                float factor = detector.getScaleFactor();
+                if (Float.isNaN(factor) || Float.isInfinite(factor)) return false;
+                factor = Math.max(0.75f, Math.min(1.35f, factor));
+                web.zoomBy(factor);
+                return true;
+            }
+
+            @Override
+            public void onScaleEnd(ScaleGestureDetector detector) {
+                web.postDelayed(() -> requestAncestorTouchInterception(web, false), 160);
+            }
+        });
+        web.setOnTouchListener((view, event) -> {
+            boolean scaling = event.getPointerCount() > 1 || scaleDetector.isInProgress();
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                requestAncestorTouchInterception(view, true);
+            }
+            if (scaling) {
+                requestAncestorTouchInterception(view, true);
+                scaleDetector.onTouchEvent(event);
+                int action = event.getActionMasked();
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    view.postDelayed(() -> requestAncestorTouchInterception(view, false), 160);
+                }
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                requestAncestorTouchInterception(view, false);
+            }
+            return false;
+        });
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                resizeMailWebView(view, 120);
-                resizeMailWebView(view, 320);
-                resizeMailWebView(view, 900);
-                resizeMailWebView(view, 1800);
-                resizeMailWebView(view, 3200);
+                fitMailContentToViewport(view);
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                ViewParent parent = view == null ? null : view.getParent();
+                if (parent instanceof ViewGroup) {
+                    ViewGroup group = (ViewGroup) parent;
+                    int index = group.indexOfChild(view);
+                    group.removeView(view);
+                    TextView fallback = text("邮件内容渲染进程已恢复，请重新打开这封邮件。", 15, MUTED, false);
+                    fallback.setGravity(Gravity.CENTER);
+                    fallback.setPadding(dp(18), dp(40), dp(18), dp(40));
+                    group.addView(fallback, Math.max(0, index), new LinearLayout.LayoutParams(-1, dp(260)));
+                }
+                toast("邮件内容过大，已保护应用不闪退");
+                return true;
             }
         });
         return web;
+    }
+
+    private void fitMailContentToViewport(WebView view) {
+        if (view == null) return;
+        view.postDelayed(() -> view.evaluateJavascript(
+            "(function(){"
+                + "document.querySelectorAll('table').forEach(function(t){"
+                + "if(t.closest('.memail-table-wrap'))return;"
+                + "var w=document.createElement('div');"
+                + "w.className='memail-table-wrap';"
+                + "t.parentNode.insertBefore(w,t);"
+                + "w.appendChild(t);"
+                + "});"
+                + "document.querySelectorAll('[width]').forEach(function(el){"
+                + "var n=(el.getAttribute('width')||'').replace(/[^0-9.]/g,'');"
+                + "if(n&&parseFloat(n)>document.documentElement.clientWidth&&!/^(TABLE|TBODY|THEAD|TFOOT|TR|TD|TH|COL|COLGROUP)$/.test(el.tagName)){el.style.maxWidth='100%';el.style.width='auto';}"
+                + "});"
+                + "document.querySelectorAll('[style]').forEach(function(el){"
+                + "if(/^(TABLE|TBODY|THEAD|TFOOT|TR|TD|TH|COL|COLGROUP)$/.test(el.tagName))return;"
+                + "var s=el.getAttribute('style')||'';"
+                + "if(/(?:width|min-width|max-width)\\s*:\\s*\\d{3,}/i.test(s)){el.style.maxWidth='100%';el.style.width='auto';el.style.minWidth='0';}"
+                + "});"
+                + "return true;"
+                + "})()",
+            null
+        ), 60);
+    }
+
+    private static void requestAncestorTouchInterception(View view, boolean disallow) {
+        if (view == null) return;
+        ViewParent parent = view.getParent();
+        while (parent != null) {
+            parent.requestDisallowInterceptTouchEvent(disallow);
+            parent = parent.getParent();
+        }
     }
 
     private void resizeMailWebView(WebView view, long delayMs) {
@@ -2915,21 +3842,38 @@ public class MainActivity extends Activity {
     }
 
     private static String wrapMailHtml(String body) {
-        String safeBody = body == null ? "" : body;
+        String safeBody = normalizeMailBodyHtml(body == null ? "" : body);
         return "<!doctype html><html><head>"
-            + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, maximum-scale=3\">"
+            + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes\">"
             + "<style>"
-            + "html,body{margin:0;padding:0;background:transparent;color:#14252c;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:16px;line-height:1.68;overflow-x:hidden;}"
-            + "body{box-sizing:border-box;padding:12px 18px 24px 18px;word-break:break-word;overflow-wrap:anywhere;}"
-            + "p{margin:0 0 14px 0;}div{max-width:100%;}"
-            + "img{max-width:100%!important;height:auto!important;}"
-            + "table{max-width:100%!important;width:100%!important;border-collapse:collapse;table-layout:auto;display:block;overflow-x:auto;margin:12px 0;border-radius:10px;}"
-            + "tbody,thead,tfoot,tr{max-width:100%;}"
-            + "td,th{word-break:break-word;overflow-wrap:anywhere;white-space:normal!important;padding:8px 6px;border-color:#dfe8ea;}"
-            + "a{color:#0b7285;word-break:break-word;}"
+            + "html{margin:0;padding:0;background:transparent;width:100%;overflow-x:hidden;}"
+            + "body{margin:0;padding:12px 12px 24px 12px;background:transparent;color:#14252c;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:16px;line-height:1.68;width:100%;max-width:100vw;overflow-x:hidden;box-sizing:border-box;word-break:normal;overflow-wrap:anywhere;touch-action:pan-x pan-y pinch-zoom;}"
+            + "p{margin:0 0 14px 0;}div,section,article,header,footer,main,aside,span{max-width:100%!important;box-sizing:border-box;}"
+            + "img,video{max-width:100%!important;height:auto!important;}"
+            + "body>:not(.memail-table-wrap),body div:not(.memail-table-wrap),body section,body article{min-width:0!important;width:auto;}"
+            + ".memail-table-wrap,table{display:block!important;width:100%!important;max-width:100%!important;overflow-x:auto!important;-webkit-overflow-scrolling:touch;box-sizing:border-box;}"
+            + ".memail-table-wrap{margin:12px 0;border:1px solid #d8e5e7;border-radius:12px;background:#fff;}"
+            + "table{margin:0!important;border-collapse:separate!important;border-spacing:0!important;border:0!important;background:#fff;}"
+            + "tbody,thead,tfoot{display:table!important;min-width:100%;}"
+            + "tr{display:table-row!important;}"
+            + "td,th{display:table-cell!important;word-break:normal!important;overflow-wrap:normal!important;white-space:normal!important;min-width:76px;padding:9px 8px!important;border-right:1px solid #d8e5e7!important;border-bottom:1px solid #d8e5e7!important;vertical-align:top!important;box-sizing:border-box!important;}"
+            + "th{background:#eef7f6!important;color:#14343b!important;font-weight:700!important;}"
+            + "tr:nth-child(even) td{background:#fbfdfd;}"
+            + "a{color:#0b7285;word-break:break-word;overflow-wrap:break-word;}"
             + "pre,.memail-plain{white-space:pre-wrap;font:16px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;margin:0;}"
-            + "*{max-width:100%;box-sizing:border-box;}"
+            + "body>*{max-width:100%!important;}"
+            + "*,*:before,*:after{box-sizing:border-box;}"
             + "</style></head><body>" + safeBody + "</body></html>";
+    }
+
+    private static String normalizeMailBodyHtml(String value) {
+        if (value == null || value.isEmpty()) return "";
+        String normalized = value.replaceAll("(?is)<meta\\b[^>]*name\\s*=\\s*['\"]?viewport['\"]?[^>]*>", "");
+        normalized = normalized.replaceAll("(?is)<head\\b[^>]*>.*?</head>", "");
+        Matcher bodyMatcher = Pattern.compile("(?is)<body\\b[^>]*>(.*?)</body>").matcher(normalized);
+        if (bodyMatcher.find()) normalized = bodyMatcher.group(1);
+        normalized = normalized.replaceAll("(?is)</?(?:html|body)\\b[^>]*>", "");
+        return normalized;
     }
 
     private static String nonEmpty(String value, String fallback) {
@@ -2950,8 +3894,14 @@ public class MainActivity extends Activity {
         return value.replaceAll("\\s+", " ").trim();
     }
 
-    private static String translationSourceHash(Models.Mail mail, JSONObject source) {
-        String raw = nonEmpty(mail.subject, "")
+    private String mobileTranslatorIdentity() {
+        if (!prefs.getBoolean("mobile_translate_enabled", false)) return "mobile-disabled";
+        return prefs.getString("mobile_translate_provider", "baidu");
+    }
+
+    private static String translationSourceHash(Models.Mail mail, JSONObject source, String translatorIdentity) {
+        String raw = "mobile:" + nonEmpty(translatorIdentity, "mobile")
+            + "\n" + nonEmpty(mail.subject, "")
             + "\n" + Json.str(source, "html")
             + "\n" + Json.str(source, "text");
         return sha256(raw);

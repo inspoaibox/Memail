@@ -377,8 +377,9 @@ final class LocalStore extends SQLiteOpenHelper {
         if (unreadOnly) where.append(" AND seen=0");
         String q = query == null ? "" : query.trim();
         if (!q.isEmpty()) {
-            where.append(" AND (sender LIKE ? OR subject LIKE ? OR preview LIKE ? OR text_body LIKE ?)");
+            where.append(" AND (sender LIKE ? OR subject LIKE ? OR preview LIKE ? OR text_body LIKE ? OR html_body LIKE ?)");
             String like = "%" + q + "%";
+            args.add(like);
             args.add(like);
             args.add(like);
             args.add(like);

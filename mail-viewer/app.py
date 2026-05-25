@@ -2068,9 +2068,10 @@ def _bool_from_setting(value, default: bool = True) -> bool:
 
 
 AOSOM_ORDER_REGEXES = [
-    r"Order\s+#\s*([A-Z0-9-]+)\s+is\s+Shipped",
     r"Your\s+Order\s+#\s*([A-Z0-9-]+)",
-    r"\bOrder\s+(?:Date\s+)?([A-Z0-9][A-Z0-9-]{5,})\b",
+    r"\bOrder\s*#\s*([A-Z0-9-]+)\b",
+    r"\bOrder\s*Date\s*[\r\n\t ]+([A-Z0-9][A-Z0-9-]{5,})\b",
+    r"\bOrder\s*(?:Number|No\.?)\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b",
 ]
 AOSOM_TRACKING_REGEXES = [
     r"\b(1Z[0-9A-Z]{16})\b",
@@ -2080,16 +2081,21 @@ AOSOM_TRACKING_REGEXES = [
     r"\b(\d{12,22})\b",
 ]
 AOSOM_CARRIER_REGEX = r"\b(UPS|FedEx|Federal Express|OnTrac|USPS|DHL|Canada Post|Purolator)\b"
+AOSOM_SENDER_CONTAINS = "noreply@aosom.ca,noreply@aosom.com"
+AOSOM_BODY_KEYWORDS = ["Tracking Number", "shipped"]
 
 
-def _aosom_shipped_defaults(sender_contains: str = "noreply@aosom.ca") -> dict:
-    sender = (sender_contains or "noreply@aosom.ca").strip().lower()
-    is_us = sender.endswith("@aosom.com")
+def _split_rule_terms(value) -> list[str]:
+    return [item.strip().lower() for item in re.split(r"[,;\n]+", str(value or "")) if item.strip()]
+
+
+def _aosom_shipped_defaults(sender_contains: str = AOSOM_SENDER_CONTAINS) -> dict:
+    sender = (sender_contains or AOSOM_SENDER_CONTAINS).strip().lower()
     return {
-        "name": "Aosom US 发货物流提取" if is_us else "Aosom CA 发货物流提取",
+        "name": "Aosom CA/US 发货物流提取",
         "sender_contains": sender,
-        "subject_contains": "" if is_us else "Aosom Business: Your Aosom order has been shipped",
-        "body_keywords": ["Tracking Number"],
+        "subject_contains": "",
+        "body_keywords": AOSOM_BODY_KEYWORDS,
         "order_regex": AOSOM_ORDER_REGEXES[0],
         "order_regexes": AOSOM_ORDER_REGEXES,
         "tracking_regex": AOSOM_TRACKING_REGEXES[0],
@@ -2107,7 +2113,7 @@ def _normalize_extraction_rule(item: dict) -> dict | None:
 
     defaults = {}
     if template == "aosom_shipped":
-        defaults = _aosom_shipped_defaults(str(item.get("sender_contains") or item.get("senderContains") or "noreply@aosom.ca"))
+        defaults = _aosom_shipped_defaults(str(item.get("sender_contains") or item.get("senderContains") or AOSOM_SENDER_CONTAINS))
 
     name = str(item.get("name") or defaults.get("name") or "").strip()
     sender_contains = str(item.get("sender_contains") or item.get("senderContains") or defaults.get("sender_contains") or "").strip()
@@ -2120,6 +2126,19 @@ def _normalize_extraction_rule(item: dict) -> dict | None:
     carrier_regex = str(item.get("carrier_regex") or item.get("carrierRegex") or defaults.get("carrier_regex") or "").strip()
     keywords = _coerce_string_list(item.get("keywords", defaults.get("keywords", [])), 30)
     body_keywords = _coerce_string_list(item.get("body_keywords", item.get("bodyKeywords", defaults.get("body_keywords", []))), 30)
+    if template == "aosom_shipped":
+        sender_terms = _split_rule_terms(sender_contains)
+        for sender in _split_rule_terms(AOSOM_SENDER_CONTAINS):
+            if sender not in sender_terms:
+                sender_terms.append(sender)
+        sender_contains = ",".join(sender_terms)
+        body_keyword_keys = {keyword.lower() for keyword in body_keywords}
+        for keyword in AOSOM_BODY_KEYWORDS:
+            if keyword.lower() not in body_keyword_keys:
+                body_keywords.append(keyword)
+                body_keyword_keys.add(keyword.lower())
+        if subject_contains == "Aosom Business: Your Aosom order has been shipped":
+            subject_contains = ""
     raw_order_regexes = item.get("order_regexes", item.get("orderRegexes"))
     raw_tracking_regexes = item.get("tracking_regexes", item.get("trackingRegexes"))
     order_regexes = _coerce_regex_list(
@@ -2239,14 +2258,14 @@ def _mail_envelope_matches_extraction_rule(rule: dict, mail: dict, include_keywo
     subject = str(mail.get("subject") or "").strip()
     sender = _normalize_message_party(mail.get("from"))
     haystack = f"{sender}\n{subject}".lower()
-    sender_contains = str(rule.get("sender_contains") or "").lower()
-    subject_contains = str(rule.get("subject_contains") or "").lower()
+    sender_terms = _split_rule_terms(rule.get("sender_contains"))
+    subject_terms = _split_rule_terms(rule.get("subject_contains"))
     subject_exact = str(rule.get("subject_exact") or "").lower()
-    if sender_contains and sender_contains not in sender.lower():
+    if sender_terms and not any(term in sender.lower() for term in sender_terms):
         return False
     if subject_exact and subject.lower() != subject_exact:
         return False
-    if subject_contains and subject_contains not in subject.lower():
+    if subject_terms and not any(term in subject.lower() for term in subject_terms):
         return False
     keywords = [str(item).lower() for item in rule.get("keywords", []) if str(item).strip()]
     if not include_keywords:
@@ -2312,6 +2331,64 @@ def _find_unique_regex(regex: str, text: str, flags=re.IGNORECASE) -> list[str]:
         if value and value not in result:
             result.append(value)
     return result
+
+
+def _find_order_matches(regexes: list[str], text: str, validate: bool = False) -> list[dict]:
+    matches = []
+    seen = set()
+    for regex in regexes:
+        if not regex:
+            continue
+        try:
+            iterator = re.finditer(regex, text or "", re.IGNORECASE)
+        except re.error as exc:
+            raise RuntimeError(f"订单号正则表达式错误: {exc}") from exc
+        for match in iterator:
+            value = match.group(1) if match.groups() else match.group(0)
+            value = str(value or "").strip()
+            if not value:
+                continue
+            if validate and not _valid_order_number(value):
+                continue
+            key = value.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({
+                "order_number": value,
+                "start": match.start(),
+                "end": match.end(),
+            })
+    matches.sort(key=lambda item: item["start"])
+    return matches
+
+
+def _valid_order_number(value: str) -> bool:
+    compact = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+    if len(compact) < 8 or len(compact) > 32:
+        return False
+    if not re.fullmatch(r"[A-Z0-9]+", compact):
+        return False
+    if compact in {"SHIPPED", "TRACKING", "NUMBER", "ORDERDATE", "SHIPPING", "PAYMENT", "METHOD"}:
+        return False
+    return bool(re.search(r"\d", compact))
+
+
+def _slice_order_contexts(text: str, order_matches: list[dict]) -> list[dict]:
+    if not order_matches:
+        return [{"order_number": "", "text": text or ""}]
+    if len(order_matches) == 1:
+        return [{"order_number": order_matches[0]["order_number"], "text": text or ""}]
+    contexts = []
+    for index, match in enumerate(order_matches):
+        next_start = order_matches[index + 1]["start"] if index + 1 < len(order_matches) else len(text or "")
+        start = max(0, match["start"])
+        end = min(len(text or ""), max(match["end"], next_start))
+        contexts.append({
+            "order_number": match["order_number"],
+            "text": (text or "")[start:end],
+        })
+    return contexts
 
 
 def _shipment_carrier_from_context(context: str, carrier_regex: str) -> str:
@@ -2423,18 +2500,10 @@ def _extraction_result_identity(item: dict) -> str:
 
 def _extract_records_from_message(rule: dict, account: dict, mail: dict, detail: dict) -> list[dict]:
     text = _message_detail_text(detail, mail)
-    order_numbers = []
-    for regex in rule.get("order_regexes", []) or ([rule.get("order_regex", "")] if rule.get("order_regex") else []):
-        order_numbers.extend(value for value in _find_unique_regex(regex, text) if value not in order_numbers)
-    shipments = _extract_shipments_from_patterns(
-        text,
-        rule.get("tracking_regexes", []) or ([rule.get("tracking_regex", "")] if rule.get("tracking_regex") else []),
-        rule.get("carrier_regex", ""),
-    )
-    if not shipments:
-        return []
-    if not order_numbers:
-        order_numbers = [""]
+    order_regexes = rule.get("order_regexes", []) or ([rule.get("order_regex", "")] if rule.get("order_regex") else [])
+    tracking_regexes = rule.get("tracking_regexes", []) or ([rule.get("tracking_regex", "")] if rule.get("tracking_regex") else [])
+    validate_orders = str(rule.get("template") or "").strip().lower() == "aosom_shipped"
+    order_contexts = _slice_order_contexts(text, _find_order_matches(order_regexes, text, validate=validate_orders))
     message = {
         "account_id": str(account.get("id") or ""),
         "account_email": _normalize_mailbox_address(account.get("email", "")),
@@ -2446,7 +2515,15 @@ def _extract_records_from_message(rule: dict, account: dict, mail: dict, detail:
         "date": str(detail.get("date") or mail.get("date") or ""),
     }
     records = []
-    for order_number in order_numbers:
+    for order_context in order_contexts:
+        order_number = order_context["order_number"]
+        shipments = _extract_shipments_from_patterns(
+            order_context["text"],
+            tracking_regexes,
+            rule.get("carrier_regex", ""),
+        )
+        if not shipments:
+            continue
         record = {
             "rule_id": rule.get("id", ""),
             "rule_name": rule.get("name", ""),
@@ -5054,58 +5131,38 @@ def save_aosom_shipped_extraction_rule():
     account_emails = data.get("account_emails", data.get("accountEmails", []))
     scan_now = _bool_from_setting(data.get("scan_now"), False)
     settings = _read_viewer_settings()
-    existing_by_sender = {}
+    existing_rule = None
     for item in _settings_list(settings, "extraction_rules"):
         rule = _normalize_extraction_rule(item)
-        if rule and rule.get("template") == "aosom_shipped" and rule.get("sender_contains"):
-            existing_by_sender[rule["sender_contains"].lower()] = rule
-    variants = [
-        {"name": "Aosom CA 发货物流提取", "sender_contains": "noreply@aosom.ca", "subject_contains": "Aosom Business: Your Aosom order has been shipped"},
-        {"name": "Aosom US 发货物流提取", "sender_contains": "noreply@aosom.com", "subject_contains": ""},
-    ]
-    saved = []
-    scans = []
-    first_error = None
-    for variant in variants:
-        existing = existing_by_sender.get(variant["sender_contains"].lower())
-        payload_data = {
-            **data,
-            **variant,
-            "template": "aosom_shipped",
-            "account_emails": account_emails,
-            "scan_now": scan_now,
-        }
-        if existing:
-            payload_data["id"] = existing["id"]
-        payload, status = _save_extraction_rule_payload(payload_data)
-        if status >= 400:
-            first_error = payload
-            continue
-        if payload.get("rule"):
-            saved.append(payload["rule"])
-        if payload.get("scan"):
-            scans.append(payload["scan"])
+        if rule and rule.get("template") == "aosom_shipped":
+            existing_rule = rule
+            break
+    payload_data = {
+        **data,
+        "name": "Aosom CA/US 发货物流提取",
+        "sender_contains": AOSOM_SENDER_CONTAINS,
+        "subject_contains": "",
+        "body_keywords": AOSOM_BODY_KEYWORDS,
+        "template": "aosom_shipped",
+        "account_emails": account_emails,
+        "scan_now": scan_now,
+    }
+    if existing_rule:
+        payload_data["id"] = existing_rule["id"]
+    payload, status = _save_extraction_rule_payload(payload_data)
+    if status >= 400:
+        return jsonify(payload), status
     settings = _read_viewer_settings()
     rules = [
         _public_extraction_rule(item)
         for item in _settings_list(settings, "extraction_rules")
         if _normalize_extraction_rule(item)
     ]
-    if first_error and not saved:
-        return jsonify(first_error), 400
     return jsonify({
         "success": True,
         "rules": rules,
-        "created_rules": saved,
-        "scan": {
-            "summary": {
-                "records": sum(_safe_int(scan.get("summary", {}).get("records"), 0) for scan in scans if isinstance(scan, dict)),
-                "matched": sum(_safe_int(scan.get("summary", {}).get("matched"), 0) for scan in scans if isinstance(scan, dict)),
-                "checked": sum(_safe_int(scan.get("summary", {}).get("checked"), 0) for scan in scans if isinstance(scan, dict)),
-                "failed": sum(_safe_int(scan.get("summary", {}).get("failed"), 0) for scan in scans if isinstance(scan, dict)),
-            },
-            "variants": scans,
-        } if scans else None,
+        "created_rules": [payload["rule"]] if payload.get("rule") else [],
+        "scan": payload.get("scan"),
     })
 
 
