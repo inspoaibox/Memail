@@ -2096,6 +2096,7 @@ def _aosom_shipped_defaults(sender_contains: str = AOSOM_SENDER_CONTAINS) -> dic
         "sender_contains": sender,
         "subject_contains": "",
         "body_keywords": AOSOM_BODY_KEYWORDS,
+        "keyword_match_mode": "any",
         "order_regex": AOSOM_ORDER_REGEXES[0],
         "order_regexes": AOSOM_ORDER_REGEXES,
         "tracking_regex": AOSOM_TRACKING_REGEXES[0],
@@ -2159,6 +2160,8 @@ def _normalize_extraction_rule(item: dict) -> dict | None:
 
     raw_match_mode = str(item.get("keyword_match_mode") or item.get("keywordMatchMode") or "any").strip().lower()
     keyword_match_mode = raw_match_mode if raw_match_mode in {"any", "all"} else "any"
+    if template == "aosom_shipped":
+        keyword_match_mode = "any"
     scan_limit = min(1000, max(20, _safe_int(item.get("scan_limit") or item.get("scanLimit"), EXTRACTION_SCAN_LIMIT)))
     now = _iso_now()
     return {

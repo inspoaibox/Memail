@@ -6151,6 +6151,7 @@
                 sender_contains: document.getElementById('extraction-sender-contains').value.trim(),
                 subject_contains: document.getElementById('extraction-subject-contains').value.trim(),
                 body_keywords: _parseKeywordInput(document.getElementById('extraction-body-keywords').value),
+                keyword_match_mode: (document.getElementById('extraction-rule-template').value || 'custom') === 'aosom_shipped' ? 'any' : undefined,
                 order_regexes: _parseMultilineInput(document.getElementById('extraction-order-regexes').value),
                 tracking_regexes: _parseMultilineInput(document.getElementById('extraction-tracking-regexes').value),
                 carrier_regex: document.getElementById('extraction-carrier-regex').value.trim(),
