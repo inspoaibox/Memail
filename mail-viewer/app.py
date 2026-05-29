@@ -1934,7 +1934,13 @@ def _require_sensitive_confirmation(action: str):
     last = float(confirmed.get(action, 0) or confirmed.get("*", 0) or 0)
     if time.time() - last <= SENSITIVE_CONFIRM_TTL_SECONDS:
         return None
-    return jsonify({"success": False, "message": "需要二次确认", "require_confirmation": True, "action": action}), 403
+    return jsonify({
+        "success": False,
+        "message": "需要二次确认",
+        "require_confirmation": True,
+        "action": action,
+        "totp_enabled": _totp_enabled(),
+    }), 403
 
 
 def _confirm_sensitive_action(action: str):
@@ -5982,7 +5988,7 @@ def confirm_sensitive_action():
     _confirm_sensitive_action(action)
     _append_audit(settings, "security.confirmed", {"action": action})
     _write_viewer_settings(settings)
-    return jsonify({"success": True})
+    return jsonify({"success": True, "totp_enabled": _totp_enabled(settings)})
 
 
 @app.route("/api/security/totp/setup", methods=["POST"])

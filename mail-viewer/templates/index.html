@@ -2273,6 +2273,39 @@
         </div>
     </div>
 
+    <!-- 敏感操作确认 Modal -->
+    <div class="modal fade" id="sensitiveConfirmModal" tabindex="-1" aria-labelledby="sensitiveConfirmModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header" style="background:rgba(245,249,247,0.95);border-bottom:1px solid var(--border-color);">
+                    <h5 class="modal-title" id="sensitiveConfirmModalLabel">
+                        <i class="bi bi-shield-lock me-2"></i><span data-i18n="sensitiveConfirmTitle">敏感操作确认</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-3" data-i18n="sensitiveConfirmHint">为了保护邮箱账号和密钥数据，请输入后台密码确认本次操作。</div>
+                    <div id="sensitive-confirm-alert" class="alert alert-danger py-2" style="display:none;" role="alert"></div>
+                    <div class="mb-3">
+                        <label class="form-label" for="sensitive-confirm-password" data-i18n="adminPassword">后台密码</label>
+                        <input type="password" class="form-control" id="sensitive-confirm-password" autocomplete="current-password">
+                    </div>
+                    <div class="mb-0" id="sensitive-confirm-totp-wrap" style="display:none;">
+                        <label class="form-label" for="sensitive-confirm-totp" data-i18n="verifyCode">验证码</label>
+                        <input type="text" class="form-control" id="sensitive-confirm-totp" inputmode="numeric" autocomplete="one-time-code" data-i18n-ph="enterTotp" placeholder="6 位验证码">
+                        <div class="form-text" data-i18n="totpOnlyWhenEnabled">仅在已开启 2FA 时需要填写。</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
+                    <button type="button" class="btn btn-primary" id="sensitive-confirm-submit">
+                        <i class="bi bi-check2-circle me-1"></i><span data-i18n="confirm">确认</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 外部邮箱账号 Modal -->
     <div class="modal fade" id="externalAccountModal" tabindex="-1" aria-labelledby="externalAccountModalLabel" aria-hidden="true">
         <div class="modal-dialog">
@@ -2489,6 +2522,11 @@
                 disableTotp: '关闭 2FA',
                 totpSecret: '密钥',
                 enterTotp: '6 位验证码',
+                sensitiveConfirmTitle: '敏感操作确认',
+                sensitiveConfirmHint: '为了保护邮箱账号和密钥数据，请输入后台密码确认本次操作。',
+                adminPassword: '后台密码',
+                totpOnlyWhenEnabled: '仅在已开启 2FA 时需要填写。',
+                confirm: '确认',
                 deviceTokens: '设备 Token',
                 deviceTokenName: '设备名称',
                 tokenScopeFull: '完整客户端',
@@ -2858,6 +2896,11 @@
                 disableTotp: 'Disable 2FA',
                 totpSecret: 'Secret',
                 enterTotp: '6-digit code',
+                sensitiveConfirmTitle: 'Sensitive Action Confirmation',
+                sensitiveConfirmHint: 'Enter the admin password to protect mailbox accounts and secret data.',
+                adminPassword: 'Admin Password',
+                totpOnlyWhenEnabled: 'Only required when 2FA is enabled.',
+                confirm: 'Confirm',
                 deviceTokens: 'Device Tokens',
                 deviceTokenName: 'Device name',
                 tokenScopeFull: 'Full client',
@@ -3194,6 +3237,7 @@
         let messageMetaCache = {};
         let settingsModal = null;
         let externalAccountModal = null;
+        let sensitiveConfirmModal = null;
         let translationAbortController = null;
         let aiChannels = [];
         let aiDefaultModel = {};
@@ -5247,7 +5291,7 @@
             } catch (e) {
                 const action = e.payload?.action || 'delete_external_account';
                 if (e.status !== 403 || !e.payload?.require_confirmation) throw e;
-                const ok = await confirmSensitiveAction(action);
+                const ok = await confirmSensitiveAction(action, e.payload || {});
                 if (!ok) throw new Error('已取消二次确认');
                 return _imapApi(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
             }
@@ -6712,28 +6756,116 @@
             _renderSettingsStatus(settings);
         }
 
-        async function confirmSensitiveAction(action) {
-            const password = prompt(t('confirmPasswordPrompt'));
-            if (!password) return false;
-            const code = prompt(t('enterTotp')) || '';
-            const resp = await fetch('/api/security/confirm', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action, password, totp_code: code }),
-            });
-            const data = await resp.json();
-            if (!data.success) {
-                _showSettingsAlert('danger', data.message || t('settingsSaveFailed'));
-                return false;
+        function _getSensitiveConfirmModal() {
+            if (!sensitiveConfirmModal) {
+                sensitiveConfirmModal = new bootstrap.Modal(document.getElementById('sensitiveConfirmModal'), {
+                    backdrop: 'static',
+                    keyboard: false,
+                });
             }
-            return true;
+            return sensitiveConfirmModal;
+        }
+
+        function _showSensitiveConfirmError(message) {
+            const alert = document.getElementById('sensitive-confirm-alert');
+            if (!alert) return;
+            alert.textContent = message || t('settingsSaveFailed');
+            alert.style.display = 'block';
+        }
+
+        async function confirmSensitiveAction(action, confirmation = {}) {
+            const totpEnabled = confirmation?.totp_enabled === true;
+            const modalEl = document.getElementById('sensitiveConfirmModal');
+            const passwordInput = document.getElementById('sensitive-confirm-password');
+            const totpInput = document.getElementById('sensitive-confirm-totp');
+            const totpWrap = document.getElementById('sensitive-confirm-totp-wrap');
+            const alert = document.getElementById('sensitive-confirm-alert');
+            const submitBtn = document.getElementById('sensitive-confirm-submit');
+            if (!modalEl || !passwordInput || !submitBtn) return false;
+
+            passwordInput.value = '';
+            if (totpInput) totpInput.value = '';
+            if (alert) {
+                alert.textContent = '';
+                alert.style.display = 'none';
+            }
+            if (totpWrap) totpWrap.style.display = totpEnabled ? '' : 'none';
+
+            return new Promise(resolve => {
+                let settled = false;
+                const cleanup = () => {
+                    submitBtn.removeEventListener('click', onSubmit);
+                    passwordInput.removeEventListener('keydown', onKeydown);
+                    if (totpInput) totpInput.removeEventListener('keydown', onKeydown);
+                    modalEl.removeEventListener('hidden.bs.modal', onHidden);
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = `<i class="bi bi-check2-circle me-1"></i><span>${t('confirm')}</span>`;
+                };
+                const finish = value => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(value);
+                };
+                const onHidden = () => finish(false);
+                const onKeydown = event => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        onSubmit();
+                    }
+                };
+                const onSubmit = async () => {
+                    const password = passwordInput.value;
+                    const code = totpEnabled ? (totpInput?.value || '').trim() : '';
+                    if (!password) {
+                        _showSensitiveConfirmError(t('confirmPasswordPrompt'));
+                        passwordInput.focus();
+                        return;
+                    }
+                    if (totpEnabled && !/^\d{6}$/.test(code)) {
+                        _showSensitiveConfirmError(t('enterTotp'));
+                        totpInput?.focus();
+                        return;
+                    }
+                    submitBtn.disabled = true;
+                    submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('confirm')}`;
+                    try {
+                        const resp = await fetch('/api/security/confirm', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action, password, totp_code: code }),
+                        });
+                        const data = await resp.json();
+                        if (!data.success) {
+                            _showSensitiveConfirmError(data.message || t('settingsSaveFailed'));
+                            submitBtn.disabled = false;
+                            submitBtn.innerHTML = `<i class="bi bi-check2-circle me-1"></i><span>${t('confirm')}</span>`;
+                            return;
+                        }
+                        modalEl.removeEventListener('hidden.bs.modal', onHidden);
+                        _getSensitiveConfirmModal().hide();
+                        finish(true);
+                    } catch (e) {
+                        _showSensitiveConfirmError(e.message || t('settingsSaveFailed'));
+                        submitBtn.disabled = false;
+                        submitBtn.innerHTML = `<i class="bi bi-check2-circle me-1"></i><span>${t('confirm')}</span>`;
+                    }
+                };
+
+                submitBtn.addEventListener('click', onSubmit);
+                passwordInput.addEventListener('keydown', onKeydown);
+                if (totpInput) totpInput.addEventListener('keydown', onKeydown);
+                modalEl.addEventListener('hidden.bs.modal', onHidden);
+                _getSensitiveConfirmModal().show();
+                setTimeout(() => passwordInput.focus(), 180);
+            });
         }
 
         async function fetchWithSensitiveConfirm(url, options, action) {
             let resp = await fetch(url, options);
             let data = await resp.json();
             if (resp.status === 403 && data.require_confirmation) {
-                const ok = await confirmSensitiveAction(data.action || action);
+                const ok = await confirmSensitiveAction(data.action || action, data);
                 if (!ok) return data;
                 resp = await fetch(url, options);
                 data = await resp.json();
@@ -6935,7 +7067,7 @@
                 });
                 let data = await resp.json();
                 if (resp.status === 403 && data.require_confirmation) {
-                    const ok = await confirmSensitiveAction(data.action || 'save_settings');
+                    const ok = await confirmSensitiveAction(data.action || 'save_settings', data);
                     if (!ok) throw new Error(data.message || t('settingsSaveFailed'));
                     const retryResp = await fetch('/api/settings', {
                         method: 'POST',
@@ -10029,7 +10161,7 @@
                 });
                 let data = await resp.json();
                 if (resp.status === 403 && data.require_confirmation) {
-                    const ok = await confirmSensitiveAction(data.action || 'permanent_delete');
+                    const ok = await confirmSensitiveAction(data.action || 'permanent_delete', data);
                     if (!ok) return;
                     resp = await fetch(url, {
                         method: 'POST',
