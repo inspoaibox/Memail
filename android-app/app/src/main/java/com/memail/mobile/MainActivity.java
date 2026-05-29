@@ -98,6 +98,7 @@ public class MainActivity extends Activity {
     private static final int MAX_MOBILE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
     private static final int KEYWORD_SCAN_LIMIT = 600;
     private static final int MOBILE_TRANSLATE_CHUNK_CHARS = 4600;
+    private static final String MOBILE_TRANSLATION_BATCH_SEPARATOR = "\n<<<MEMAIL_TRANSLATION_SPLIT_9EC1B7>>>\n";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final ApiClient api = new ApiClient();
@@ -1825,12 +1826,74 @@ public class MainActivity extends Activity {
             .put("format", format)
             .put("engine", "mobile")
             .put("provider", provider)
-            .put("model", "tencent".equals(provider) ? "tencent-tmt" : "baidu-general");
+            .put("model", mobileTranslatorModel(provider));
     }
 
     private String translatePlainTextWithMobileProvider(String provider, String text) throws Exception {
         if ("tencent".equals(provider)) return Json.str(callTencentTranslate(text), "translation");
+        if ("google_cloud".equals(provider)) return Json.str(callGoogleCloudTranslate(text), "translation");
         return Json.str(callBaiduTranslate(text), "translation");
+    }
+
+    private Map<String, String> translatePlainTextsWithMobileProvider(String provider, List<String> texts) throws Exception {
+        Map<String, String> result = new LinkedHashMap<>();
+        List<String> unique = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String text : texts) {
+            String source = text == null ? "" : text;
+            if (source.trim().isEmpty() || seen.contains(source)) continue;
+            seen.add(source);
+            unique.add(source);
+        }
+        if ("google_cloud".equals(provider)) {
+            return callGoogleCloudTranslateBatch(unique);
+        }
+        int batchSize = "tencent".equals(provider) ? 12 : 18;
+        int maxBatchTextChars = "tencent".equals(provider) ? 2000 : 1500;
+        int maxCombinedChars = Math.max(1200, MOBILE_TRANSLATE_CHUNK_CHARS - 600);
+        List<String> pending = new ArrayList<>();
+        int pendingChars = 0;
+        for (String source : unique) {
+            if (source.length() > maxBatchTextChars) {
+                flushMobileTranslationBatch(provider, pending, result);
+                pendingChars = 0;
+                result.put(source, translatePlainTextWithMobileProvider(provider, source));
+                continue;
+            }
+            int nextChars = pendingChars + source.length() + (pending.isEmpty() ? 0 : MOBILE_TRANSLATION_BATCH_SEPARATOR.length());
+            if (!pending.isEmpty() && nextChars > maxCombinedChars) {
+                flushMobileTranslationBatch(provider, pending, result);
+                pendingChars = 0;
+            }
+            pending.add(source);
+            pendingChars += source.length() + (pending.size() == 1 ? 0 : MOBILE_TRANSLATION_BATCH_SEPARATOR.length());
+            if (pending.size() >= batchSize) flushMobileTranslationBatch(provider, pending, result);
+            if (pending.isEmpty()) pendingChars = 0;
+        }
+        flushMobileTranslationBatch(provider, pending, result);
+        return result;
+    }
+
+    private void flushMobileTranslationBatch(String provider, List<String> pending, Map<String, String> result) throws Exception {
+        if (pending.isEmpty()) return;
+        List<String> group = new ArrayList<>(pending);
+        pending.clear();
+        try {
+            String joined = join(group, MOBILE_TRANSLATION_BATCH_SEPARATOR);
+            String translated = translatePlainTextWithMobileProvider(provider, joined);
+            String[] parts = translated.split(Pattern.quote(MOBILE_TRANSLATION_BATCH_SEPARATOR), -1);
+            if (parts.length != group.size()) {
+                throw new Exception("批量翻译分隔符未保留");
+            }
+            for (int i = 0; i < group.size(); i++) {
+                result.put(group.get(i), parts[i].trim());
+            }
+            return;
+        } catch (Exception ignored) {
+        }
+        for (String source : group) {
+            result.put(source, translatePlainTextWithMobileProvider(provider, source));
+        }
     }
 
     private String mobileTranslationSourceText(Models.Mail mail, JSONObject source) {
@@ -1921,6 +1984,60 @@ public class MainActivity extends Activity {
         return translated;
     }
 
+    private JSONObject callGoogleCloudTranslate(String text) throws Exception {
+        List<String> source = new ArrayList<>();
+        source.add(text);
+        Map<String, String> translated = callGoogleCloudTranslateBatch(source);
+        String value = translated.get(text);
+        if (value == null || value.trim().isEmpty()) throw new Exception("Google Cloud Translation 返回空内容");
+        return new JSONObject()
+            .put("translation", value)
+            .put("format", "text")
+            .put("engine", "mobile")
+            .put("provider", "google_cloud")
+            .put("model", "cloud-translation-basic-v2");
+    }
+
+    private Map<String, String> callGoogleCloudTranslateBatch(List<String> texts) throws Exception {
+        String apiKey = prefs.getString("mobile_google_cloud_api_key", "").trim();
+        if (apiKey.isEmpty()) throw new Exception("请先配置 Google Cloud Translation API Key");
+        List<String> unique = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String text : texts) {
+            String source = text == null ? "" : text;
+            if (source.trim().isEmpty() || seen.contains(source)) continue;
+            seen.add(source);
+            unique.add(source);
+        }
+        Map<String, String> result = new LinkedHashMap<>();
+        if (unique.isEmpty()) return result;
+        for (int start = 0; start < unique.size(); start += 128) {
+            int end = Math.min(unique.size(), start + 128);
+            List<String> batch = unique.subList(start, end);
+            JSONArray q = new JSONArray();
+            for (String item : batch) q.put(item);
+            JSONObject body = new JSONObject()
+                .put("q", q)
+                .put("target", "zh-CN")
+                .put("format", "text");
+            JSONObject data = httpJson(
+                "POST",
+                "https://translation.googleapis.com/language/translate/v2?key=" + encode(apiKey),
+                body.toString(),
+                "application/json; charset=utf-8",
+                null
+            );
+            JSONArray arr = Json.array(Json.obj(data, "data"), "translations");
+            if (arr.length() != batch.size()) throw new Exception("Google Cloud Translation 返回数量不匹配");
+            for (int i = 0; i < batch.size(); i++) {
+                JSONObject item = arr.optJSONObject(i);
+                String translated = item == null ? "" : decodeHtmlEntities(Json.str(item, "translatedText")).trim();
+                if (!translated.isEmpty()) result.put(batch.get(i), translated);
+            }
+        }
+        return result;
+    }
+
     private List<String> splitTranslationChunks(String text, int chunkChars) {
         List<String> chunks = new ArrayList<>();
         String value = text == null ? "" : text;
@@ -1944,18 +2061,18 @@ public class MainActivity extends Activity {
 
     private String translateHtmlPreservingLayout(String html, String provider) throws Exception {
         if (html == null || html.trim().isEmpty()) return "";
-        Map<String, String> translatedCache = new LinkedHashMap<>();
+        List<HtmlTextFragment> fragments = new ArrayList<>();
         StringBuilder out = new StringBuilder(html.length() + 1024);
         String rawTag = "";
         int index = 0;
         while (index < html.length()) {
             int tagStart = html.indexOf('<', index);
             if (tagStart < 0) {
-                appendTranslatedHtmlText(out, html.substring(index), provider, translatedCache, rawTag.isEmpty());
+                appendHtmlTextToken(out, fragments, html.substring(index), rawTag.isEmpty());
                 break;
             }
             if (tagStart > index) {
-                appendTranslatedHtmlText(out, html.substring(index, tagStart), provider, translatedCache, rawTag.isEmpty());
+                appendHtmlTextToken(out, fragments, html.substring(index, tagStart), rawTag.isEmpty());
             }
             int tagEnd = findHtmlTagEnd(html, tagStart);
             if (tagEnd < 0) {
@@ -1975,16 +2092,23 @@ public class MainActivity extends Activity {
             }
             index = tagEnd + 1;
         }
-        return out.toString();
+        if (fragments.isEmpty()) return out.toString();
+        List<String> sources = new ArrayList<>();
+        for (HtmlTextFragment fragment : fragments) {
+            sources.add(fragment.source);
+        }
+        Map<String, String> translated = translatePlainTextsWithMobileProvider(provider, sources);
+        String translatedHtml = out.toString();
+        for (HtmlTextFragment fragment : fragments) {
+            String value = translated.get(fragment.source);
+            if (value == null || value.trim().isEmpty()) value = fragment.source;
+            String replacement = fragment.prefix + escape(value).replace("\n", "<br>") + fragment.suffix;
+            translatedHtml = translatedHtml.replace(fragment.token, replacement);
+        }
+        return translatedHtml;
     }
 
-    private void appendTranslatedHtmlText(
-        StringBuilder out,
-        String fragment,
-        String provider,
-        Map<String, String> translatedCache,
-        boolean translatable
-    ) throws Exception {
+    private void appendHtmlTextToken(StringBuilder out, List<HtmlTextFragment> fragments, String fragment, boolean translatable) {
         if (fragment == null || fragment.isEmpty()) return;
         if (!translatable) {
             out.append(fragment);
@@ -2005,14 +2129,9 @@ public class MainActivity extends Activity {
             out.append(fragment);
             return;
         }
-        String translated = translatedCache.get(normalizedCore);
-        if (translated == null) {
-            translated = translatePlainTextWithMobileProvider(provider, normalizedCore);
-            translatedCache.put(normalizedCore, translated);
-        }
-        out.append(prefix)
-            .append(escape(translated).replace("\n", "<br>"))
-            .append(suffix);
+        String token = "\uE000" + fragments.size() + "\uE001";
+        fragments.add(new HtmlTextFragment(token, prefix, suffix, normalizedCore));
+        out.append(token);
     }
 
     private static int findHtmlTagEnd(String html, int start) {
@@ -2051,6 +2170,20 @@ public class MainActivity extends Activity {
             || "template".equals(tagName)
             || "svg".equals(tagName)
             || "head".equals(tagName);
+    }
+
+    private static class HtmlTextFragment {
+        final String token;
+        final String prefix;
+        final String suffix;
+        final String source;
+
+        HtmlTextFragment(String token, String prefix, String suffix, String source) {
+            this.token = token;
+            this.prefix = prefix;
+            this.suffix = suffix;
+            this.source = source;
+        }
     }
 
     private static String normalizeHtmlTextNode(String value) {
@@ -2264,6 +2397,14 @@ public class MainActivity extends Activity {
             return Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY).toString();
         }
         return Html.fromHtml(html).toString();
+    }
+
+    private String decodeHtmlEntities(String value) {
+        if (value == null || value.isEmpty()) return "";
+        if (Build.VERSION.SDK_INT >= 24) {
+            return Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY).toString();
+        }
+        return Html.fromHtml(value).toString();
     }
 
     private String normalizeCopiedText(String value) {
@@ -3029,10 +3170,17 @@ public class MainActivity extends Activity {
             prefs.edit().putString("mobile_translate_provider", "tencent").apply();
             renderSettings();
         });
+        TextView googleCloud = settingsProviderButton("Google", "google_cloud".equals(provider), v -> {
+            prefs.edit().putString("mobile_translate_provider", "google_cloud").apply();
+            renderSettings();
+        });
         providers.addView(baidu, new LinearLayout.LayoutParams(0, dp(42), 1));
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, dp(42), 1);
         tp.setMargins(dp(8), 0, 0, 0);
         providers.addView(tencent, tp);
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(0, dp(42), 1);
+        gp.setMargins(dp(8), 0, 0, 0);
+        providers.addView(googleCloud, gp);
         card.addView(providers);
 
         if ("tencent".equals(provider)) {
@@ -3051,6 +3199,18 @@ public class MainActivity extends Activity {
                     .putBoolean("mobile_translate_enabled", true)
                     .apply();
                 toast("手机端腾讯翻译配置已保存");
+                renderSettings();
+            }));
+        } else if ("google_cloud".equals(provider)) {
+            EditText apiKey = input("Google Cloud Translation API Key", prefs.getString("mobile_google_cloud_api_key", ""), true);
+            card.addView(apiKey);
+            card.addView(settingsSaveButton("保存 Google Cloud 翻译配置", v -> {
+                prefs.edit()
+                    .putString("mobile_google_cloud_api_key", apiKey.getText().toString().trim())
+                    .putString("mobile_translate_provider", "google_cloud")
+                    .putBoolean("mobile_translate_enabled", true)
+                    .apply();
+                toast("手机端 Google Cloud 翻译配置已保存");
                 renderSettings();
             }));
         } else {
@@ -3092,7 +3252,9 @@ public class MainActivity extends Activity {
     private String mobileTranslateSummary() {
         if (!prefs.getBoolean("mobile_translate_enabled", false)) return "未开启";
         String provider = prefs.getString("mobile_translate_provider", "baidu");
-        return "tencent".equals(provider) ? "腾讯翻译" : "百度翻译";
+        if ("tencent".equals(provider)) return "腾讯翻译";
+        if ("google_cloud".equals(provider)) return "Google Cloud";
+        return "百度翻译";
     }
 
     private View settingsSecurityCard() {
@@ -3897,6 +4059,12 @@ public class MainActivity extends Activity {
     private String mobileTranslatorIdentity() {
         if (!prefs.getBoolean("mobile_translate_enabled", false)) return "mobile-disabled";
         return prefs.getString("mobile_translate_provider", "baidu");
+    }
+
+    private static String mobileTranslatorModel(String provider) {
+        if ("tencent".equals(provider)) return "tencent-tmt";
+        if ("google_cloud".equals(provider)) return "cloud-translation-basic-v2";
+        return "baidu-general";
     }
 
     private static String translationSourceHash(Models.Mail mail, JSONObject source, String translatorIdentity) {

@@ -1937,6 +1937,7 @@
                                         <select class="form-select form-select-sm" id="translation-default-provider">
                                             <option value="baidu">百度翻译</option>
                                             <option value="tencent">腾讯翻译</option>
+                                            <option value="google_cloud">Google Cloud Translation</option>
                                             <option value="ai">AI 翻译</option>
                                         </select>
                                     </div>
@@ -1947,7 +1948,7 @@
                                     <button class="btn btn-primary btn-sm w-100" onclick="saveTranslationSettings()" id="btn-save-translation-settings">
                                         <i class="bi bi-save me-1"></i><span data-i18n="saveTranslationSettings">保存翻译设置</span>
                                     </button>
-                                    <div class="small text-muted mt-2" data-i18n="translationProviderHint">百度/腾讯适合快速翻译并保留邮件 HTML 外壳；AI 适合复杂语境兜底。</div>
+                                    <div class="small text-muted mt-2" data-i18n="translationProviderHint">百度/腾讯/Google Cloud 适合快速翻译并保留邮件 HTML 外壳；AI 适合复杂语境兜底。</div>
                                 </div>
                                 <div class="col-12 col-lg-7">
                                     <div class="row g-3">
@@ -1998,6 +1999,25 @@
                                                         <input class="form-check-input" type="checkbox" id="clear-tencent-translation-secret-key">
                                                         <span data-i18n="clearTencentTranslationSecret">清除腾讯翻译 SecretKey</span>
                                                     </label>
+                                                </div>
+                                            </section>
+                                        </div>
+                                        <div class="col-12">
+                                            <section class="settings-account-panel">
+                                                <div class="settings-account-panel-header">
+                                                    <div class="settings-account-panel-title"><i class="bi bi-google"></i><span>Google Cloud Translation</span></div>
+                                                    <span class="badge text-bg-light" id="google-cloud-translation-status">未配置</span>
+                                                </div>
+                                                <div class="settings-account-panel-body">
+                                                    <div class="mb-2">
+                                                        <label class="form-label" for="google-cloud-translation-api-key">API Key</label>
+                                                        <input type="password" class="form-control form-control-sm" id="google-cloud-translation-api-key" data-i18n-ph="secretKeepPlaceholder" placeholder="留空则保持当前值" autocomplete="new-password">
+                                                    </div>
+                                                    <label class="form-check-label small">
+                                                        <input class="form-check-input" type="checkbox" id="clear-google-cloud-translation-api-key">
+                                                        <span data-i18n="clearGoogleCloudTranslationApiKey">清除 Google Cloud Translation API Key</span>
+                                                    </label>
+                                                    <div class="small text-muted mt-2">使用官方 Cloud Translation Basic v2，目标语言 zh-CN。</div>
                                                 </div>
                                             </section>
                                         </div>
@@ -2380,12 +2400,13 @@
                 defaultTranslationProvider: '默认翻译渠道',
                 fallbackToAi: '专用翻译失败时使用 AI 兜底',
                 saveTranslationSettings: '保存翻译设置',
-                translationProviderHint: '百度/腾讯适合快速翻译并保留邮件 HTML 外壳；AI 适合复杂语境兜底。',
+                translationProviderHint: '百度/腾讯/Google Cloud 适合快速翻译并保留邮件 HTML 外壳；AI 适合复杂语境兜底。',
                 translationSettingsLoadFailed: '翻译设置加载失败',
                 translationSettingsSaved: '翻译设置已保存',
                 translationSettingsSaveFailed: '翻译设置保存失败',
                 clearBaiduTranslationSecret: '清除百度翻译密钥',
                 clearTencentTranslationSecret: '清除腾讯翻译 SecretKey',
+                clearGoogleCloudTranslationApiKey: '清除 Google Cloud Translation API Key',
                 keywordRules: '关键词规则',
                 keywordGroups: '关键词分组',
                 keywordRuleForm: '规则配置',
@@ -2746,12 +2767,13 @@
                 defaultTranslationProvider: 'Default provider',
                 fallbackToAi: 'Use AI fallback when dedicated translation fails',
                 saveTranslationSettings: 'Save translation settings',
-                translationProviderHint: 'Baidu/Tencent are faster and keep the email HTML shell; AI is useful as a fallback for complex context.',
+                translationProviderHint: 'Baidu/Tencent/Google Cloud are faster and keep the email HTML shell; AI is useful as a fallback for complex context.',
                 translationSettingsLoadFailed: 'Failed to load translation settings',
                 translationSettingsSaved: 'Translation settings saved',
                 translationSettingsSaveFailed: 'Failed to save translation settings',
                 clearBaiduTranslationSecret: 'Clear Baidu translation secret',
                 clearTencentTranslationSecret: 'Clear Tencent translation SecretKey',
+                clearGoogleCloudTranslationApiKey: 'Clear Google Cloud Translation API Key',
                 keywordRules: 'Keyword Rules',
                 keywordGroups: 'Keyword Groups',
                 keywordRuleForm: 'Rule Config',
@@ -5726,6 +5748,7 @@
             const settings = translationSettings || {};
             const baidu = settings.baidu || {};
             const tencent = settings.tencent || {};
+            const googleCloud = settings.google_cloud || settings.googleCloud || {};
             const defaultProvider = document.getElementById('translation-default-provider');
             const fallback = document.getElementById('translation-fallback-ai');
             const baiduAppid = document.getElementById('baidu-translation-appid');
@@ -5737,6 +5760,9 @@
             const tencentSecretKey = document.getElementById('tencent-translation-secret-key');
             const tencentClear = document.getElementById('clear-tencent-translation-secret-key');
             const tencentStatus = document.getElementById('tencent-translation-status');
+            const googleCloudApiKey = document.getElementById('google-cloud-translation-api-key');
+            const googleCloudClear = document.getElementById('clear-google-cloud-translation-api-key');
+            const googleCloudStatus = document.getElementById('google-cloud-translation-status');
             if (defaultProvider) defaultProvider.value = settings.default_provider || 'ai';
             if (fallback) fallback.checked = settings.fallback_to_ai !== false;
             if (baiduAppid) baiduAppid.value = baidu.appid || '';
@@ -5753,6 +5779,13 @@
             if (tencentStatus) {
                 tencentStatus.textContent = tencent.secret_key_configured ? t('configured') : t('notConfigured');
                 tencentStatus.className = `badge ${tencent.secret_key_configured ? 'text-bg-success' : 'text-bg-light'}`;
+            }
+            if (googleCloudApiKey) googleCloudApiKey.value = '';
+            if (googleCloudClear) googleCloudClear.checked = false;
+            if (googleCloudStatus) {
+                const configured = googleCloud.api_key_configured || googleCloud.apiKeyConfigured;
+                googleCloudStatus.textContent = configured ? t('configured') : t('notConfigured');
+                googleCloudStatus.className = `badge ${configured ? 'text-bg-success' : 'text-bg-light'}`;
             }
         }
 
@@ -5787,6 +5820,8 @@
                     tencent_region: document.getElementById('tencent-translation-region')?.value.trim() || 'ap-guangzhou',
                     tencent_secret_key: document.getElementById('tencent-translation-secret-key')?.value.trim() || '',
                     clear_tencent_secret_key: document.getElementById('clear-tencent-translation-secret-key')?.checked || false,
+                    google_cloud_api_key: document.getElementById('google-cloud-translation-api-key')?.value.trim() || '',
+                    clear_google_cloud_api_key: document.getElementById('clear-google-cloud-translation-api-key')?.checked || false,
                 };
                 const resp = await fetch('/api/translation/settings', {
                     method: 'POST',
@@ -7007,6 +7042,19 @@
             return document.getElementById('auto-refresh-toggle');
         }
 
+        function _currentSearchQuery() {
+            const input = document.getElementById('search-input');
+            return input ? input.value.trim() : '';
+        }
+
+        function _isSearchMode() {
+            return Boolean(_currentSearchQuery());
+        }
+
+        function _currentViewUsesExternalAccounts() {
+            return ['external', 'global', 'group', 'keyword'].includes(currentAccountType);
+        }
+
         function _loadAutoRefreshPreference() {
             const saved = localStorage.getItem('memail-auto-refresh');
             autoRefreshEnabled = saved === null ? true : saved !== '0';
@@ -7070,6 +7118,11 @@
             }
             if (enabled && (currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword' || currentEmail)) {
                 autoRefreshTimer = setInterval(() => {
+                    if (_currentSearchQuery()) {
+                        if (_currentViewUsesExternalAccounts()) _backgroundSyncVisibleExternalAccounts(false);
+                        searchMail(true);
+                        return;
+                    }
                     if (currentAccountType === 'global') {
                         _backgroundSyncVisibleExternalAccounts(false);
                         queryGlobalMessages(true);
@@ -7237,6 +7290,11 @@
         }
 
         async function refreshCurrentTab() {
+            if (_currentSearchQuery()) {
+                if (_currentViewUsesExternalAccounts()) await _backgroundSyncVisibleExternalAccounts(true);
+                await searchMail(false);
+                return;
+            }
             if (currentAccountType === 'global') {
                 const btn = document.getElementById('btn-refresh-mail');
                 if (btn) btn.disabled = true;
@@ -7823,11 +7881,13 @@
                     tags: [msg._accountLabel || '', isExternal ? (batchRef?.folder || sourceFolder) : ''],
                 });
             }).join('');
-            mailList.insertAdjacentHTML('beforeend', _renderPagination({
-                currentPage: currentGlobalPage,
-                total: currentGlobalTotal,
-                context: currentAccountType === 'group' ? 'group' : 'global',
-            }));
+            if (!_isSearchMode()) {
+                mailList.insertAdjacentHTML('beforeend', _renderPagination({
+                    currentPage: currentGlobalPage,
+                    total: currentGlobalTotal,
+                    context: currentAccountType === 'group' ? 'group' : 'global',
+                }));
+            }
         }
 
         async function viewGlobalExternalMail(encodedAccountId, encodedMsgId, element) {
@@ -8579,7 +8639,7 @@
                 });
             }).join('');
             
-            if (isInboxTab || isVirtualTab) {
+            if (!_isSearchMode() && (isInboxTab || isVirtualTab)) {
                 mailList.insertAdjacentHTML('beforeend', _renderPagination({
                     currentPage,
                     total: currentTotal,
@@ -8732,11 +8792,13 @@
                 });
             }).join('');
 
-            mailList.insertAdjacentHTML('beforeend', _renderPagination({
-                currentPage: currentExternalPage,
-                total: currentExternalTotal,
-                context: 'external',
-            }));
+            if (!_isSearchMode()) {
+                mailList.insertAdjacentHTML('beforeend', _renderPagination({
+                    currentPage: currentExternalPage,
+                    total: currentExternalTotal,
+                    context: 'external',
+                }));
+            }
         }
 
         function _parseExternalMessageRef(raw) {
@@ -8854,7 +8916,7 @@
             }
         }
 
-        async function searchMail() {
+        async function searchMail(silent = false) {
             if (currentAccountType === 'local' && !currentEmail) return;
             if (currentAccountType === 'external' && !currentExternalAccountId) return;
             if (currentAccountType === 'global' && !mailboxes.length && !externalAccounts.length) return;
@@ -8864,7 +8926,9 @@
             if (!query) { clearSearch(); return; }
 
             const mailList = document.getElementById('mail-list');
-            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('searching')}</div>`;
+            if (!silent) {
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('searching')}</div>`;
+            }
 
             try {
                 if (currentAccountType === 'global') {
@@ -8920,7 +8984,7 @@
                     return;
                 }
                 if (currentAccountType === 'keyword') {
-                    await queryKeywordRuleMessages(false, query);
+                    await queryKeywordRuleMessages(silent, query);
                     if (currentGlobalMessages.length === 0) {
                         mailList.innerHTML = `<div class="empty-state"><i class="bi bi-search d-block"></i><p>${t('noMatch')}</p></div>`;
                     }
@@ -8948,6 +9012,7 @@
                     }
                     currentExternalPage = 1;
                     currentExternalMessages = mails;
+                    currentExternalTotal = mails.length;
                     await loadMessageMetaFor(currentExternalMessages, { accountType: 'external', accountId: currentExternalAccountId });
                     renderExternalMessages(currentExternalMessages);
                     if (currentExternalMessages.length === 0) {
@@ -8962,6 +9027,8 @@
                 });
                 const data = await resp.json();
                 if (data.success) {
+                    currentMessages = data.messages || [];
+                    currentTotal = currentMessages.length;
                     await loadMessageMetaFor(data.messages, { accountType: 'local', accountId: currentEmail, folder: 'inbox' });
                     renderMessages(data.messages);
                     if (data.messages.length === 0) {

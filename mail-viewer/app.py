@@ -76,6 +76,10 @@ AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS",
 TRANSLATION_SERVICE_TIMEOUT_SECONDS = int(os.getenv("TRANSLATION_SERVICE_TIMEOUT_SECONDS", "12"))
 TRANSLATION_CACHE_LIMIT = int(os.getenv("TRANSLATION_CACHE_LIMIT", "500"))
 TRANSLATION_CACHE_MAX_CHARS = int(os.getenv("TRANSLATION_CACHE_MAX_CHARS", str(2 * 1024 * 1024)))
+TRANSLATION_BATCH_SEPARATOR = "\n<<<MEMAIL_TRANSLATION_SPLIT_9EC1B7>>>\n"
+TRANSLATION_BATCH_SIZES = {"baidu": 18, "tencent": 12}
+TRANSLATION_BATCH_MAX_TEXT_CHARS = {"baidu": 1500, "tencent": 2000}
+TRANSLATION_PROVIDERS = {"ai", "baidu", "tencent", "google_cloud"}
 MOBILE_PUSH_POLL_SECONDS = int(os.getenv("MOBILE_PUSH_POLL_SECONDS", "20"))
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017").strip()
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME") or os.getenv("DB_NAME", "mailserver")
@@ -306,6 +310,7 @@ def _write_ai_settings(ai: dict):
 def _safe_translation_settings(translation: dict) -> dict:
     baidu = translation.get("baidu", {}) if isinstance(translation.get("baidu"), dict) else {}
     tencent = translation.get("tencent", {}) if isinstance(translation.get("tencent"), dict) else {}
+    google_cloud = translation.get("google_cloud", {}) if isinstance(translation.get("google_cloud"), dict) else {}
     return {
         "default_provider": translation.get("default_provider", "ai"),
         "fallback_to_ai": bool(translation.get("fallback_to_ai", True)),
@@ -318,6 +323,9 @@ def _safe_translation_settings(translation: dict) -> dict:
             "secret_key_configured": bool(_decrypt_setting(tencent.get("secret_key"))),
             "region": tencent.get("region", "ap-guangzhou"),
         },
+        "google_cloud": {
+            "api_key_configured": bool(_decrypt_setting(google_cloud.get("api_key"))),
+        },
     }
 
 
@@ -327,10 +335,11 @@ def _get_translation_settings() -> dict:
     if not isinstance(translation, dict):
         translation = {}
     default_provider = (translation.get("default_provider") or "ai").strip().lower()
-    if default_provider not in {"ai", "baidu", "tencent"}:
+    if default_provider not in TRANSLATION_PROVIDERS:
         default_provider = "ai"
     baidu = translation.get("baidu", {}) if isinstance(translation.get("baidu"), dict) else {}
     tencent = translation.get("tencent", {}) if isinstance(translation.get("tencent"), dict) else {}
+    google_cloud = translation.get("google_cloud", {}) if isinstance(translation.get("google_cloud"), dict) else {}
     translation["default_provider"] = default_provider
     translation["fallback_to_ai"] = bool(translation.get("fallback_to_ai", True))
     translation["baidu"] = baidu
@@ -338,6 +347,7 @@ def _get_translation_settings() -> dict:
         **tencent,
         "region": (tencent.get("region") or "ap-guangzhou").strip() or "ap-guangzhou",
     }
+    translation["google_cloud"] = google_cloud
     return translation
 
 
@@ -345,7 +355,7 @@ def _write_translation_settings(data: dict) -> dict:
     settings = _read_viewer_settings()
     current = settings.get("translation", {}) if isinstance(settings.get("translation"), dict) else {}
     default_provider = (data.get("default_provider") or current.get("default_provider") or "ai").strip().lower()
-    if default_provider not in {"ai", "baidu", "tencent"}:
+    if default_provider not in TRANSLATION_PROVIDERS:
         raise ValueError("请选择有效翻译渠道")
     current["default_provider"] = default_provider
     current["fallback_to_ai"] = bool(data.get("fallback_to_ai", current.get("fallback_to_ai", True)))
@@ -369,6 +379,13 @@ def _write_translation_settings(data: dict) -> dict:
     elif data.get("tencent_secret_key"):
         tencent["secret_key"] = _encrypt_setting((data.get("tencent_secret_key") or "").strip())
     current["tencent"] = tencent
+
+    google_cloud = current.get("google_cloud", {}) if isinstance(current.get("google_cloud"), dict) else {}
+    if data.get("clear_google_cloud_api_key"):
+        google_cloud.pop("api_key", None)
+    elif data.get("google_cloud_api_key"):
+        google_cloud["api_key"] = _encrypt_setting((data.get("google_cloud_api_key") or "").strip())
+    current["google_cloud"] = google_cloud
 
     settings["translation"] = current
     _write_viewer_settings(settings)
@@ -587,6 +604,60 @@ def _translate_text_with_chunks(value: str, translate_text) -> str:
     translated = [translate_text(chunk) for chunk in chunks]
     separator = "\n" if "\n" in value else " "
     return separator.join(part.strip() for part in translated if part.strip()).strip()
+
+
+def _translate_texts_with_provider(texts: list[str], translate_text, provider: str) -> dict[str, str]:
+    unique_texts: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        source = str(text or "")
+        if not source or source in seen:
+            continue
+        seen.add(source)
+        unique_texts.append(source)
+    if not unique_texts:
+        return {}
+
+    results: dict[str, str] = {}
+    batch_size = max(1, TRANSLATION_BATCH_SIZES.get(provider, 8))
+    max_text_chars = max(200, TRANSLATION_BATCH_MAX_TEXT_CHARS.get(provider, 1200))
+    pending: list[str] = []
+
+    def flush_pending() -> None:
+        nonlocal pending
+        if not pending:
+            return
+        group = pending
+        pending = []
+        try:
+            joined = TRANSLATION_BATCH_SEPARATOR.join(group)
+            translated_joined = translate_text(joined)
+            parts = translated_joined.split(TRANSLATION_BATCH_SEPARATOR)
+            if len(parts) != len(group):
+                raise RuntimeError(f"批量翻译分隔符未保留: expected={len(group)} actual={len(parts)}")
+            for source, translated in zip(group, parts):
+                results[source] = translated.strip()
+            return
+        except Exception as exc:
+            app.logger.warning(
+                "批量翻译失败，降级单条: provider=%s items=%s error=%s",
+                provider,
+                len(group),
+                exc,
+            )
+        for source in group:
+            results[source] = _translate_text_with_chunks(source, translate_text)
+
+    for source in unique_texts:
+        if len(source) > max_text_chars:
+            flush_pending()
+            results[source] = _translate_text_with_chunks(source, translate_text)
+            continue
+        pending.append(source)
+        if len(pending) >= batch_size:
+            flush_pending()
+    flush_pending()
+    return results
 
 
 class _HtmlTextNodeMasker(HTMLParser):
@@ -833,18 +904,20 @@ def _translate_html_semantic_blocks(html: str, translate_text, provider: str) ->
     return output, len(blocks), sum(len(block.get("text", "")) for block in blocks)
 
 
-def _translate_html_text_nodes(html: str, translate_text, provider: str) -> tuple[str, int, int]:
+def _translate_html_text_nodes(html: str, translate_text, provider: str, translate_texts=None) -> tuple[str, int, int]:
     masked_html, nodes = _mask_html_text_nodes(html)
     if not masked_html or not nodes:
         return "", 0, 0
-    translated_cache: dict[str, str] = {}
+    sources = [node["text"] for node in nodes]
+    if translate_texts:
+        translated_cache = translate_texts(sources)
+    else:
+        translated_cache = _translate_texts_with_provider(sources, translate_text, provider)
     replacements = {}
     started_at = time.time()
     for node in nodes:
         source = node["text"]
-        if source not in translated_cache:
-            translated_cache[source] = _translate_text_with_chunks(source, translate_text)
-        replacements[node["token"]] = html_lib.escape(translated_cache[source], quote=False)
+        replacements[node["token"]] = html_lib.escape(translated_cache.get(source, source), quote=False)
     translated_html = masked_html
     for token, translated in replacements.items():
         translated_html = translated_html.replace(token, translated)
@@ -983,6 +1056,68 @@ def _call_tencent_translate(text: str, settings: dict) -> str:
     translated = (response.get("TargetText") or "").strip()
     if not translated:
         raise RuntimeError("腾讯翻译返回空内容")
+    return translated
+
+
+def _call_google_cloud_translate_batch(texts: list[str], settings: dict) -> dict[str, str]:
+    google_cloud = settings.get("google_cloud", {}) if isinstance(settings.get("google_cloud"), dict) else {}
+    api_key = _decrypt_setting(google_cloud.get("api_key"))
+    if not api_key:
+        raise RuntimeError("Google Cloud Translation 未配置 API Key")
+    unique_texts: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        source = str(text or "")
+        if not source or source in seen:
+            continue
+        seen.add(source)
+        unique_texts.append(source)
+    if not unique_texts:
+        return {}
+    results: dict[str, str] = {}
+    for start in range(0, len(unique_texts), 128):
+        batch = unique_texts[start:start + 128]
+        started_at = time.time()
+        resp = fast_http_session.post(
+            "https://translation.googleapis.com/language/translate/v2",
+            params={"key": api_key},
+            json={
+                "q": batch,
+                "target": "zh-CN",
+                "format": "text",
+            },
+            timeout=TRANSLATION_SERVICE_TIMEOUT_SECONDS,
+        )
+        app.logger.info(
+            "Google Cloud Translation 响应: status=%s items=%s input_chars=%s elapsed_ms=%s",
+            resp.status_code,
+            len(batch),
+            sum(len(text) for text in batch),
+            int((time.time() - started_at) * 1000),
+        )
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise RuntimeError(f"Google Cloud Translation 返回非 JSON: {_translation_preview(resp.text, 300)}") from exc
+        if resp.status_code >= 400 or payload.get("error"):
+            error = payload.get("error") if isinstance(payload, dict) else {}
+            message = error.get("message") if isinstance(error, dict) else ""
+            raise RuntimeError(message or f"Google Cloud Translation HTTP {resp.status_code}")
+        items = ((payload.get("data") or {}).get("translations") or []) if isinstance(payload, dict) else []
+        if len(items) != len(batch):
+            raise RuntimeError(f"Google Cloud Translation 返回数量不匹配: expected={len(batch)} actual={len(items)}")
+        for source, item in zip(batch, items):
+            translated = html_lib.unescape(str((item or {}).get("translatedText") or "")).strip()
+            if translated:
+                results[source] = translated
+    return results
+
+
+def _call_google_cloud_translate(text: str, settings: dict) -> str:
+    results = _call_google_cloud_translate_batch([text], settings)
+    translated = results.get(text, "")
+    if not translated:
+        raise RuntimeError("Google Cloud Translation 返回空内容")
     return translated
 
 
@@ -1403,9 +1538,12 @@ def _call_configured_translation_engine(
         if html_content:
             def translator(text: str) -> str:
                 return _call_baidu_translate(text, settings)
-            translated_html, node_count, input_chars = _translate_html_semantic_blocks(html_content, translator, "baidu")
-            if not translated_html:
-                translated_html, node_count, input_chars = _translate_html_text_nodes(html_content, translator, "baidu")
+            translated_html, node_count, input_chars = _translate_html_text_nodes(
+                html_content,
+                translator,
+                "baidu",
+                lambda texts: _translate_texts_with_provider(texts, translator, "baidu"),
+            )
             if translated_html:
                 return translated_html, {
                     "engine": "baidu",
@@ -1428,9 +1566,12 @@ def _call_configured_translation_engine(
         if html_content:
             def translator(text: str) -> str:
                 return _call_tencent_translate(text, settings)
-            translated_html, node_count, input_chars = _translate_html_semantic_blocks(html_content, translator, "tencent")
-            if not translated_html:
-                translated_html, node_count, input_chars = _translate_html_text_nodes(html_content, translator, "tencent")
+            translated_html, node_count, input_chars = _translate_html_text_nodes(
+                html_content,
+                translator,
+                "tencent",
+                lambda texts: _translate_texts_with_provider(texts, translator, "tencent"),
+            )
             if translated_html:
                 return translated_html, {
                     "engine": "tencent",
@@ -1446,6 +1587,32 @@ def _call_configured_translation_engine(
             "engine": "tencent",
             "provider": "tencent",
             "model": "TextTranslate",
+            "format": "text",
+            "input_chars": len(text),
+        }
+    if provider == "google_cloud":
+        if html_content:
+            translated_html, node_count, input_chars = _translate_html_text_nodes(
+                html_content,
+                lambda text: _call_google_cloud_translate(text, settings),
+                "google_cloud",
+                lambda texts: _call_google_cloud_translate_batch(texts, settings),
+            )
+            if translated_html:
+                return translated_html, {
+                    "engine": "google_cloud",
+                    "provider": "google_cloud",
+                    "model": "cloud-translation-basic-v2",
+                    "format": "html",
+                    "input_chars": input_chars,
+                    "nodes": node_count,
+                }
+        text = _translation_text_content(html_content, text_content, subject)
+        translated = _translate_text_with_chunks(text, lambda chunk: _call_google_cloud_translate(chunk, settings))
+        return translated, {
+            "engine": "google_cloud",
+            "provider": "google_cloud",
+            "model": "cloud-translation-basic-v2",
             "format": "text",
             "input_chars": len(text),
         }
@@ -3301,6 +3468,9 @@ def _public_translation_settings_for_portable() -> dict:
             "secretKeyConfigured": bool((settings.get("tencent") or {}).get("secret_key_configured")),
             "region": (settings.get("tencent") or {}).get("region", "ap-guangzhou"),
         },
+        "googleCloud": {
+            "apiKeyConfigured": bool((settings.get("google_cloud") or {}).get("api_key_configured")),
+        },
     }
 
 
@@ -3341,7 +3511,7 @@ def _normalize_portable_translation_settings(value: dict) -> dict:
         return {}
     default_provider = (value.get("default_provider") or value.get("defaultProvider") or "").strip().lower()
     result = {}
-    if default_provider in {"ai", "baidu", "tencent"}:
+    if default_provider in TRANSLATION_PROVIDERS:
         result["default_provider"] = default_provider
     if "fallback_to_ai" in value or "fallbackToAi" in value:
         result["fallback_to_ai"] = bool(value.get("fallback_to_ai", value.get("fallbackToAi")))
@@ -3353,6 +3523,9 @@ def _normalize_portable_translation_settings(value: dict) -> dict:
         result["tencent_secret_id"] = str(tencent.get("secretId") or tencent.get("secret_id")).strip()
     if tencent.get("region"):
         result["tencent_region"] = str(tencent.get("region")).strip()
+    google_cloud = value.get("googleCloud") or value.get("google_cloud")
+    if isinstance(google_cloud, dict) and google_cloud.get("apiKey"):
+        result["google_cloud_api_key"] = str(google_cloud.get("apiKey")).strip()
     return result
 
 
