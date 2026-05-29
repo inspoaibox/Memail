@@ -2223,6 +2223,25 @@ app.post('/api/accounts/sync', async (req, res) => {
   }
 });
 
+// 仅更新账户备注类元数据，不重新登录 IMAP。
+app.patch('/api/accounts/:id/metadata', async (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
+  const id = parseInt(req.params.id, 10);
+  const client = clients.get(id);
+  if (!client) return res.status(404).json({ error: '账户不存在' });
+  if (req.body?.displayName !== undefined) {
+    client.account.displayName = normalizeDisplayName(req.body.displayName, client.account.auth?.user || '');
+  }
+  if (req.body?.sendName !== undefined) {
+    client.account.sendName = normalizeSendName(req.body.sendName);
+  }
+  if (req.body?.group !== undefined) {
+    client.account.group = normalizeAccountGroup(req.body.group);
+  }
+  saveAccounts();
+  res.json(accountSummary(id, client.account));
+});
+
 // 更新账户信息
 app.patch('/api/accounts/:id', async (req, res) => {
   if (!requirePersistenceSecret(res)) return;

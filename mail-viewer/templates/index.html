@@ -1851,7 +1851,7 @@
                                                 </div>
                                                 <input type="text" class="form-control form-control-sm" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
                                                 <input type="text" class="form-control form-control-sm" id="mailbox-send-name-input" data-i18n-ph="sendDisplayNamePlaceholder" placeholder="发信时显示给收件人的名字">
-                                                <input type="text" class="form-control form-control-sm account-field-wide" id="mailbox-group-input" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
+                                                <input type="text" class="form-control form-control-sm account-field-wide" id="mailbox-group-input" list="account-group-options" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
                                             </div>
                                             <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
                                             <div id="local-account-settings-list" class="account-settings-list"></div>
@@ -2318,7 +2318,8 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="external-group" data-i18n="accountGroup">账号分组</label>
-                        <input type="text" class="form-control" id="external-group" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
+                        <input type="text" class="form-control" id="external-group" list="account-group-options" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
+                        <datalist id="account-group-options"></datalist>
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="external-email" data-i18n="accountEmail">邮箱地址</label>
@@ -3757,6 +3758,34 @@
             return (account?.group || '').trim() || t('defaultAccountGroup');
         }
 
+        function _storedAccountGroupValue(group) {
+            return String(group || '') === t('defaultAccountGroup') ? '' : String(group || '').trim();
+        }
+
+        function _accountByDomRef(type, id, email = '') {
+            if (type === 'external') {
+                return externalAccounts.find(account => String(account.id) === String(id))
+                    || externalAccounts.find(account => String(account.email || '').toLowerCase() === String(email || '').toLowerCase())
+                    || null;
+            }
+            return mailboxes.find(mailbox => String(mailbox.address || '').toLowerCase() === String(id || email || '').toLowerCase()) || null;
+        }
+
+        function _existingAccountGroups() {
+            return Array.from(new Set([
+                ...mailboxes.map(item => String(item.group || '').trim()),
+                ...externalAccounts.map(item => String(item.group || '').trim()),
+            ].filter(Boolean))).sort((a, b) => a.localeCompare(b));
+        }
+
+        function renderAccountGroupOptions() {
+            const datalist = document.getElementById('account-group-options');
+            if (!datalist) return;
+            datalist.innerHTML = _existingAccountGroups()
+                .map(group => `<option value="${_escapeAttr(group)}"></option>`)
+                .join('');
+        }
+
         function _groupStateKey(group) {
             return `memail.groupCollapsed.${group}`;
         }
@@ -4199,12 +4228,30 @@
             return Array.from(buckets.entries());
         }
 
+        function _accountGroupValueFromDomItem(item) {
+            let node = item?.previousElementSibling || null;
+            while (node) {
+                if (node.classList?.contains('mail-account-group-toggle')) {
+                    return String(node.dataset.accountGroupValue || '').trim();
+                }
+                node = node.previousElementSibling;
+            }
+            return '';
+        }
+
         function _applyAccountOrderFromDom() {
             const items = Array.from(document.querySelectorAll('#mail-account-list .mail-account-item[draggable="true"]'));
+            const groupUpdates = [];
             accountOrder = items.flatMap(item => {
                 const type = item.dataset.accountType;
                 const id = item.dataset.accountId;
                 const email = item.dataset.accountEmail || '';
+                const targetGroup = _accountGroupValueFromDomItem(item);
+                const account = _accountByDomRef(type, id, email);
+                if (account && String(account.group || '').trim() !== targetGroup) {
+                    account.group = targetGroup;
+                    groupUpdates.push({ type, id, email, group: targetGroup });
+                }
                 const keys = [_accountOrderKey(type, id)];
                 const emailKey = _accountOrderEmailKey(`${type}Email`, email);
                 if (emailKey) keys.push(emailKey);
@@ -4222,12 +4269,48 @@
                 const bi = externalOrder.indexOf(String(b.id));
                 return (ai === -1 ? 99999 : ai) - (bi === -1 ? 99999 : bi);
             });
-            return { externalOrder };
+            return { externalOrder, groupUpdates };
+        }
+
+        async function _persistAccountGroupUpdate(update) {
+            const account = _accountByDomRef(update.type, update.id, update.email);
+            if (!account) return;
+            if (update.type === 'external') {
+                await _imapApi(`/accounts/${encodeURIComponent(update.id)}/metadata`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group: update.group }),
+                });
+                return;
+            }
+            const address = account.address || update.id || update.email;
+            const resp = await fetch(`/api/mailboxes/${encodeURIComponent(address)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    display_name: account.display_name || account.displayName || '',
+                    send_name: account.send_name || account.sendName || '',
+                    group: update.group,
+                }),
+            });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.message || t('settingsSaveFailed'));
+        }
+
+        async function _persistAccountGroupUpdates(updates) {
+            const uniqueUpdates = new Map();
+            updates.forEach(update => uniqueUpdates.set(`${update.type}:${update.id}`, update));
+            for (const update of uniqueUpdates.values()) {
+                await _persistAccountGroupUpdate(update);
+            }
         }
 
         async function persistAccountOrder() {
-            const { externalOrder } = _applyAccountOrderFromDom();
+            const { externalOrder, groupUpdates } = _applyAccountOrderFromDom();
             try {
+                if (groupUpdates.length) {
+                    await _persistAccountGroupUpdates(groupUpdates);
+                }
                 const resp = await fetch('/api/mailboxes/reorder', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -4242,8 +4325,12 @@
                         body: JSON.stringify({ order: externalOrder }),
                     });
                 }
+                if (groupUpdates.length) {
+                    await loadMailboxes();
+                }
             } catch (e) {
                 _showMailboxError(`${t('settingsSaveFailed')}: ${e.message}`);
+                await loadMailboxes();
             }
         }
 
@@ -4251,6 +4338,16 @@
             const list = document.getElementById('mail-account-list');
             if (!list) return;
             let dragging = null;
+            const clearDragOver = () => list.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            const moveDraggingNear = (target, event) => {
+                event.preventDefault();
+                if (!dragging || dragging === target) return;
+                clearDragOver();
+                target.classList.add('drag-over');
+                const rect = target.getBoundingClientRect();
+                const after = target.classList.contains('mail-account-group-toggle') || event.clientY > rect.top + rect.height / 2;
+                list.insertBefore(dragging, after ? target.nextSibling : target);
+            };
             list.querySelectorAll('.mail-account-item[draggable="true"]').forEach(item => {
                 item.addEventListener('dragstart', event => {
                     dragging = item;
@@ -4261,23 +4358,24 @@
                 });
                 item.addEventListener('dragend', () => {
                     item.classList.remove('dragging');
-                    list.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+                    clearDragOver();
                     dragging = null;
                     persistAccountOrder();
                     setTimeout(() => { suppressAccountClick = false; }, 0);
                 });
-                item.addEventListener('dragover', event => {
-                    event.preventDefault();
-                    if (!dragging || dragging === item) return;
-                    item.classList.add('drag-over');
-                    const rect = item.getBoundingClientRect();
-                    const after = event.clientY > rect.top + rect.height / 2;
-                    list.insertBefore(dragging, after ? item.nextSibling : item);
-                });
+                item.addEventListener('dragover', event => moveDraggingNear(item, event));
                 item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
                 item.addEventListener('drop', event => {
                     event.preventDefault();
                     item.classList.remove('drag-over');
+                });
+            });
+            list.querySelectorAll('.mail-account-group-toggle, .mail-account-aggregate').forEach(target => {
+                target.addEventListener('dragover', event => moveDraggingNear(target, event));
+                target.addEventListener('dragleave', () => target.classList.remove('drag-over'));
+                target.addEventListener('drop', event => {
+                    event.preventDefault();
+                    target.classList.remove('drag-over');
                 });
             });
         }
@@ -4507,10 +4605,11 @@
             }
             _groupedAccountEntries().forEach(([group, entries]) => {
                 const encodedGroup = encodeURIComponent(group);
+                const storedGroup = _storedAccountGroupValue(group);
                 const collapsed = _isGroupCollapsed(group);
                 const isGroupActive = currentAccountType === 'group' && currentGroupName === group;
                 rows.push(`
-                    <button class="mail-account-group-toggle" onclick="toggleAccountGroup('${encodedGroup}')" title="${collapsed ? '+' : '-'}">
+                    <button class="mail-account-group-toggle" data-account-group-value="${_escapeAttr(storedGroup)}" onclick="toggleAccountGroup('${encodedGroup}')" title="${collapsed ? '+' : '-'}">
                         <span class="mail-account-group-label">
                             <i class="bi ${collapsed ? 'bi-chevron-right' : 'bi-chevron-down'}"></i>
                             <span class="text-truncate">${_escapeHtml(group)}</span>
@@ -4519,14 +4618,14 @@
                     </button>`);
                 if (collapsed) return;
                 rows.push(`
-                    <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_ALL_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_ALL_FOLDER}')">
+                    <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_ALL_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" data-account-group-value="${_escapeAttr(storedGroup)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_ALL_FOLDER}')">
                         ${_accountAvatarHtml({displayName: t('allMail'), email: ''}, t('allMail'))}
                         <span class="mail-account-main">
                             <span class="mail-account-title">${_escapeHtml(t('allMail'))}</span>
                             <span class="mail-account-subtitle">${_escapeHtml(t('groupMailboxHint', {group}))}</span>
                         </span>
                     </button>
-                    <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_UNREAD_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_UNREAD_FOLDER}')">
+                    <button class="mail-account-item mail-account-aggregate ${isGroupActive && currentGroupFolder === GROUP_UNREAD_FOLDER ? 'active' : ''}" draggable="false" data-account-type="group" data-account-id="${_escapeAttr(group)}" data-account-group-value="${_escapeAttr(storedGroup)}" onclick="selectGroupMailbox('${encodedGroup}', '${GROUP_UNREAD_FOLDER}')">
                         ${_accountAvatarHtml({displayName: t('unreadMail'), email: ''}, t('unreadMail'))}
                         <span class="mail-account-main">
                             <span class="mail-account-title">${_escapeHtml(t('unreadMail'))}</span>
@@ -4587,6 +4686,7 @@
             const externalList = document.getElementById('external-account-settings-list');
             const groupFilter = document.getElementById('account-settings-group-filter');
             const search = (document.getElementById('account-settings-search')?.value || '').trim().toLowerCase();
+            renderAccountGroupOptions();
             const groups = Array.from(new Set([
                 ...mailboxes.map(item => _accountGroupName(item)),
                 ...externalAccounts.map(item => _accountGroupName(item)),
@@ -5294,6 +5394,7 @@
             const preferred = account?.name && externalPresets.includes(account.name) ? account.name : (account ? 'custom' : 'auto');
             await _prepareExternalPresetOptions(mode === 'copy' ? 'custom' : preferred);
             _setExternalAccountFormAction(externalAccountFormMode);
+            renderAccountGroupOptions();
 
             if (account) {
                 if (mode === 'copy') {
