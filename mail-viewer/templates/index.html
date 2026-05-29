@@ -1851,7 +1851,10 @@
                                                 </div>
                                                 <input type="text" class="form-control form-control-sm" id="mailbox-display-name-input" data-i18n-ph="displayNamePlaceholder" placeholder="显示名字 / 备注">
                                                 <input type="text" class="form-control form-control-sm" id="mailbox-send-name-input" data-i18n-ph="sendDisplayNamePlaceholder" placeholder="发信时显示给收件人的名字">
-                                                <input type="text" class="form-control form-control-sm account-field-wide" id="mailbox-group-input" list="account-group-options" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
+                                                <div class="input-group input-group-sm account-field-wide">
+                                                    <select class="form-select" id="mailbox-group-select" onchange="handleAccountGroupSelectChange('mailbox')"></select>
+                                                    <input type="text" class="form-control" id="mailbox-group-input" data-i18n-ph="newAccountGroupPlaceholder" placeholder="新建分组名称" style="display:none;">
+                                                </div>
                                             </div>
                                             <div class="small text-muted mb-2" data-i18n="localMailboxHint">本地邮箱用于接收当前系统托管域名的邮件。</div>
                                             <div id="local-account-settings-list" class="account-settings-list"></div>
@@ -2318,8 +2321,8 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="external-group" data-i18n="accountGroup">账号分组</label>
-                        <input type="text" class="form-control" id="external-group" list="account-group-options" data-i18n-ph="accountGroupPlaceholder" placeholder="分组，例如：工作邮箱">
-                        <datalist id="account-group-options"></datalist>
+                        <select class="form-select" id="external-group-select" onchange="handleAccountGroupSelectChange('external')"></select>
+                        <input type="text" class="form-control mt-2" id="external-group" data-i18n-ph="newAccountGroupPlaceholder" placeholder="新建分组名称" style="display:none;">
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="external-email" data-i18n="accountEmail">邮箱地址</label>
@@ -2381,6 +2384,8 @@
                 sendDisplayNamePlaceholder: '发信时显示给收件人的名字',
                 accountGroup: '账号分组',
                 accountGroupPlaceholder: '分组，例如：工作邮箱',
+                newAccountGroup: '新建分组',
+                newAccountGroupPlaceholder: '新建分组名称',
                 defaultAccountGroup: '未分组',
                 allGroups: '全部分组',
                 accountSearchPlaceholder: '搜索账号/备注/分组...',
@@ -2748,6 +2753,8 @@
                 sendDisplayNamePlaceholder: 'Name shown to recipients when sending',
                 accountGroup: 'Account Group',
                 accountGroupPlaceholder: 'Group, e.g. Work',
+                newAccountGroup: 'New Group',
+                newAccountGroupPlaceholder: 'New group name',
                 defaultAccountGroup: 'Ungrouped',
                 allGroups: 'All Groups',
                 accountSearchPlaceholder: 'Search accounts, notes, groups...',
@@ -3779,11 +3786,54 @@
         }
 
         function renderAccountGroupOptions() {
-            const datalist = document.getElementById('account-group-options');
-            if (!datalist) return;
-            datalist.innerHTML = _existingAccountGroups()
-                .map(group => `<option value="${_escapeAttr(group)}"></option>`)
-                .join('');
+            const groups = _existingAccountGroups();
+            ['mailbox', 'external'].forEach(scope => {
+                const select = document.getElementById(`${scope}-group-select`);
+                if (!select) return;
+                const previous = select.value;
+                select.innerHTML = [
+                    `<option value="">${_escapeHtml(t('defaultAccountGroup'))}</option>`,
+                    ...groups.map(group => `<option value="${_escapeAttr(group)}">${_escapeHtml(group)}</option>`),
+                    `<option value="__new__">${_escapeHtml(t('newAccountGroup'))}</option>`,
+                ].join('');
+                select.value = previous && (previous === '__new__' || groups.includes(previous)) ? previous : '';
+                handleAccountGroupSelectChange(scope);
+            });
+        }
+
+        function setAccountGroupControlValue(scope, group = '') {
+            renderAccountGroupOptions();
+            const select = document.getElementById(`${scope}-group-select`);
+            const input = document.getElementById(scope === 'mailbox' ? 'mailbox-group-input' : 'external-group');
+            if (!select || !input) return;
+            const value = String(group || '').trim();
+            if (!value) {
+                select.value = '';
+                input.value = '';
+            } else if (_existingAccountGroups().includes(value)) {
+                select.value = value;
+                input.value = '';
+            } else {
+                select.value = '__new__';
+                input.value = value;
+            }
+            handleAccountGroupSelectChange(scope);
+        }
+
+        function getAccountGroupControlValue(scope) {
+            const select = document.getElementById(`${scope}-group-select`);
+            const input = document.getElementById(scope === 'mailbox' ? 'mailbox-group-input' : 'external-group');
+            if (!select) return (input?.value || '').trim();
+            return select.value === '__new__' ? (input?.value || '').trim() : select.value;
+        }
+
+        function handleAccountGroupSelectChange(scope) {
+            const select = document.getElementById(`${scope}-group-select`);
+            const input = document.getElementById(scope === 'mailbox' ? 'mailbox-group-input' : 'external-group');
+            if (!select || !input) return;
+            const isNew = select.value === '__new__';
+            input.style.display = isNew ? '' : 'none';
+            if (!isNew) input.value = '';
         }
 
         function _groupStateKey(group) {
@@ -4868,11 +4918,10 @@
             const input = document.getElementById('mailbox-address-input');
             const displayInput = document.getElementById('mailbox-display-name-input');
             const sendNameInput = document.getElementById('mailbox-send-name-input');
-            const groupInput = document.getElementById('mailbox-group-input');
             const address = input.value.trim().toLowerCase();
             const displayName = (displayInput?.value || '').trim();
             const sendName = (sendNameInput?.value || '').trim();
-            const group = (groupInput?.value || '').trim();
+            const group = getAccountGroupControlValue('mailbox');
             _clearMailboxError();
             if (!_isValidEmail(address)) {
                 _showMailboxError(t('mailboxInvalid'));
@@ -4891,7 +4940,7 @@
                 input.value = '';
                 if (displayInput) displayInput.value = '';
                 if (sendNameInput) sendNameInput.value = '';
-                if (groupInput) groupInput.value = '';
+                setAccountGroupControlValue('mailbox', '');
                 mailboxes = data.mailboxes || [];
                 accountOrder = Array.isArray(data.account_order) ? data.account_order : accountOrder;
                 renderMailboxes();
@@ -5366,7 +5415,7 @@
             document.getElementById('external-email').value = mode === 'copy' ? '' : (account?.email || '');
             document.getElementById('external-display-name').value = mode === 'copy' ? '' : _accountDisplayName(account, account?.email || '');
             document.getElementById('external-send-name').value = mode === 'copy' ? '' : (account?.sendName || account?.send_name || '');
-            document.getElementById('external-group').value = account?.group || '';
+            setAccountGroupControlValue('external', account?.group || '');
             document.getElementById('external-password').value = '';
             document.getElementById('external-host').value = account?.host || '';
             document.getElementById('external-port').value = account?.port || 993;
@@ -5405,7 +5454,7 @@
                 document.getElementById('external-email').value = '';
                 document.getElementById('external-display-name').value = '';
                 document.getElementById('external-send-name').value = '';
-                document.getElementById('external-group').value = '';
+                setAccountGroupControlValue('external', '');
                 document.getElementById('external-password').value = '';
                 document.getElementById('external-host').value = '';
                 document.getElementById('external-port').value = '993';
@@ -5422,7 +5471,7 @@
             const email = document.getElementById('external-email').value.trim().toLowerCase();
             const displayName = document.getElementById('external-display-name').value.trim();
             const sendName = document.getElementById('external-send-name').value.trim();
-            const group = document.getElementById('external-group').value.trim();
+            const group = getAccountGroupControlValue('external');
             const password = document.getElementById('external-password').value;
             const host = document.getElementById('external-host').value.trim();
             const port = document.getElementById('external-port').value.trim();
