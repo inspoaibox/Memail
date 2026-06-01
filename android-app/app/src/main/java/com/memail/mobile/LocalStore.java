@@ -12,9 +12,31 @@ import java.util.List;
 final class LocalStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "memail_mobile_cache.db";
     private static final int DB_VERSION = 2;
+    private static final String[] MAIL_LIST_COLUMNS = new String[]{
+        "account_type",
+        "account_id",
+        "folder",
+        "id",
+        "sender",
+        "subject",
+        "preview",
+        "date_text",
+        "kind",
+        "to_text",
+        "error",
+        "seen",
+        "favorite"
+    };
+    private static final String[] MAIL_MERGE_COLUMNS = new String[]{
+        "preview",
+        "to_text",
+        "text_body",
+        "html_body"
+    };
 
     LocalStore(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
+        setWriteAheadLoggingEnabled(true);
     }
 
     @Override
@@ -188,7 +210,7 @@ final class LocalStore extends SQLiteOpenHelper {
             long now = System.currentTimeMillis();
             for (Models.Mail mail : mails) {
                 if (isEmpty(mail.accountType) || isEmpty(mail.accountId) || isEmpty(mail.folder)) continue;
-                Models.Mail existing = readMailByKey(db, mail.accountType, mail.accountId, mail.folder, mailId(mail));
+                Models.Mail existing = readMailMergeFields(db, mail.accountType, mail.accountId, mail.folder, mailId(mail));
                 ContentValues values = new ContentValues();
                 values.put("account_type", safe(mail.accountType));
                 values.put("account_id", safe(mail.accountId));
@@ -238,6 +260,51 @@ final class LocalStore extends SQLiteOpenHelper {
         }
     }
 
+    boolean hasMail(Models.Mail mail) {
+        if (mail == null || isEmpty(mail.accountType) || isEmpty(mail.accountId) || isEmpty(mail.folder)) return false;
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.query(
+            "mails",
+            new String[]{"id"},
+            "account_type=? AND account_id=? AND folder=? AND id=?",
+            new String[]{safe(mail.accountType), safe(mail.accountId), safe(mail.folder), mailId(mail)},
+            null,
+            null,
+            null,
+            "1"
+        )) {
+            return cursor.moveToFirst();
+        }
+    }
+
+    boolean hasFullBody(Models.Mail mail) {
+        if (mail == null || isEmpty(mail.accountType) || isEmpty(mail.accountId) || isEmpty(mail.folder)) return false;
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.query(
+            "mails",
+            new String[]{"text_body", "html_body"},
+            "account_type=? AND account_id=? AND folder=? AND id=?",
+            new String[]{safe(mail.accountType), safe(mail.accountId), safe(mail.folder), mailId(mail)},
+            null,
+            null,
+            null,
+            "1"
+        )) {
+            if (!cursor.moveToFirst()) return false;
+            return !get(cursor, "text_body").isEmpty() || !get(cursor, "html_body").isEmpty();
+        }
+    }
+
+    int countMails(String accountType, String accountId, String folder) {
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.rawQuery(
+            "SELECT COUNT(*) FROM mails WHERE account_type=? AND account_id=? AND folder=?",
+            new String[]{safe(accountType), safe(accountId), safe(folder)}
+        )) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
     List<Models.Mail> readMails(
         String accountType,
         String accountId,
@@ -259,6 +326,36 @@ final class LocalStore extends SQLiteOpenHelper {
         }
         appendFilters(where, args, query, unreadOnly);
         return queryMails(where.toString(), args, limit, offset);
+    }
+
+    List<Models.Mail> readMailsMissingBody(int limit) {
+        List<Models.Mail> items = new ArrayList<>();
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.query(
+            "mails",
+            MAIL_LIST_COLUMNS,
+            "folder NOT IN ('drafts','outbox') AND (text_body IS NULL OR text_body='') AND (html_body IS NULL OR html_body='')",
+            null,
+            null,
+            null,
+            "date_text DESC, updated_at DESC",
+            String.valueOf(Math.max(1, limit))
+        )) {
+            while (cursor.moveToNext()) {
+                items.add(readMail(cursor));
+            }
+        }
+        return items;
+    }
+
+    int countMailsMissingBody() {
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.rawQuery(
+            "SELECT COUNT(*) FROM mails WHERE folder NOT IN ('drafts','outbox') AND (text_body IS NULL OR text_body='') AND (html_body IS NULL OR html_body='')",
+            null
+        )) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
     }
 
     void deleteMail(Models.Mail mail) {
@@ -358,7 +455,7 @@ final class LocalStore extends SQLiteOpenHelper {
         String limitClause = Math.max(1, limit) + " OFFSET " + Math.max(0, offset);
         try (Cursor cursor = db.query(
             "mails",
-            null,
+            MAIL_LIST_COLUMNS,
             where,
             args.toArray(new String[0]),
             null,
@@ -412,15 +509,15 @@ final class LocalStore extends SQLiteOpenHelper {
         mail.text = get(cursor, "text_body");
         mail.html = get(cursor, "html_body");
         mail.error = get(cursor, "error");
-        mail.seen = cursor.getInt(cursor.getColumnIndexOrThrow("seen")) != 0;
-        mail.favorite = cursor.getInt(cursor.getColumnIndexOrThrow("favorite")) != 0;
+        mail.seen = getInt(cursor, "seen", 1) != 0;
+        mail.favorite = getInt(cursor, "favorite", 0) != 0;
         return mail;
     }
 
-    private static Models.Mail readMailByKey(SQLiteDatabase db, String accountType, String accountId, String folder, String id) {
+    private static Models.Mail readMailMergeFields(SQLiteDatabase db, String accountType, String accountId, String folder, String id) {
         try (Cursor cursor = db.query(
             "mails",
-            null,
+            MAIL_MERGE_COLUMNS,
             "account_type=? AND account_id=? AND folder=? AND id=?",
             new String[]{safe(accountType), safe(accountId), safe(folder), safe(id)},
             null,
@@ -440,8 +537,14 @@ final class LocalStore extends SQLiteOpenHelper {
     }
 
     private static String get(Cursor cursor, String column) {
-        int index = cursor.getColumnIndexOrThrow(column);
+        int index = cursor.getColumnIndex(column);
+        if (index < 0) return "";
         return cursor.isNull(index) ? "" : cursor.getString(index);
+    }
+
+    private static int getInt(Cursor cursor, String column, int fallback) {
+        int index = cursor.getColumnIndex(column);
+        return index < 0 || cursor.isNull(index) ? fallback : cursor.getInt(index);
     }
 
     private static boolean isEmpty(String value) {

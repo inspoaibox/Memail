@@ -92,12 +92,16 @@ public class MainActivity extends Activity {
     private static final String PREFS = "memail_mobile";
     private static final String CHANNEL_MAIL = "memail_mail";
     private static final long EVENT_RECONNECT_MS = 4_000L;
+    private static final int EVENT_READ_TIMEOUT_MS = 65_000;
+    private static final long SERVER_EVENT_REFRESH_DEBOUNCE_MS = 1_200L;
     private static final long FOREGROUND_REFRESH_MS = 120_000L;
     private static final long BOOTSTRAP_REFRESH_COOLDOWN_MS = 45_000L;
     private static final int REQ_PICK_ATTACHMENT = 4107;
     private static final int MAX_MOBILE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
     private static final int KEYWORD_SCAN_LIMIT = 600;
     private static final int MOBILE_TRANSLATE_CHUNK_CHARS = 4600;
+    private static final int DETAIL_FETCH_MAX_ATTEMPTS = 3;
+    private static final long DETAIL_FETCH_RETRY_DELAY_MS = 900L;
     private static final String MOBILE_TRANSLATION_BATCH_SEPARATOR = "\n<<<MEMAIL_TRANSLATION_SPLIT_9EC1B7>>>\n";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
@@ -113,6 +117,7 @@ public class MainActivity extends Activity {
     private Handler mainHandler;
     private Thread eventThread;
     private volatile boolean eventStreamRunning = false;
+    private volatile HttpURLConnection eventConnection;
     private volatile boolean bootstrapRefreshRunning = false;
     private boolean foregroundRefreshLoopRunning = false;
     private final Runnable foregroundRefreshTask = new Runnable() {
@@ -121,6 +126,17 @@ public class MainActivity extends Activity {
             if (!foregroundRefreshLoopRunning || token.isEmpty() || mainHandler == null) return;
             refreshBootstrapSilentlyIfDue(false);
             mainHandler.postDelayed(this, FOREGROUND_REFRESH_MS);
+        }
+    };
+    private final Runnable serverEventRefreshTask = new Runnable() {
+        @Override
+        public void run() {
+            if (token.isEmpty()) return;
+            fetchBootstrapThenAccounts(false, false);
+            if ("list".equals(currentScreen) && (selectedAccount != null || !selectedVirtualMode.isEmpty())) {
+                currentPage = 1;
+                loadMails(true);
+            }
         }
     };
     private LinearLayout root;
@@ -213,6 +229,7 @@ public class MainActivity extends Activity {
         super.onPause();
         stopEventStream();
         stopForegroundRefreshLoop();
+        if (mainHandler != null) mainHandler.removeCallbacks(serverEventRefreshTask);
     }
 
     @Override
@@ -232,6 +249,16 @@ public class MainActivity extends Activity {
         }
         if ("list".equals(currentScreen) && selectedAccount == null && !selectedVirtualMode.isEmpty()) {
             renderMailHub();
+            return;
+        }
+        if ("list".equals(currentScreen) && selectedAccount != null) {
+            selectedAccount = null;
+            selectedFolder = null;
+            replaceFolderList(new ArrayList<>());
+            replaceMailList(new ArrayList<>(), true);
+            navIndex = 0;
+            renderAccounts();
+            rebuildBottomNav();
             return;
         }
         if ("settings".equals(currentScreen)) {
@@ -434,6 +461,7 @@ public class MainActivity extends Activity {
         navIndex = 0;
         requestNotificationPermission();
         BackgroundSyncService.schedule(this);
+        RealtimeSyncService.start(this);
         startEventStream();
         startForegroundRefreshLoop();
         accounts.clear();
@@ -966,6 +994,13 @@ public class MainActivity extends Activity {
     private void loadMails(boolean silent) {
         if ((selectedAccount == null && selectedVirtualMode.isEmpty()) || selectedFolder == null) return;
         final String requestKey = mailLoadKey();
+        final Models.Account requestAccount = selectedAccount;
+        final Models.Folder requestFolder = selectedFolder;
+        final String requestSearchQuery = searchQuery;
+        final String requestVirtualMode = selectedVirtualMode;
+        final int requestPage = currentPage;
+        final int requestPageSize = pageSize;
+        final boolean requestIsVirtual = requestAccount == null && !requestVirtualMode.isEmpty();
         if (mailPageLoading && requestKey.equals(activeMailLoadKey)) return;
         mailPageLoading = true;
         activeMailLoadKey = requestKey;
@@ -978,64 +1013,64 @@ public class MainActivity extends Activity {
                 renderFoldersOrMails();
             }
         }
-        boolean keepExistingKeyword = "keyword".equals(selectedVirtualMode) && currentPage <= 1 && !mailSnapshot().isEmpty();
+        boolean keepExistingKeyword = "keyword".equals(requestVirtualMode) && requestPage <= 1 && !mailSnapshot().isEmpty();
         runAsync(silent ? null : "加载邮件...", () -> {
             List<Models.Mail> next = new ArrayList<>();
             hasMore = false;
-            if (selectedAccount == null && !selectedVirtualMode.isEmpty()) {
+            if (requestIsVirtual) {
                 next.addAll(loadVirtualMails());
-            } else if ("drafts".equals(selectedFolder.path)) {
-                JSONObject data = api.get("/api/drafts?account_type=" + encode(selectedAccount.type) + "&account_id=" + encode(selectedAccount.id));
+            } else if ("drafts".equals(requestFolder.path)) {
+                JSONObject data = api.get("/api/drafts?account_type=" + encode(requestAccount.type) + "&account_id=" + encode(requestAccount.id));
                 JSONArray arr = Json.array(data, "drafts");
                 for (int i = 0; i < arr.length(); i++) {
                     Models.Mail mail = Models.Mail.fromDraft(arr.optJSONObject(i));
-                    if (matchesSearch(mail)) next.add(mail);
+                    if (matchesSearch(mail, requestSearchQuery)) next.add(mail);
                 }
                 hasMore = false;
-            } else if ("outbox".equals(selectedFolder.path)) {
-                JSONObject data = api.get("/api/outbox?account_type=" + encode(selectedAccount.type) + "&account_id=" + encode(selectedAccount.id));
+            } else if ("outbox".equals(requestFolder.path)) {
+                JSONObject data = api.get("/api/outbox?account_type=" + encode(requestAccount.type) + "&account_id=" + encode(requestAccount.id));
                 JSONArray arr = Json.array(data, "messages");
                 for (int i = 0; i < arr.length(); i++) {
                     Models.Mail mail = Models.Mail.fromOutbox(arr.optJSONObject(i));
-                    if (matchesSearch(mail)) next.add(mail);
+                    if (matchesSearch(mail, requestSearchQuery)) next.add(mail);
                 }
                 hasMore = false;
-            } else if ("local".equals(selectedAccount.type)) {
+            } else if ("local".equals(requestAccount.type)) {
                 JSONObject data;
-                if (!searchQuery.isEmpty()) {
+                if (!requestSearchQuery.isEmpty()) {
                     data = api.post("/api/inbox/search", new JSONObject()
-                        .put("email", selectedAccount.email)
-                        .put("query", searchQuery));
+                        .put("email", requestAccount.email)
+                        .put("query", requestSearchQuery));
                     hasMore = false;
                 } else {
-                    int offset = Math.max(0, (currentPage - 1) * pageSize);
+                    int offset = Math.max(0, (requestPage - 1) * requestPageSize);
                     JSONObject body = new JSONObject()
-                        .put("email", selectedAccount.email)
+                        .put("email", requestAccount.email)
                         .put("offset", offset)
-                        .put("limit", pageSize)
-                        .put("unread_only", "unread".equals(selectedFolder.path));
-                    data = "sent".equals(selectedFolder.path)
+                        .put("limit", requestPageSize)
+                        .put("unread_only", "unread".equals(requestFolder.path));
+                    data = "sent".equals(requestFolder.path)
                         ? api.post("/api/sent/query", body)
                         : api.post("/api/inbox/query", body);
                     int total = data.optInt("total", 0);
-                    hasMore = offset + pageSize < total;
+                    hasMore = offset + requestPageSize < total;
                 }
                 JSONArray arr = Json.array(data, "messages");
                 for (int i = 0; i < arr.length(); i++) {
-                    String cacheFolder = "unread".equals(selectedFolder.path) ? "inbox" : selectedFolder.path;
-                    next.add(Models.Mail.fromLocal(arr.optJSONObject(i), selectedAccount.id, cacheFolder));
+                    String cacheFolder = "unread".equals(requestFolder.path) ? "inbox" : requestFolder.path;
+                    next.add(Models.Mail.fromLocal(arr.optJSONObject(i), requestAccount.id, cacheFolder));
                 }
             } else {
                 JSONObject data;
-                if (!searchQuery.isEmpty()) {
-                    data = api.get("/imap/api/accounts/" + encode(selectedAccount.id) + "/search?folder=" + encode(selectedFolder.path) + "&q=" + encode(searchQuery) + "&count=" + pageSize + "&offset=" + ((currentPage - 1) * pageSize));
+                if (!requestSearchQuery.isEmpty()) {
+                    data = api.get("/imap/api/accounts/" + encode(requestAccount.id) + "/search?folder=" + encode(requestFolder.path) + "&q=" + encode(requestSearchQuery) + "&count=" + requestPageSize + "&offset=" + ((requestPage - 1) * requestPageSize));
                 } else {
-                    data = api.get("/imap/api/accounts/" + encode(selectedAccount.id) + "/mails?folder=" + encode(selectedFolder.path) + "&count=" + pageSize + "&page=" + currentPage + "&cacheOnly=1");
+                    data = api.get("/imap/api/accounts/" + encode(requestAccount.id) + "/mails?folder=" + encode(requestFolder.path) + "&count=" + requestPageSize + "&page=" + requestPage + "&cacheOnly=1");
                 }
-                hasMore = data.optBoolean("hasMore", false) || currentPage * pageSize < data.optInt("total", 0);
+                hasMore = data.optBoolean("hasMore", false) || requestPage * requestPageSize < data.optInt("total", 0);
                 JSONArray arr = Json.array(data, "mails");
                 for (int i = 0; i < arr.length(); i++) {
-                    next.add(Models.Mail.fromExternal(arr.optJSONObject(i), selectedAccount.id, selectedFolder.path));
+                    next.add(Models.Mail.fromExternal(arr.optJSONObject(i), requestAccount.id, requestFolder.path));
                 }
             }
             store.upsertMails(next);
@@ -1047,7 +1082,8 @@ public class MainActivity extends Activity {
             if (isLatestRequest) mailPageLoading = false;
             if (!isLatestRequest || !requestKey.equals(mailLoadKey())) return;
             if (!result.optBoolean("keepCachedKeyword", false)) {
-                replaceMailList(mailsFromJson(Json.array(result, "mails")), currentPage <= 1);
+                List<Models.Mail> renderedMails = mailsFromJson(Json.array(result, "mails"));
+                replaceMailList(renderedMails, currentPage <= 1);
             } else {
                 hasMore = false;
             }
@@ -1277,8 +1313,12 @@ public class MainActivity extends Activity {
     }
 
     private boolean matchesSearch(Models.Mail mail) {
-        if (searchQuery == null || searchQuery.isEmpty()) return true;
-        String q = searchQuery.toLowerCase();
+        return matchesSearch(mail, searchQuery);
+    }
+
+    private boolean matchesSearch(Models.Mail mail, String query) {
+        if (query == null || query.isEmpty()) return true;
+        String q = query.toLowerCase();
         String blob = (nonEmpty(mail.sender, "") + " " + nonEmpty(mail.to, "") + " " + nonEmpty(mail.subject, "") + " " + nonEmpty(mail.preview, "")).toLowerCase();
         return blob.contains(q);
     }
@@ -1357,12 +1397,14 @@ public class MainActivity extends Activity {
         if (seq > 0) prefs.edit().putInt("sync_seq", seq).apply();
         String type = Json.str(event, "type");
         if (type.startsWith("mail.") || type.startsWith("draft.") || type.startsWith("outbox.") || type.startsWith("message.") || type.startsWith("keyword_rule.")) {
-            fetchBootstrapThenAccounts(false, false);
-            if ("list".equals(currentScreen) && (selectedAccount != null || !selectedVirtualMode.isEmpty())) {
-                currentPage = 1;
-                loadMails(true);
-            }
+            scheduleServerEventRefresh();
         }
+    }
+
+    private void scheduleServerEventRefresh() {
+        if (mainHandler == null) return;
+        mainHandler.removeCallbacks(serverEventRefreshTask);
+        mainHandler.postDelayed(serverEventRefreshTask, SERVER_EVENT_REFRESH_DEBOUNCE_MS);
     }
 
     private void startEventStream() {
@@ -1374,6 +1416,8 @@ public class MainActivity extends Activity {
 
     private void stopEventStream() {
         eventStreamRunning = false;
+        HttpURLConnection conn = eventConnection;
+        if (conn != null) conn.disconnect();
         if (eventThread != null) eventThread.interrupt();
         eventThread = null;
     }
@@ -1385,8 +1429,9 @@ public class MainActivity extends Activity {
                 int since = prefs.getInt("sync_seq", 0);
                 URL url = new URL(api.baseUrl() + "/api/mobile/events?since=" + since);
                 conn = (HttpURLConnection) url.openConnection();
+                eventConnection = conn;
                 conn.setConnectTimeout(12000);
-                conn.setReadTimeout(0);
+                conn.setReadTimeout(EVENT_READ_TIMEOUT_MS);
                 conn.setRequestProperty("Accept", "text/event-stream");
                 conn.setRequestProperty("Authorization", "Bearer " + api.token());
                 int code = conn.getResponseCode();
@@ -1396,6 +1441,7 @@ public class MainActivity extends Activity {
                 sleepQuietly(EVENT_RECONNECT_MS);
             } finally {
                 if (conn != null) conn.disconnect();
+                if (eventConnection == conn) eventConnection = null;
             }
         }
     }
@@ -1481,17 +1527,17 @@ public class MainActivity extends Activity {
             return;
         }
         Models.Mail cached = store.readMailDetail(mail);
-        if (cached != null && (!cached.html.isEmpty() || !cached.text.isEmpty())) {
-            renderLocalMessageDetail(cached);
+        Models.Mail display = cached == null ? mail : cached;
+        renderLocalMessageDetail(display);
+        if (!hasFullBody(display)) {
             fetchAndCacheDetail(mail, true, activeDetailLoadKey);
             return;
         }
-        renderDetailLoading(cached == null ? mail : cached);
-        fetchAndCacheDetail(mail, false, activeDetailLoadKey);
+        refreshDetailIfStale(mail, activeDetailLoadKey);
     }
 
     private void fetchAndCacheDetail(Models.Mail mail, boolean silent, String requestKey) {
-        runAsync(silent ? null : "加载正文...", () -> fetchDetailData(mail), data -> {
+        runAsync(silent ? null : "加载正文...", () -> fetchDetailDataWithRetry(mail), data -> {
             Models.Mail merged = mergeDetailIntoMail(mail, data);
             store.upsertMailDetail(merged);
             if (!requestKey.equals(activeDetailLoadKey) || !sameMail(currentDetailMail, mail)) return;
@@ -1504,6 +1550,23 @@ public class MainActivity extends Activity {
         fetchAndCacheDetail(mail, silent, mailActionKey(mail));
     }
 
+    private void refreshDetailIfStale(Models.Mail mail, String requestKey) {
+        io.submit(() -> {
+            try {
+                JSONObject data = fetchDetailData(mail);
+                Models.Mail merged = mergeDetailIntoMail(mail, data);
+                store.upsertMailDetail(merged);
+                runOnUiThread(() -> {
+                    if (!requestKey.equals(activeDetailLoadKey) || !sameMail(currentDetailMail, mail)) return;
+                    if (!"detail".equals(currentScreen)) return;
+                    renderDetail(merged, data);
+                });
+            } catch (Exception ignored) {
+                // The cached local body is already rendered; refresh failures must not block reading.
+            }
+        });
+    }
+
     private JSONObject fetchDetailData(Models.Mail mail) throws Exception {
         if ("external".equals(mail.accountType)) {
             return api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder) + "&markSeen=0");
@@ -1512,6 +1575,25 @@ public class MainActivity extends Activity {
             return api.post("/api/sent/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
         }
         return api.post("/api/inbox/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
+    }
+
+    private JSONObject fetchDetailDataWithRetry(Models.Mail mail) throws Exception {
+        Exception last = null;
+        for (int attempt = 1; attempt <= DETAIL_FETCH_MAX_ATTEMPTS; attempt++) {
+            try {
+                return fetchDetailData(mail);
+            } catch (Exception e) {
+                last = e;
+                if (attempt >= DETAIL_FETCH_MAX_ATTEMPTS) break;
+                try {
+                    Thread.sleep(DETAIL_FETCH_RETRY_DELAY_MS * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw interrupted;
+                }
+            }
+        }
+        throw last == null ? new Exception("邮件正文读取失败") : last;
     }
 
     private void renderLocalMessageDetail(Models.Mail mail) {
@@ -1525,19 +1607,6 @@ public class MainActivity extends Activity {
             // JSONObject only fails for invalid numeric values; string mail fields are safe here.
         }
         renderDetail(mail, data);
-    }
-
-    private void renderDetailLoading(Models.Mail mail) {
-        currentScreen = "detail";
-        currentDetailMail = mail;
-        currentDetailSource = new JSONObject();
-        setHeader("邮件详情", mail.sender);
-        content.removeAllViews();
-        LinearLayout box = column(dp(10));
-        box.setPadding(dp(14), dp(10), dp(14), dp(18));
-        content.addView(box, new LinearLayout.LayoutParams(-1, -1));
-        box.addView(detailHeaderCard(mail, mail.sender, mail.to, mail.date));
-        box.addView(empty("正在加载完整正文..."));
     }
 
     private Models.Mail mergeDetailIntoMail(Models.Mail base, JSONObject data) {
@@ -1756,7 +1825,7 @@ public class MainActivity extends Activity {
         Models.Mail sourceMail = cachedMail == null ? mail : cachedMail;
         if (!hasFullBody(sourceMail)) {
             runAsync("加载正文后翻译...", () -> {
-                JSONObject detail = fetchDetailData(mail);
+                JSONObject detail = fetchDetailDataWithRetry(mail);
                 Models.Mail merged = mergeDetailIntoMail(mail, detail);
                 store.upsertMailDetail(merged);
                 JSONObject source = detailSource(detail);
@@ -2237,7 +2306,7 @@ public class MainActivity extends Activity {
         Models.Mail sourceMail = cachedMail == null ? mail : cachedMail;
         if (!hasFullBody(sourceMail)) {
             runAsync("加载正文后复制...", () -> {
-                JSONObject detail = fetchDetailData(mail);
+                JSONObject detail = fetchDetailDataWithRetry(mail);
                 Models.Mail merged = mergeDetailIntoMail(mail, detail);
                 store.upsertMailDetail(merged);
                 return new JSONObject()
@@ -2876,14 +2945,23 @@ public class MainActivity extends Activity {
     }
 
     private void addComposeAttachment(Uri uri) {
-        try {
-            ComposeAttachment item = readAttachment(uri);
-            composeAttachments.add(item);
-            updateComposeAttachmentList();
-            toast("已添加附件：" + item.filename);
-        } catch (Exception e) {
-            toast("附件添加失败：" + e.getMessage());
-        }
+        setLoading(true, "读取附件...");
+        io.submit(() -> {
+            try {
+                ComposeAttachment item = readAttachment(uri);
+                runOnUiThread(() -> {
+                    setLoading(false, "");
+                    composeAttachments.add(item);
+                    updateComposeAttachmentList();
+                    toast("已添加附件：" + item.filename);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setLoading(false, "");
+                    toast("附件添加失败：" + e.getMessage());
+                });
+            }
+        });
     }
 
     private ComposeAttachment readAttachment(Uri uri) throws Exception {
@@ -3267,6 +3345,7 @@ public class MainActivity extends Activity {
             token = "";
             api.configure(server, "");
             BackgroundSyncService.cancel(this);
+            RealtimeSyncService.stop(this);
             stopEventStream();
             stopForegroundRefreshLoop();
             if (navBar != null) navBar.setVisibility(View.GONE);

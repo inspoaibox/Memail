@@ -72,7 +72,9 @@ MAX_SEND_ATTACHMENTS_BYTES = int(os.getenv("MAX_SEND_ATTACHMENTS_BYTES", str(25 
 MAX_IMAGE_PROXY_BYTES = int(os.getenv("MAX_IMAGE_PROXY_BYTES", str(5 * 1024 * 1024)))
 IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_CONNECT_TIMEOUT_SECONDS", "3"))
 IMAGE_PROXY_READ_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_READ_TIMEOUT_SECONDS", "8"))
+IMAGE_PROXY_TOTAL_TIMEOUT_SECONDS = float(os.getenv("IMAGE_PROXY_TOTAL_TIMEOUT_SECONDS", "15"))
 AI_TRANSLATION_TIMEOUT_SECONDS = int(os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "45"))
+AI_TRANSLATION_STREAM_READ_TIMEOUT_SECONDS = float(os.getenv("AI_TRANSLATION_STREAM_READ_TIMEOUT_SECONDS", "15"))
 TRANSLATION_SERVICE_TIMEOUT_SECONDS = int(os.getenv("TRANSLATION_SERVICE_TIMEOUT_SECONDS", "12"))
 TRANSLATION_CACHE_LIMIT = int(os.getenv("TRANSLATION_CACHE_LIMIT", "500"))
 TRANSLATION_CACHE_MAX_CHARS = int(os.getenv("TRANSLATION_CACHE_MAX_CHARS", str(2 * 1024 * 1024)))
@@ -1271,7 +1273,10 @@ def _read_openai_chat_stream(resp: requests.Response, base_url: str, model: str,
     chunks: list[str] = []
     first_delta_ms: int | None = None
     event_count = 0
+    deadline = started_at + max(1, AI_TRANSLATION_TIMEOUT_SECONDS)
     for raw_line in resp.iter_lines(decode_unicode=True):
+        if time.time() > deadline:
+            raise requests.Timeout(f"AI stream exceeded {AI_TRANSLATION_TIMEOUT_SECONDS}s")
         if not raw_line:
             continue
         line = raw_line.strip()
@@ -1404,18 +1409,19 @@ def _call_openai_chat(channel: dict, api_key: str, model: str, content: str, wan
     request_started_at = time.time()
     input_chars = len(content or "")
     app.logger.info(
-        "AI 请求发送(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s stream=true timeout=%s",
+        "AI 请求发送(openai_compatible/openai): base_url=%s model=%s wants_html=%s input_chars=%s stream=true timeout=%s stream_read_timeout=%s",
         base_url,
         model,
         wants_html,
         input_chars,
         AI_TRANSLATION_TIMEOUT_SECONDS,
+        AI_TRANSLATION_STREAM_READ_TIMEOUT_SECONDS,
     )
     with fast_http_session.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=_openai_chat_payload(system_prompt, content, model, stream=True),
-        timeout=AI_TRANSLATION_TIMEOUT_SECONDS,
+        timeout=(8, AI_TRANSLATION_STREAM_READ_TIMEOUT_SECONDS),
         stream=True,
     ) as resp:
         app.logger.info(
@@ -4111,6 +4117,7 @@ def image_proxy():
     if not _is_proxyable_image_url(source_url):
         return jsonify({"success": False, "message": "非法图片地址"}), 400
 
+    started_at = time.time()
     try:
         resp = fast_http_session.get(
             source_url,
@@ -4145,12 +4152,17 @@ def image_proxy():
     total = 0
     try:
         for chunk in resp.iter_content(65536):
+            if IMAGE_PROXY_TOTAL_TIMEOUT_SECONDS > 0 and time.time() - started_at > IMAGE_PROXY_TOTAL_TIMEOUT_SECONDS:
+                raise requests.Timeout(f"image proxy exceeded {IMAGE_PROXY_TOTAL_TIMEOUT_SECONDS}s")
             if not chunk:
                 continue
             total += len(chunk)
             if total > MAX_IMAGE_PROXY_BYTES:
                 return jsonify({"success": False, "message": "图片过大"}), 413
             chunks.append(chunk)
+    except requests.RequestException as e:
+        app.logger.warning("图片代理读取失败: url=%s error=%s", source_url, e)
+        return jsonify({"success": False, "message": "图片加载超时或远程不可用"}), 504
     finally:
         resp.close()
 
@@ -4966,6 +4978,7 @@ def reorder_mailboxes():
 
 
 @app.route("/api/inbox/detail", methods=["POST"])
+@app.route("/api/inbox/detail/cache", methods=["POST"])
 @login_required
 def inbox_detail():
     """通用收件箱邮件详情"""
@@ -4973,6 +4986,7 @@ def inbox_detail():
     email = data.get("email", "").strip()
     password = data.get("password", "").strip() or _get_unified_password()
     message_id = data.get("message_id", "").strip()
+    mark_seen = False if request.path.endswith("/cache") else bool(data.get("mark_seen", data.get("markSeen", True)))
 
     if not email or not message_id:
         return jsonify({"success": False, "message": "缺少必要参数"})
@@ -4987,6 +5001,7 @@ def inbox_detail():
         detail_resp = http_session.get(
             f"{base_url}/messages/{message_id}",
             headers={"Authorization": f"Bearer {token}"},
+            params={"markSeen": "1" if mark_seen else "0"},
             timeout=30
         )
 

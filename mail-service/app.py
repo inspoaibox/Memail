@@ -22,7 +22,7 @@ import bcrypt
 import uvicorn
 from bson import ObjectId
 from pymongo import MongoClient, DESCENDING
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from aiosmtpd.controller import Controller
@@ -697,7 +697,7 @@ async def list_trash_messages(
 
 
 @app.get("/messages/{message_id}")
-async def get_message(message_id: str, account=Depends(get_current_account)):
+async def get_message(message_id: str, mark_seen: bool = Query(True, alias="markSeen"), account=Depends(get_current_account)):
     """获取邮件详情"""
     address = account["address"]
 
@@ -711,7 +711,7 @@ async def get_message(message_id: str, account=Depends(get_current_account)):
         raise HTTPException(status_code=404, detail="Message not found")
 
     # 标记已读
-    if not msg.get("seen"):
+    if mark_seen and not msg.get("seen"):
         db.messages.update_one({"_id": oid}, {"$set": {"seen": True, "updated_at": datetime.now(timezone.utc)}})
 
     return _format_message(msg, include_body=True)
