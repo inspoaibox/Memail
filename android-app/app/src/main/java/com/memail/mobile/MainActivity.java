@@ -1526,8 +1526,10 @@ public class MainActivity extends Activity {
             renderLocalMessageDetail(mail);
             return;
         }
+        markReadOnOpen(mail);
         Models.Mail cached = store.readMailDetail(mail);
         Models.Mail display = cached == null ? mail : cached;
+        display.seen = true;
         renderLocalMessageDetail(display);
         if (!hasFullBody(display)) {
             fetchAndCacheDetail(mail, true, activeDetailLoadKey);
@@ -1569,7 +1571,7 @@ public class MainActivity extends Activity {
 
     private JSONObject fetchDetailData(Models.Mail mail) throws Exception {
         if ("external".equals(mail.accountType)) {
-            return api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder) + "&markSeen=0");
+            return api.get("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "?folder=" + encode(mail.folder) + "&markSeen=1");
         }
         if ("sent".equals(mail.folder)) {
             return api.post("/api/sent/detail", new JSONObject().put("email", mail.accountId).put("message_id", mail.id));
@@ -1637,6 +1639,52 @@ public class MainActivity extends Activity {
             && nonEmpty(a.accountId, "").equals(nonEmpty(b.accountId, ""))
             && nonEmpty(a.folder, "").equals(nonEmpty(b.folder, ""))
             && nonEmpty(a.id, "").equals(nonEmpty(b.id, ""));
+    }
+
+    private void markReadOnOpen(Models.Mail mail) {
+        if (mail == null || mail.seen || "sent".equals(mail.folder)) return;
+        mail.seen = true;
+        for (Models.Mail item : mails) {
+            if (sameMail(item, mail)) item.seen = true;
+        }
+        decrementUnreadFor(mail);
+        List<Models.Mail> changed = new ArrayList<>();
+        changed.add(mail);
+        store.upsertMails(changed);
+        io.submit(() -> {
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    if ("external".equals(mail.accountType)) {
+                        api.put("/imap/api/accounts/" + encode(mail.accountId) + "/mails/" + encode(mail.id) + "/flags?folder=" + encode(mail.folder),
+                            new JSONObject().put("action", "add").put("flags", new JSONArray().put("\\Seen")));
+                    } else {
+                        api.post("/api/inbox/mark", new JSONObject()
+                            .put("email", mail.accountId)
+                            .put("message_id", mail.id)
+                            .put("seen", true));
+                    }
+                    return;
+                } catch (Exception ignored) {
+                    try {
+                        Thread.sleep(700L * attempt);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    private void decrementUnreadFor(Models.Mail mail) {
+        for (Models.Account account : accounts) {
+            if (nonEmpty(account.type, "").equals(nonEmpty(mail.accountType, ""))
+                && nonEmpty(account.id, "").equals(nonEmpty(mail.accountId, ""))
+                && account.unread > 0) {
+                account.unread--;
+                break;
+            }
+        }
     }
 
     private void renderDetail(Models.Mail mail, JSONObject data) {

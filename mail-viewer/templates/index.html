@@ -7416,7 +7416,7 @@
                         queryKeywordRuleMessages(true);
                     } else if (currentAccountType === 'external') {
                         _backgroundSyncVisibleExternalAccounts(false);
-                        queryExternalMails(true, false);
+                        queryExternalMails(true, currentExternalPage);
                     } else if ([LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab)) {
                         queryLocalVirtualMessages(true);
                     } else if (currentTab === 'inbox') {
@@ -8117,6 +8117,7 @@
 
         function renderGlobalMessages(messages) {
             const mailList = document.getElementById('mail-list');
+            const listState = _captureMailListState();
             const batchBar = document.getElementById('batch-bar');
             const batchContext = _batchContext();
             const supportsBatch = batchContext.type === 'mixed' && batchContext.messages.length > 0;
@@ -8132,6 +8133,7 @@
                         : t('noGlobalMail');
                 const emptyIcon = currentAccountType === 'keyword' ? 'bi-funnel' : 'bi-collection';
                 mailList.innerHTML = `<div class="empty-state"><i class="bi ${emptyIcon} d-block"></i><p>${emptyText}</p></div>`;
+                _restoreMailListState(null);
                 return;
             }
             mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
@@ -8170,6 +8172,7 @@
                     context: currentAccountType === 'group' ? 'group' : 'global',
                 }));
             }
+            _restoreMailListState(listState);
         }
 
         async function viewGlobalExternalMail(encodedAccountId, encodedMsgId, element) {
@@ -8217,6 +8220,61 @@
                 if (found) return found;
             }
             return null;
+        }
+
+        function _captureMailListState() {
+            const mailList = document.getElementById('mail-list');
+            if (!mailList) return null;
+            const activeEl = mailList.querySelector('.mail-item.active');
+            return {
+                context: mailList.dataset.renderContext || '',
+                scrollTop: mailList.scrollTop,
+                activeId: activeEl ? activeEl.dataset.msgId : '',
+                checkedIds: getSelectedIds(),
+            };
+        }
+
+        function _mailListElementByAttr(root, selector, attr, value) {
+            const expected = String(value || '');
+            return Array.from(root.querySelectorAll(selector))
+                .find(el => String(el.getAttribute(attr) || '') === expected) || null;
+        }
+
+        function _restoreMailListState(state) {
+            const mailList = document.getElementById('mail-list');
+            if (!mailList) return;
+            const context = _mailListRenderContext();
+            mailList.dataset.renderContext = context;
+            if (!state || state.context !== context) return;
+            requestAnimationFrame(() => {
+                const maxScroll = Math.max(0, mailList.scrollHeight - mailList.clientHeight);
+                mailList.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), maxScroll);
+                if (state.activeId) {
+                    const active = _mailListElementByAttr(mailList, '.mail-item', 'data-msg-id', state.activeId);
+                    if (active) active.classList.add('active');
+                }
+                (state.checkedIds || []).forEach(id => {
+                    const cb = _mailListElementByAttr(mailList, '.mail-checkbox', 'value', id);
+                    if (cb) cb.checked = true;
+                });
+                if ((state.checkedIds || []).length) updateBatchButtons();
+            });
+        }
+
+        function _mailListRenderContext() {
+            if (currentAccountType === 'external') {
+                return ['external', currentExternalAccountId || '', currentExternalFolder || 'INBOX', currentExternalPage || 1, _currentSearchQuery()].join('|');
+            }
+            if (currentAccountType === 'global') {
+                return ['global', currentGlobalFolder || '', currentGlobalPage || 1, _currentSearchQuery()].join('|');
+            }
+            if (currentAccountType === 'group') {
+                return ['group', currentGroupName || '', currentGroupFolder || '', currentGlobalPage || 1, _currentSearchQuery()].join('|');
+            }
+            if (currentAccountType === 'keyword') {
+                return ['keyword', currentKeywordRuleId || '', currentGlobalPage || 1, _currentSearchQuery()].join('|');
+            }
+            return ['local', currentEmail || currentMailbox || '', currentTab || 'inbox', currentPage || 1, _currentSearchQuery()].join('|');
         }
 
         function rerenderCurrentList() {
@@ -8436,8 +8494,10 @@
         function renderSentMessages(messages) {
             currentSentMessages = messages;
             const mailList = document.getElementById('mail-list');
+            const listState = _captureMailListState();
             if (messages.length === 0) {
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-send d-block"></i><p>${t('noSentMail')}</p></div>`;
+                _restoreMailListState(null);
                 return;
             }
             mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
@@ -8461,6 +8521,7 @@
                 total: currentSentTotal,
                 context: 'local-sent',
             }));
+            _restoreMailListState(listState);
         }
 
         async function queryDrafts() {
@@ -8491,8 +8552,10 @@
         function renderDraftMessages(messages) {
             currentDraftMessages = messages;
             const mailList = document.getElementById('mail-list');
+            const listState = _captureMailListState();
             if (!messages.length) {
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-file-earmark-text d-block"></i><p>${t('noDrafts')}</p></div>`;
+                _restoreMailListState(null);
                 return;
             }
             mailList.innerHTML = messages.map(msg =>
@@ -8507,6 +8570,7 @@
                     onClick: `openDraft(${_jsString(msg.id)}, this)`,
                     tags: [t('drafts')],
                 })).join('');
+            _restoreMailListState(listState);
         }
 
         async function queryOutbox() {
@@ -8537,8 +8601,10 @@
         function renderOutboxMessages(messages) {
             currentOutboxMessages = messages;
             const mailList = document.getElementById('mail-list');
+            const listState = _captureMailListState();
             if (!messages.length) {
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-exclamation-diamond d-block"></i><p>${t('noOutbox')}</p></div>`;
+                _restoreMailListState(null);
                 return;
             }
             mailList.innerHTML = messages.map(msg =>
@@ -8553,6 +8619,7 @@
                     onClick: `viewOutboxDetail(${_jsString(msg.id)}, this)`,
                     tags: [msg.status || t('outbox')],
                 })).join('');
+            _restoreMailListState(listState);
         }
 
         async function openDraft(draftId, element) {
@@ -8702,8 +8769,10 @@
             currentTrashTotal = Math.max(currentTrashTotal, messages.length);
             _updateFolderCounts({ localTrash: currentTrashTotal });
             const mailList = document.getElementById('mail-list');
+            const listState = _captureMailListState();
             if (messages.length === 0) {
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-trash d-block"></i><p>${t('noTrashMail')}</p></div>`;
+                _restoreMailListState(null);
                 return;
             }
             mailList.innerHTML = _sortMessagesWithMeta(messages).map(msg => {
@@ -8726,6 +8795,7 @@
                 total: currentTrashTotal,
                 context: 'local-trash',
             }));
+            _restoreMailListState(listState);
         }
 
         function resetMailDetail() {
@@ -8812,31 +8882,7 @@
                     document.getElementById('search-bar').style.display = 'flex';
                 }
                 
-                // 静默刷新时保存当前选中和 checkbox 状态
-                let activeId = null;
-                let checkedIds = [];
-                if (silent) {
-                    const activeEl = document.querySelector('.mail-item.active');
-                    if (activeEl) activeId = activeEl.dataset.msgId;
-                    checkedIds = getSelectedIds();
-                }
-                
                 renderMessages(currentMessages);
-                
-                // 恢复选中和 checkbox 状态
-                if (silent) {
-                    if (activeId) {
-                        const el = document.querySelector(`.mail-item[data-msg-id="${activeId}"]`);
-                        if (el) el.classList.add('active');
-                    }
-                    if (checkedIds.length > 0) {
-                        checkedIds.forEach(id => {
-                            const cb = document.querySelector(`.mail-checkbox[value="${id}"]`);
-                            if (cb) cb.checked = true;
-                        });
-                        updateBatchButtons();
-                    }
-                }
                 
             } catch (e) {
                 if (!silent) {
@@ -8851,6 +8897,7 @@
 
         function renderMessages(messages) {
             const mailList = document.getElementById('mail-list');
+            const listState = _captureMailListState();
             const batchBar = document.getElementById('batch-bar');
             const isInboxTab = currentTab === 'inbox';
             const isVirtualTab = [LOCAL_ALL_FOLDER, LOCAL_UNREAD_FOLDER].includes(currentTab);
@@ -8885,6 +8932,7 @@
                             <i class="bi bi-arrow-clockwise"></i>${t('refresh')}
                         </button>
                     </div>`;
+                _restoreMailListState(null);
                 return;
             }
             
@@ -8929,6 +8977,7 @@
                 }));
             }
             _updateUnreadBadge();
+            _restoreMailListState(listState);
         }
 
         async function queryExternalMails(silent = false, page = currentExternalPage, expectedSwitchSeq = externalAccountSwitchSeq, options = {}) {
@@ -9005,16 +9054,7 @@
                 const searchBar = document.getElementById('search-bar');
                 if (searchBar) searchBar.style.display = isVirtualFolder ? 'none' : 'flex';
 
-                let activeId = null;
-                if (silent) {
-                    const activeEl = document.querySelector('.mail-item.active');
-                    if (activeEl) activeId = activeEl.dataset.msgId;
-                }
                 renderExternalMessages(currentExternalMessages);
-                if (silent && activeId) {
-                    const el = document.querySelector(`.mail-item[data-msg-id="${activeId}"]`);
-                    if (el) el.classList.add('active');
-                }
                 if (searchBar) searchBar.style.display = currentExternalAccountId ? 'flex' : 'none';
             } catch (e) {
                 if (!silent) {
@@ -9025,6 +9065,7 @@
 
         function renderExternalMessages(messages) {
             const mailList = document.getElementById('mail-list');
+            const listState = _captureMailListState();
             const batchBar = document.getElementById('batch-bar');
             const batchContext = _batchContext();
             const supportsBatch = batchContext.type === 'external' && batchContext.messages.length > 0;
@@ -9040,6 +9081,7 @@
                         ? t('noUnreadMail')
                         : t('noExternalMail');
                 mailList.innerHTML = `<div class="empty-state"><i class="bi bi-folder d-block"></i><p>${emptyText}</p></div>`;
+                _restoreMailListState(null);
                 return;
             }
 
@@ -9081,6 +9123,7 @@
                     context: 'external',
                 }));
             }
+            _restoreMailListState(listState);
         }
 
         function _parseExternalMessageRef(raw) {
