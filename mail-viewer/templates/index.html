@@ -4662,6 +4662,7 @@
 
         function renderMailboxes(localError = '', externalError = '') {
             const list = document.getElementById('mail-account-list');
+            const scrollState = _captureElementScrollState(list, 'accounts');
             const parts = [];
             _ensureAccountOrder();
 
@@ -4773,6 +4774,7 @@
             bindAccountDragSorting();
             renderAccountSettingsLists();
             renderBrowserNotificationGroups();
+            _restoreElementScrollState(list, scrollState, 'accounts');
         }
 
         function renderAccountSettingsLists() {
@@ -4862,6 +4864,9 @@
 
         function renderFolderList() {
             const list = document.getElementById('mail-folder-list');
+            const panel = list ? list.closest('.mailbox-control-panel') : null;
+            const scrollContext = _folderPanelRenderContext();
+            const scrollState = _captureElementScrollState(panel, scrollContext);
             const composeButton = `
                 <button class="mail-folder-item mail-compose-item" onclick="openCompose()">
                     <i class="bi bi-pencil-square"></i><span class="mail-folder-label">${t('compose')}</span>
@@ -4874,6 +4879,7 @@
                     <button class="mail-folder-item ${currentGlobalFolder === GLOBAL_UNREAD_FOLDER ? 'active' : ''}" data-folder="${GLOBAL_UNREAD_FOLDER}" onclick="selectGlobalFolder('${GLOBAL_UNREAD_FOLDER}')">
                         <i class="bi bi-envelope-exclamation"></i><span class="mail-folder-label">${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.globalUnread)}
                     </button>`;
+                _restoreElementScrollState(panel, scrollState, scrollContext);
                 return;
             }
             if (currentAccountType === 'group') {
@@ -4884,6 +4890,7 @@
                     <button class="mail-folder-item ${currentGroupFolder === GROUP_UNREAD_FOLDER ? 'active' : ''}" data-folder="${GROUP_UNREAD_FOLDER}" onclick="selectGroupMailbox('${encodeURIComponent(currentGroupName)}', '${GROUP_UNREAD_FOLDER}')">
                         <i class="bi bi-envelope-exclamation"></i><span class="mail-folder-label">${t('unreadMail')}</span>${_folderBadge(currentFolderCounts.groupUnread)}
                     </button>`;
+                _restoreElementScrollState(panel, scrollState, scrollContext);
                 return;
             }
             if (currentAccountType === 'keyword') {
@@ -4895,11 +4902,13 @@
                     <button class="mail-folder-item" onclick="openSettings('keywords')">
                         <i class="bi bi-sliders"></i><span class="mail-folder-label">${t('keywordRules')}</span>
                     </button>`;
+                _restoreElementScrollState(panel, scrollState, scrollContext);
                 return;
             }
             if (currentAccountType === 'external') {
                 if (!currentExternalAccountId) {
                     list.innerHTML = `${composeButton}<div class="text-muted small px-2">${t('queryHint')}</div>`;
+                    _restoreElementScrollState(panel, scrollState, scrollContext);
                     return;
                 }
                 const syncStatus = _renderSyncStatus(currentExternalAccount?.syncStatus);
@@ -4915,6 +4924,7 @@
                         <button class="mail-folder-item ${fallbackFolder === currentExternalFolder ? 'active' : ''}" data-folder="${_escapeAttr(fallbackFolder)}" onclick="selectFolder(${_jsString(encodeURIComponent(fallbackFolder))})">
                             <i class="bi bi-inbox"></i><span class="mail-folder-label">${_escapeHtml(fallbackFolder)}</span>
                         </button>`;
+                    _restoreElementScrollState(panel, scrollState, scrollContext);
                     return;
                 }
                 const sentFolder = currentExternalFolders.find(_isSentFolder);
@@ -4930,6 +4940,7 @@
                             <i class="bi ${_externalFolderIcon(folder)}"></i><span class="mail-folder-label">${_escapeHtml(label)}</span>${_folderBadge(path === EXTERNAL_UNREAD_FOLDER ? currentFolderCounts.externalUnread : path === EXTERNAL_ALL_FOLDER ? currentFolderCounts.externalAll : path === EXTERNAL_DRAFTS_FOLDER ? currentFolderCounts.externalDrafts : path === EXTERNAL_OUTBOX_FOLDER ? currentFolderCounts.externalOutbox : (path === currentExternalFolder ? currentExternalTotal : 0))}
                         </button>`;
                 }).join('');
+                _restoreElementScrollState(panel, scrollState, scrollContext);
                 return;
             }
 
@@ -4956,6 +4967,7 @@
                     <i class="bi bi-trash"></i><span class="mail-folder-label">${t('trash')}</span>${_folderBadge(currentTrashTotal)}
                 </button>`;
             _updateUnreadBadge();
+            _restoreElementScrollState(panel, scrollState, scrollContext);
         }
 
         async function addMailbox() {
@@ -7421,6 +7433,14 @@
                         queryLocalVirtualMessages(true);
                     } else if (currentTab === 'inbox') {
                         queryInbox(true);
+                    } else if (currentTab === 'sent') {
+                        querySent(currentSentPage, true);
+                    } else if (currentTab === 'drafts') {
+                        queryDrafts(true);
+                    } else if (currentTab === 'outbox') {
+                        queryOutbox(true);
+                    } else if (currentTab === 'trash') {
+                        queryTrash(currentTrashPage, true);
                     } else {
                         refreshCurrentTab();
                     }
@@ -7706,12 +7726,15 @@
             else if (currentTab === 'trash') queryTrash();
         }
 
-        async function querySent(page = currentSentPage) {
+        async function querySent(page = currentSentPage, silent = false) {
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
+            const queryContext = _queryContext();
             const safePage = Math.max(Number(page) || 1, 1);
             const offset = (safePage - 1) * currentPageSize;
-            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            if (!silent) {
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            }
 
             try {
                 const resp = await fetch('/api/sent/query', {
@@ -7720,8 +7743,11 @@
                     body: JSON.stringify({ email: currentEmail, offset, limit: currentPageSize })
                 });
                 const data = await resp.json();
+                if (!_queryContextMatches(queryContext)) return;
                 if (!data.success) {
-                    mailList.innerHTML = `<div class="error-state"><p>${_escapeHtml(data.message || t('loadFailed'))}</p></div>`;
+                    if (!silent) {
+                        mailList.innerHTML = `<div class="error-state"><p>${_escapeHtml(data.message || t('loadFailed'))}</p></div>`;
+                    }
                     return;
                 }
                 currentSentPage = safePage;
@@ -7729,7 +7755,9 @@
                 _updateFolderCounts({ localSent: currentSentTotal });
                 renderSentMessages(data.messages);
             } catch (e) {
-                mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
             }
         }
 
@@ -7766,6 +7794,7 @@
         async function queryLocalVirtualMessages(silent = false, page = currentPage) {
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
+            const queryContext = _queryContext();
             if (!silent) {
                 resetMailDetail();
                 mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
@@ -7780,6 +7809,7 @@
                     currentTab === LOCAL_UNREAD_FOLDER ? Promise.resolve({ messages: [], total: 0 }) : _fetchLocalMailboxSlice('/api/sent/query', { offset: baseOffset }).catch(() => ({ messages: [], total: 0 })),
                     currentTab === LOCAL_UNREAD_FOLDER ? Promise.resolve({ messages: [], total: 0 }) : _fetchLocalMailboxSlice('/api/trash/query', { offset: baseOffset }).catch(() => ({ messages: [], total: 0 })),
                 ]);
+                if (!_queryContextMatches(queryContext)) return;
                 const inbox = currentTab === LOCAL_UNREAD_FOLDER ? unreadResult.messages : inboxResult.messages;
                 const unread = unreadResult.messages;
                 const sent = sentResult.messages;
@@ -7987,6 +8017,7 @@
         async function queryGlobalMessages(silent = false, page = currentGlobalPage) {
             if (currentAccountType !== 'global') return;
             const mailList = document.getElementById('mail-list');
+            const queryContext = _queryContext();
             if (!silent) {
                 resetMailDetail();
                 mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
@@ -8005,6 +8036,7 @@
                     _fetchLocalAggregate(unreadOnly, mailboxes, Object.fromEntries(mailboxes.map(item => [item.address, offset]))),
                     _imapApi(`/mails?${externalParams.toString()}`).catch(() => ({ mails: [], total: 0, hasMore: false })),
                 ]);
+                if (!_queryContextMatches(queryContext)) return;
                 const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                 const merged = localMessages.concat(externalMessages)
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
@@ -8029,6 +8061,7 @@
         async function queryGroupMessages(silent = false, page = currentGlobalPage) {
             if (currentAccountType !== 'group' || !currentGroupName) return;
             const mailList = document.getElementById('mail-list');
+            const queryContext = _queryContext();
             if (!silent) {
                 resetMailDetail();
                 mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
@@ -8052,6 +8085,7 @@
                         ? _imapApi(`/mails?${externalParams.toString()}`).catch(() => ({ mails: [], total: 0, unseen: 0, hasMore: false }))
                         : Promise.resolve({ mails: [], total: 0, unseen: 0, hasMore: false }),
                 ]);
+                if (!_queryContextMatches(queryContext)) return;
                 const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                 const merged = localMessages.concat(externalMessages)
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
@@ -8077,6 +8111,7 @@
             if (currentAccountType !== 'keyword' || !currentKeywordRuleId) return;
             const rule = _keywordRuleById(currentKeywordRuleId);
             const mailList = document.getElementById('mail-list');
+            const queryContext = _queryContext();
             if (!rule || rule.enabled === false) {
                 currentGlobalMessages = [];
                 currentGlobalTotal = 0;
@@ -8096,6 +8131,7 @@
                     _searchLocalKeywordRule(rule, scoped.local, extraQuery),
                     _searchExternalKeywordRule(rule, scoped.external, extraQuery),
                 ]);
+                if (!_queryContextMatches(queryContext)) return;
                 const merged = _mergeKeywordMessages(localMessages.concat(externalMessages))
                     .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
                     .slice(0, currentPageSize);
@@ -8220,6 +8256,58 @@
                 if (found) return found;
             }
             return null;
+        }
+
+        function _captureElementScrollState(element, context = '') {
+            if (!element) return null;
+            return {
+                context,
+                scrollTop: element.scrollTop,
+                scrollLeft: element.scrollLeft,
+            };
+        }
+
+        function _restoreElementScrollState(element, state, context = '') {
+            if (!element || !state) return;
+            if (state.context !== context) return;
+            requestAnimationFrame(() => {
+                const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+                const maxLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+                element.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), maxTop);
+                element.scrollLeft = Math.min(Math.max(0, state.scrollLeft || 0), maxLeft);
+            });
+        }
+
+        function _folderPanelRenderContext() {
+            if (currentAccountType === 'external') {
+                return ['external', currentExternalAccountId || ''].join('|');
+            }
+            if (currentAccountType === 'group') {
+                return ['group', currentGroupName || ''].join('|');
+            }
+            if (currentAccountType === 'keyword') {
+                return ['keyword', currentKeywordRuleId || ''].join('|');
+            }
+            return [currentAccountType || 'local', currentEmail || currentMailbox || ''].join('|');
+        }
+
+        function _queryContext() {
+            return [
+                currentAccountType || '',
+                currentEmail || currentMailbox || '',
+                currentTab || '',
+                currentGlobalFolder || '',
+                currentGroupName || '',
+                currentGroupFolder || '',
+                currentKeywordRuleId || '',
+                currentExternalAccountId || '',
+                currentExternalFolder || '',
+                _currentSearchQuery(),
+            ].join('|');
+        }
+
+        function _queryContextMatches(context) {
+            return context === _queryContext();
         }
 
         function _captureMailListState() {
@@ -8524,10 +8612,13 @@
             _restoreMailListState(listState);
         }
 
-        async function queryDrafts() {
+        async function queryDrafts(silent = false) {
             if (!currentEmail && !['global', 'group'].includes(currentAccountType)) return;
             const mailList = document.getElementById('mail-list');
-            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            const queryContext = _queryContext();
+            if (!silent) {
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            }
             try {
                 const params = new URLSearchParams();
                 if (currentAccountType === 'external') {
@@ -8539,13 +8630,16 @@
                 }
                 const resp = await fetch(`/api/drafts?${params.toString()}`);
                 const data = await resp.json();
+                if (!_queryContextMatches(queryContext)) return;
                 if (!data.success) throw new Error(data.message || t('loadFailed'));
                 currentDraftMessages = data.drafts || [];
                 currentDraftTotal = currentDraftMessages.length;
                 _updateFolderCounts(currentAccountType === 'external' ? { externalDrafts: currentDraftTotal } : {});
                 renderDraftMessages(currentDraftMessages);
             } catch (e) {
-                mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
             }
         }
 
@@ -8573,10 +8667,13 @@
             _restoreMailListState(listState);
         }
 
-        async function queryOutbox() {
+        async function queryOutbox(silent = false) {
             if (!currentEmail && !['global', 'group'].includes(currentAccountType)) return;
             const mailList = document.getElementById('mail-list');
-            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            const queryContext = _queryContext();
+            if (!silent) {
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            }
             try {
                 const params = new URLSearchParams();
                 if (currentAccountType === 'external') {
@@ -8588,13 +8685,16 @@
                 }
                 const resp = await fetch(`/api/outbox?${params.toString()}`);
                 const data = await resp.json();
+                if (!_queryContextMatches(queryContext)) return;
                 if (!data.success) throw new Error(data.message || t('loadFailed'));
                 currentOutboxMessages = data.messages || [];
                 currentOutboxTotal = currentOutboxMessages.length;
                 _updateFolderCounts(currentAccountType === 'external' ? { externalOutbox: currentOutboxTotal } : {});
                 renderOutboxMessages(currentOutboxMessages);
             } catch (e) {
-                mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
             }
         }
 
@@ -8738,12 +8838,15 @@
             _renderMailBodyIframe(iframe, mailContent);
         }
 
-        async function queryTrash(page = currentTrashPage) {
+        async function queryTrash(page = currentTrashPage, silent = false) {
             if (currentAccountType !== 'local' || !currentEmail) return;
             const mailList = document.getElementById('mail-list');
+            const queryContext = _queryContext();
             const safePage = Math.max(Number(page) || 1, 1);
             const offset = (safePage - 1) * currentPageSize;
-            mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            if (!silent) {
+                mailList.innerHTML = `<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span> ${t('loading')}</div>`;
+            }
 
             try {
                 const resp = await fetch('/api/trash/query', {
@@ -8752,15 +8855,20 @@
                     body: JSON.stringify({ email: currentEmail, offset, limit: currentPageSize })
                 });
                 const data = await resp.json();
+                if (!_queryContextMatches(queryContext)) return;
                 if (!data.success) {
-                    mailList.innerHTML = `<div class="error-state"><p>${_escapeHtml(data.message || t('loadFailed'))}</p></div>`;
+                    if (!silent) {
+                        mailList.innerHTML = `<div class="error-state"><p>${_escapeHtml(data.message || t('loadFailed'))}</p></div>`;
+                    }
                     return;
                 }
                 currentTrashPage = safePage;
                 currentTrashTotal = data.total || data.messages.length;
                 renderTrashMessages(data.messages);
             } catch (e) {
-                mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                if (!silent) {
+                    mailList.innerHTML = `<div class="error-state"><p>${t('loadFailed')}: ${_escapeHtml(e.message)}</p></div>`;
+                }
             }
         }
 
@@ -8815,6 +8923,7 @@
             if (!silent) resetMailDetail();
             const email = currentMailbox || currentEmail;
             const mailList = document.getElementById('mail-list');
+            const queryContext = _queryContext();
             
             if (currentAccountType !== 'local' || !email) {
                 if (!silent) {
@@ -8849,6 +8958,7 @@
                     body: JSON.stringify({ email, offset: reqOffset, limit: currentPageSize })
                 });
                 const data = await resp.json();
+                if (!_queryContextMatches(queryContext)) return;
                 
                 if (!data.success) {
                     if (!silent) {
@@ -9249,6 +9359,7 @@
             if (currentAccountType === 'keyword' && !currentKeywordRuleId) return;
             const query = document.getElementById('search-input').value.trim();
             if (!query) { clearSearch(); return; }
+            const queryContext = _queryContext();
 
             const mailList = document.getElementById('mail-list');
             if (!silent) {
@@ -9266,6 +9377,7 @@
                             unread: unreadOnly ? 'true' : 'false',
                         }).toString()}`).catch(() => ({ mails: [] })),
                     ]);
+                    if (!_queryContextMatches(queryContext)) return;
                     const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                     const merged = localMessages.concat(externalMessages)
                         .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
@@ -9294,6 +9406,7 @@
                         _searchLocalAggregate(query, unreadOnly, localAccounts),
                         externalIds.length ? _imapApi(`/search?${externalParams.toString()}`).catch(() => ({ mails: [] })) : Promise.resolve({ mails: [] }),
                     ]);
+                    if (!_queryContextMatches(queryContext)) return;
                     const externalMessages = (externalData.mails || []).map(_normalizeGlobalExternalMessage);
                     const merged = localMessages.concat(externalMessages)
                         .sort((a, b) => _messageSortTime(b) - _messageSortTime(a))
@@ -9335,6 +9448,7 @@
                         const data = await _imapApi(`/accounts/${encodeURIComponent(currentExternalAccountId)}/search?${params.toString()}`);
                         mails = Array.isArray(data) ? data : (data.mails || []);
                     }
+                    if (!_queryContextMatches(queryContext)) return;
                     currentExternalPage = 1;
                     currentExternalMessages = mails;
                     currentExternalTotal = mails.length;
@@ -9351,6 +9465,7 @@
                     body: JSON.stringify({ email: currentEmail, query })
                 });
                 const data = await resp.json();
+                if (!_queryContextMatches(queryContext)) return;
                 if (data.success) {
                     currentMessages = data.messages || [];
                     currentTotal = currentMessages.length;
