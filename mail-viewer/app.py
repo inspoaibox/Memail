@@ -3372,6 +3372,85 @@ def _portable_account_from_external(item: dict) -> dict | None:
     }
 
 
+def _portable_sanitize_account_profile(item: dict) -> dict:
+    safe = dict(item or {})
+    blocked = {
+        "password",
+        "protectedpassword",
+        "pass",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "oauth",
+        "oauthtokens",
+        "apikey",
+        "api_key",
+        "secret",
+    }
+    for key in list(safe.keys()):
+        normalized_key = str(key).replace("_", "").lower()
+        if (
+            normalized_key in blocked
+            or "password" in normalized_key
+            or "token" in normalized_key
+            or "apikey" in normalized_key
+            or "secret" in normalized_key
+        ):
+            safe.pop(key, None)
+    if str(safe.get("type") or "").strip().lower() == "external":
+        safe["protectedPassword"] = ""
+    return safe
+
+
+def _portable_account_ref(account: dict) -> str:
+    return f"{account.get('type')}:{account.get('id')}".strip().lower()
+
+
+def _portable_item_account_ref(item: dict) -> str:
+    return f"{item.get('accountType') or item.get('account_type')}:{item.get('accountId') or item.get('account_id')}".strip().lower()
+
+
+def _portable_query_account_refs() -> set[str]:
+    raw = request.args.get("account_refs") or request.args.get("accounts") or ""
+    refs = re.split(r"[\s,，]+", str(raw))
+    return {ref.strip().lower() for ref in refs if ref.strip()}
+
+
+def _portable_account_selected(account: dict, selected_refs: set[str], has_group_filter: bool, group_filter: str) -> bool:
+    if selected_refs and _portable_account_ref(account) not in selected_refs:
+        return False
+    if has_group_filter and _normalize_account_group(account.get("group", "")) != group_filter:
+        return False
+    return True
+
+
+def _portable_export_has_filter(selected_refs: set[str], has_group_filter: bool) -> bool:
+    return bool(selected_refs) or has_group_filter
+
+
+def _portable_keyword_rule_matches_export(
+    item: dict,
+    has_account_filter: bool,
+    exported_account_refs: set[str],
+    exported_account_groups: set[str],
+) -> bool:
+    normalized = _normalize_keyword_rule(item)
+    if not normalized:
+        return False
+    if not has_account_filter:
+        return True
+    scope_type = normalized.get("scope_type", "all")
+    if scope_type == "all":
+        return True
+    if scope_type == "group":
+        scope_group = _normalize_account_group(normalized.get("scope_group", ""))
+        return scope_group in exported_account_groups
+    if scope_type == "accounts":
+        scope_refs = {str(ref).strip().lower() for ref in normalized.get("scope_accounts", []) if str(ref).strip()}
+        return bool(scope_refs & exported_account_refs)
+    return False
+
+
 def _portable_folder(account: dict, key: str, title: str, count: int = 0) -> dict:
     return {
         "accountType": account.get("type", ""),
@@ -3383,64 +3462,435 @@ def _portable_folder(account: dict, key: str, title: str, count: int = 0) -> dic
     }
 
 
+def _portable_address_text(value) -> str:
+    if isinstance(value, list):
+        return ", ".join(
+            text for text in (_portable_address_text(item) for item in value)
+            if text
+        )
+    if isinstance(value, dict):
+        address = str(value.get("address") or value.get("email") or "").strip()
+        name = str(value.get("name") or value.get("displayName") or "").strip()
+        if name and address:
+            return f"{name} <{address}>"
+        return address or name
+    return str(value or "").strip()
+
+
+def _portable_intro(text: str = "", html: str = "", fallback: str = "") -> str:
+    source = text or _extract_plain_text(html or "") or fallback
+    return re.sub(r"\s+", " ", str(source or "")).strip()[:300]
+
+
+def _portable_mail_date(item: dict, *names: str) -> str:
+    for name in names:
+        value = item.get(name)
+        if value:
+            return str(value)
+    return ""
+
+
+def _portable_apply_message_meta(settings: dict, message: dict) -> dict:
+    meta = _public_message_meta(_get_message_meta(
+        settings,
+        message.get("accountType", ""),
+        message.get("accountId", ""),
+        message.get("folder", ""),
+        message.get("id", ""),
+    ))
+    if any([meta.get("favorite"), meta.get("pinned"), meta.get("color")]):
+        message["favorite"] = bool(meta.get("favorite"))
+        message["pinned"] = bool(meta.get("pinned"))
+        message["meta"] = meta
+    return message
+
+
 def _portable_message_from_local(mail: dict, email: str, folder: str, label: str = "") -> dict:
-    sender = mail.get("from") if isinstance(mail.get("from"), dict) else {}
-    sender_text = ""
-    if sender:
-        sender_name = sender.get("name") or ""
-        sender_addr = sender.get("address") or ""
-        sender_text = f"{sender_name} <{sender_addr}>".strip() if sender_name else sender_addr
-    to_items = mail.get("to") if isinstance(mail.get("to"), list) else []
+    text = str(mail.get("text") or "")
+    html = str(mail.get("html") or "")
     return {
         "id": str(mail.get("id") or mail.get("msgid") or ""),
         "accountType": "local",
         "accountId": email,
         "accountLabel": label or email,
         "folder": folder,
-        "from": sender_text,
-        "to": ", ".join(item.get("address", "") for item in to_items if isinstance(item, dict)),
-        "cc": "",
-        "bcc": "",
+        "from": _portable_address_text(mail.get("from")),
+        "to": _portable_address_text(mail.get("to")),
+        "cc": _portable_address_text(mail.get("cc")),
+        "bcc": _portable_address_text(mail.get("bcc")),
         "subject": mail.get("subject", ""),
-        "intro": mail.get("intro", ""),
-        "date": mail.get("createdAt") or mail.get("updatedAt") or "",
+        "intro": mail.get("intro") or _portable_intro(text, html),
+        "date": _portable_mail_date(mail, "createdAt", "updatedAt", "date"),
         "seen": bool(mail.get("seen")),
         "favorite": bool((mail.get("meta") or {}).get("favorite")),
         "pinned": bool((mail.get("meta") or {}).get("pinned")),
-        "html": mail.get("html", ""),
-        "text": mail.get("text", ""),
+        "html": html,
+        "text": text,
+        "error": "",
+        "attachments": _format_attachments(mail),
+    }
+
+
+def _portable_message_from_local_sent(mail: dict, email: str, label: str = "") -> dict:
+    text = str(mail.get("text") or "")
+    html = str(mail.get("html") or "")
+    return {
+        "id": str(mail.get("id") or ""),
+        "accountType": "local",
+        "accountId": email,
+        "accountLabel": label or email,
+        "folder": "sent",
+        "from": _portable_address_text(mail.get("from") or mail.get("from_address") or email),
+        "to": _portable_address_text(mail.get("to")),
+        "cc": _portable_address_text(mail.get("cc")),
+        "bcc": _portable_address_text(mail.get("bcc")),
+        "subject": mail.get("subject", ""),
+        "intro": mail.get("intro") or _portable_intro(text, html),
+        "date": _portable_mail_date(mail, "createdAt", "updatedAt", "date"),
+        "seen": True,
+        "favorite": bool((mail.get("meta") or {}).get("favorite")),
+        "pinned": bool((mail.get("meta") or {}).get("pinned")),
+        "html": html,
+        "text": text,
         "error": "",
         "attachments": mail.get("attachments", []) if isinstance(mail.get("attachments"), list) else [],
     }
 
 
+def _portable_message_from_draft(item: dict) -> dict:
+    text = str(item.get("text") or "")
+    html = str(item.get("html") or "")
+    account_id = item.get("account_id") or item.get("from_email") or ""
+    return {
+        "id": str(item.get("id") or ""),
+        "accountType": item.get("account_type", "local"),
+        "accountId": account_id,
+        "accountLabel": item.get("from_email") or account_id,
+        "folder": "drafts",
+        "from": _portable_address_text({"name": item.get("from_name", ""), "address": item.get("from_email", "")}),
+        "to": _portable_address_text(item.get("to")),
+        "cc": _portable_address_text(item.get("cc")),
+        "bcc": _portable_address_text(item.get("bcc")),
+        "subject": item.get("subject", ""),
+        "intro": _portable_intro(text, html),
+        "date": _portable_mail_date(item, "updated_at", "created_at"),
+        "seen": True,
+        "favorite": False,
+        "pinned": False,
+        "html": html,
+        "text": text,
+        "error": "",
+        "attachments": item.get("attachments", []) if isinstance(item.get("attachments"), list) else [],
+        "draftVersion": item.get("version", 1),
+    }
+
+
+def _portable_message_from_outbox(item: dict) -> dict:
+    message = _portable_message_from_draft(item)
+    message["folder"] = "outbox"
+    message["error"] = item.get("error", "")
+    message["status"] = item.get("status", "failed")
+    message["attempts"] = item.get("attempts", 0)
+    return message
+
+
 def _portable_message_from_external(mail: dict, account: dict) -> dict:
-    sender = mail.get("from") if isinstance(mail.get("from"), dict) else {}
-    sender_text = sender.get("address", "") if sender else str(mail.get("from") or "")
-    if sender and sender.get("name"):
-        sender_text = f"{sender.get('name')} <{sender.get('address', '')}>"
-    to_items = mail.get("to") if isinstance(mail.get("to"), list) else []
+    text = str(mail.get("text") or "")
+    html = str(mail.get("html") or "")
     return {
         "id": str(mail.get("uid") or mail.get("id") or ""),
         "accountType": "external",
         "accountId": str(account.get("id") or ""),
         "accountLabel": account.get("displayName") or account.get("email") or "",
         "folder": str(mail.get("folder") or "INBOX"),
-        "from": sender_text,
-        "to": ", ".join(item.get("address", "") for item in to_items if isinstance(item, dict)),
-        "cc": "",
-        "bcc": "",
+        "from": _portable_address_text(mail.get("from")),
+        "to": _portable_address_text(mail.get("to")),
+        "cc": _portable_address_text(mail.get("cc")),
+        "bcc": _portable_address_text(mail.get("bcc")),
         "subject": mail.get("subject", ""),
-        "intro": mail.get("intro", ""),
-        "date": mail.get("date") or "",
+        "intro": mail.get("intro") or _portable_intro(text, html),
+        "date": _portable_mail_date(mail, "date", "createdAt", "updatedAt"),
         "seen": bool(mail.get("seen")),
-        "favorite": bool((mail.get("meta") or {}).get("favorite")),
+        "favorite": bool((mail.get("meta") or {}).get("favorite") or mail.get("flagged")),
         "pinned": bool((mail.get("meta") or {}).get("pinned")),
-        "html": mail.get("html", ""),
-        "text": mail.get("text", ""),
+        "html": html,
+        "text": text,
         "error": "",
         "attachments": mail.get("attachments", []) if isinstance(mail.get("attachments"), list) else [],
     }
+
+
+def _portable_parse_message_limit() -> int | None:
+    raw = str(request.args.get("limit", "200")).strip().lower()
+    if raw in {"all", "*", "-1", "full"}:
+        return None
+    return min(max(_safe_int(raw, 200), 0), 2000)
+
+
+def _portable_limit_reached(messages: list, limit: int | None) -> bool:
+    return limit is not None and len(messages) >= limit
+
+
+def _portable_remaining(limit: int | None, messages: list, page_size: int = 100) -> int:
+    if limit is None:
+        return page_size
+    return max(0, min(page_size, limit - len(messages)))
+
+
+def _portable_json_get(url: str, *, params: dict | None = None, headers: dict | None = None, timeout: int = 30) -> dict | list | None:
+    try:
+        resp = http_session.get(url, params=params or {}, headers=headers or {}, timeout=timeout)
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _portable_fetch_duckmail_page(base_url: str, path: str, headers: dict, offset: int, limit: int, params: dict | None = None) -> tuple[list, int | None]:
+    data = _portable_json_get(
+        f"{base_url}{path}",
+        params={**(params or {}), "offset": offset, "limit": limit},
+        headers=headers,
+        timeout=30,
+    )
+    if isinstance(data, dict):
+        items = data.get("hydra:member", [])
+        return (items if isinstance(items, list) else []), _safe_int(data.get("hydra:totalItems"), -1)
+    return (data if isinstance(data, list) else []), None
+
+
+def _portable_fetch_duckmail_total(base_url: str, path: str, headers: dict, params: dict | None = None) -> int:
+    _, total = _portable_fetch_duckmail_page(base_url, path, headers, 0, 1, params=params)
+    return max(0, total or 0)
+
+
+def _portable_enrich_local_message(base_url: str, headers: dict, mail: dict) -> dict:
+    message_id = str(mail.get("id") or mail.get("msgid") or "").strip()
+    if not message_id:
+        return mail
+    detail = _portable_json_get(
+        f"{base_url}/messages/{quote(message_id, safe='')}",
+        params={"markSeen": "0"},
+        headers=headers,
+        timeout=30,
+    )
+    if isinstance(detail, dict):
+        merged = {**mail, **detail}
+        merged["attachments"] = _format_attachments(merged)
+        return merged
+    return mail
+
+
+def _portable_collect_local_folder(
+    settings: dict,
+    account: dict,
+    headers: dict,
+    path: str,
+    folder: str,
+    limit: int | None,
+    messages: list,
+    counts: dict,
+    *,
+    base_url: str,
+    sent: bool = False,
+):
+    email = account["address"]
+    offset = 0
+    total = _portable_fetch_duckmail_total(base_url, path, headers)
+    counts[folder] = total
+    while not _portable_limit_reached(messages, limit):
+        page_limit = _portable_remaining(limit, messages)
+        if page_limit <= 0:
+            break
+        page, total_from_page = _portable_fetch_duckmail_page(base_url, path, headers, offset, page_limit)
+        if total_from_page is not None and total_from_page >= 0:
+            counts[folder] = total_from_page
+        if not page:
+            break
+        _attach_message_meta(settings, page, "local", email, folder)
+        for item in page:
+            if not isinstance(item, dict) or _portable_limit_reached(messages, limit):
+                continue
+            mail = item if sent else _portable_enrich_local_message(base_url, headers, item)
+            portable = _portable_message_from_local_sent(mail, email, account.get("displayName", "")) if sent else _portable_message_from_local(mail, email, folder, account.get("displayName", ""))
+            messages.append(_portable_apply_message_meta(settings, portable))
+        offset += len(page)
+        if len(page) < page_limit or (counts.get(folder, 0) and offset >= counts[folder]):
+            break
+
+
+def _portable_collect_local_messages(settings: dict, account: dict, limit: int | None) -> tuple[list, dict]:
+    messages = []
+    counts = {"inbox": 0, "unread": 0, "sent": 0, "drafts": 0, "outbox": 0, "trash": 0}
+    email = account["address"]
+    token, err = _get_mail_token(email, "")
+    if not err:
+        base_url = DUCKMAIL_BASE_URL.rstrip("/")
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            counts["unread"] = _portable_fetch_duckmail_total(base_url, "/messages", headers, {"unread": "true"})
+            _portable_collect_local_folder(settings, account, headers, "/messages", "inbox", limit, messages, counts, base_url=base_url)
+            _portable_collect_local_folder(settings, account, headers, "/sent", "sent", limit, messages, counts, base_url=base_url, sent=True)
+            _portable_collect_local_folder(settings, account, headers, "/messages/trash", "trash", limit, messages, counts, base_url=base_url)
+        except Exception as exc:
+            app.logger.warning("便携导出读取本地邮件失败: %s %s", email, exc)
+
+    drafts = [
+        _public_draft(item)
+        for item in _settings_list(settings, "drafts")
+        if item.get("account_id") == email or item.get("from_email") == email
+    ]
+    outbox = [
+        _public_outbox(item)
+        for item in _settings_list(settings, "outbox")
+        if item.get("account_id") == email or item.get("from_email") == email
+    ]
+    counts["drafts"] = len(drafts)
+    counts["outbox"] = len(outbox)
+    for item in drafts:
+        if _portable_limit_reached(messages, limit):
+            break
+        messages.append(_portable_message_from_draft(item))
+    for item in outbox:
+        if _portable_limit_reached(messages, limit):
+            break
+        messages.append(_portable_message_from_outbox(item))
+    counts["all"] = sum(counts.get(name, 0) for name in ("inbox", "sent", "drafts", "outbox", "trash"))
+    counts["truncated"] = limit is not None and len(messages) < counts["all"]
+    return messages, counts
+
+
+def _portable_set_folder_count(folders: list, account: dict, key: str, count: int):
+    for folder in folders:
+        if (
+            folder.get("accountType") == account.get("type")
+            and folder.get("accountId") == account.get("id")
+            and folder.get("key") == key
+        ):
+            folder["count"] = _safe_int(count)
+            return
+
+
+def _portable_get_folder_count(folders: list, account: dict, key: str) -> int:
+    for folder in folders:
+        if (
+            folder.get("accountType") == account.get("type")
+            and folder.get("accountId") == account.get("id")
+            and folder.get("key") == key
+        ):
+            return _safe_int(folder.get("count"), 0)
+    return 0
+
+
+def _portable_append_folder(folders: list, folder_keys: set, folder: dict):
+    key = _portable_folder_key(folder)
+    if key and key not in folder_keys:
+        folders.append(folder)
+        folder_keys.add(key)
+
+
+def _portable_external_account_url(account: dict, suffix: str = "") -> str:
+    account_id = quote(str(account.get("id") or ""), safe="")
+    return urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{account_id}{suffix}")
+
+
+def _portable_external_folders(account: dict) -> list:
+    folders = [
+        _portable_folder(account, "__memail_all__", "所有邮件"),
+        _portable_folder(account, "__memail_unread__", "未读邮件"),
+    ]
+    status_by_path = {}
+    status_data = _portable_json_get(_portable_external_account_url(account, "/folders/status"), timeout=20)
+    if isinstance(status_data, list):
+        status_by_path = {
+            str(item.get("path") or ""): item
+            for item in status_data
+            if isinstance(item, dict) and item.get("path")
+        }
+    folder_data = _portable_json_get(_portable_external_account_url(account, "/folders"), timeout=20)
+    if isinstance(folder_data, list) and folder_data:
+        for item in folder_data:
+            if not isinstance(item, dict) or item.get("noselect"):
+                continue
+            path = str(item.get("path") or "").strip()
+            if not path:
+                continue
+            status = status_by_path.get(path, {})
+            folders.append(_portable_folder(
+                account,
+                path,
+                item.get("name") or path,
+                _safe_int(status.get("messages"), 0),
+            ))
+        return folders
+    folders.extend([
+        _portable_folder(account, "INBOX", "收件箱"),
+        _portable_folder(account, "Sent", "已发送"),
+        _portable_folder(account, "Drafts", "草稿箱"),
+        _portable_folder(account, "Trash", "已删除"),
+    ])
+    return folders
+
+
+def _portable_enrich_external_message(account: dict, mail: dict) -> dict:
+    uid = str(mail.get("uid") or mail.get("id") or "").strip()
+    folder = str(mail.get("folder") or "INBOX")
+    if not uid:
+        return mail
+    detail = _portable_json_get(
+        _portable_external_account_url(account, f"/mails/{quote(uid, safe='')}"),
+        params={"folder": folder, "markSeen": "0"},
+        timeout=30,
+    )
+    if isinstance(detail, dict):
+        return {**mail, **detail}
+    return mail
+
+
+def _portable_collect_external_messages(settings: dict, account: dict, limit: int | None) -> tuple[list, dict]:
+    messages = []
+    counts = {"__memail_all__": 0, "__memail_unread__": 0, "truncated": False}
+    offset = 0
+    while not _portable_limit_reached(messages, limit):
+        page_limit = _portable_remaining(limit, messages)
+        if page_limit <= 0:
+            break
+        data = _portable_json_get(
+            _portable_external_account_url(account, "/mails"),
+            params={
+                "folder": "__memail_all__",
+                "count": page_limit,
+                "offset": offset,
+                "cacheOnly": "1",
+            },
+            timeout=30,
+        )
+        if not isinstance(data, dict):
+            break
+        page = data.get("mails", [])
+        if not isinstance(page, list) or not page:
+            counts["__memail_all__"] = _safe_int(data.get("total"), len(messages))
+            counts["__memail_unread__"] = _safe_int(data.get("unseen"), counts["__memail_unread__"])
+            break
+        counts["__memail_all__"] = _safe_int(data.get("total"), counts["__memail_all__"])
+        counts["__memail_unread__"] = _safe_int(data.get("unseen"), counts["__memail_unread__"])
+        for item in page:
+            if not isinstance(item, dict) or _portable_limit_reached(messages, limit):
+                continue
+            mail = _portable_enrich_external_message(account, item)
+            portable = _portable_message_from_external(mail, account)
+            messages.append(_portable_apply_message_meta(settings, portable))
+        offset += len(page)
+        if not data.get("hasMore") or len(page) < page_limit:
+            break
+    if counts["__memail_all__"] <= 0:
+        counts["__memail_all__"] = len(messages)
+    counts["truncated"] = limit is not None and len(messages) < counts["__memail_all__"]
+    return messages, counts
 
 
 def _public_ai_settings_for_portable() -> dict:
@@ -6349,11 +6799,25 @@ def sync_push():
 @login_required
 def portable_export():
     settings = _read_viewer_settings()
-    limit = min(max(_safe_int(request.args.get("limit"), 200), 0), 2000)
+    message_limit = _portable_parse_message_limit()
     include_messages = request.args.get("messages", "1").strip().lower() not in {"0", "false", "no"}
+    selected_refs = _portable_query_account_refs()
+    has_group_filter = "group" in request.args
+    group_filter = _normalize_account_group(request.args.get("group", ""))
+    has_account_filter = _portable_export_has_filter(selected_refs, has_group_filter)
     accounts = []
     folders = []
     messages = []
+    exported_account_refs = set()
+    export_stats = {
+        "messagesIncluded": include_messages,
+        "messageLimitPerMailbox": "all" if message_limit is None else message_limit,
+        "group": group_filter if has_group_filter else "",
+        "selectedAccounts": sorted(selected_refs),
+        "truncated": False,
+        "accounts": [],
+        "importedMessages": 0,
+    }
 
     mailboxes = settings.get("mailboxes", []) if isinstance(settings.get("mailboxes"), list) else []
     local_accounts = []
@@ -6361,8 +6825,11 @@ def portable_export():
         account = _portable_account_from_local_mailbox(mailbox)
         if not account:
             continue
+        if not _portable_account_selected(account, selected_refs, has_group_filter, group_filter):
+            continue
         local_accounts.append(account)
         accounts.append(account)
+        exported_account_refs.add(_portable_account_ref(account))
         folders.extend([
             _portable_folder(account, "inbox", "收件箱"),
             _portable_folder(account, "all", "所有邮件"),
@@ -6374,6 +6841,7 @@ def portable_export():
         ])
 
     external_accounts = []
+    normalized_external_accounts = []
     try:
         resp = http_session.get(urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/accounts"), timeout=10)
         if resp.status_code == 200:
@@ -6384,15 +6852,19 @@ def portable_export():
         account = _portable_account_from_external(item)
         if not account:
             continue
+        if not _portable_account_selected(account, selected_refs, has_group_filter, group_filter):
+            continue
+        normalized_external_accounts.append(account)
         accounts.append(account)
-        folders.extend([
-            _portable_folder(account, "__memail_all__", "所有邮件"),
-            _portable_folder(account, "__memail_unread__", "未读邮件"),
-            _portable_folder(account, "INBOX", "收件箱", (item.get("syncStatus") or {}).get("messages", 0)),
-            _portable_folder(account, "Sent", "已发送"),
-            _portable_folder(account, "Drafts", "草稿箱"),
-            _portable_folder(account, "Trash", "已删除"),
-        ])
+        exported_account_refs.add(_portable_account_ref(account))
+        account_folders = _portable_external_folders(account)
+        sync_status = item.get("syncStatus") or {}
+        for folder in account_folders:
+            if folder.get("key") == "__memail_all__" and not folder.get("count"):
+                folder["count"] = _safe_int(sync_status.get("messages"), 0)
+            elif folder.get("key") == "__memail_unread__" and not folder.get("count"):
+                folder["count"] = _safe_int(sync_status.get("unseen"), 0)
+        folders.extend(account_folders)
 
     imported_external_accounts = [
         item for item in _settings_list(settings, "portable_external_accounts")
@@ -6411,66 +6883,105 @@ def portable_export():
         for account in accounts
     }
     for account in imported_external_accounts:
+        account = _portable_sanitize_account_profile(account)
+        if not _portable_account_selected(account, selected_refs, has_group_filter, group_filter):
+            continue
         ref = f"{account.get('type')}:{account.get('id')}".lower()
         if ref not in existing_account_refs:
             accounts.append(account)
             existing_account_refs.add(ref)
+            exported_account_refs.add(ref)
     folder_keys = {_portable_folder_key(item) for item in folders}
     for folder in imported_folders:
         key = _portable_folder_key(folder)
+        if has_account_filter and _portable_item_account_ref(folder) not in exported_account_refs:
+            continue
         if key and key not in folder_keys:
             folders.append(folder)
             folder_keys.add(key)
 
-    if include_messages and limit:
-        for account in local_accounts:
-            email = account["address"]
-            token, err = _get_mail_token(email, "")
-            if err:
-                continue
-            try:
-                resp = http_session.get(
-                    f"{DUCKMAIL_BASE_URL.rstrip('/')}/messages",
-                    headers={"Authorization": f"Bearer {token}"},
-                    params={"offset": 0, "limit": limit},
-                    timeout=30,
-                )
-                if resp.status_code == 200:
-                    payload = resp.json()
-                    for mail in payload.get("hydra:member", []) if isinstance(payload, dict) else []:
-                        messages.append(_portable_message_from_local(mail, email, "inbox", account.get("displayName", "")))
-            except Exception as exc:
-                app.logger.warning("便携导出读取本地邮件失败: %s %s", email, exc)
+    if include_messages and message_limit != 0:
+        message_keys = set()
 
-        per_external_limit = min(limit, 500)
-        for item in external_accounts:
-            account = _portable_account_from_external(item)
-            if not account:
-                continue
+        def add_message(item: dict) -> bool:
+            key = _portable_message_key(item)
+            if not key or key in message_keys:
+                return False
+            messages.append(item)
+            message_keys.add(key)
+            return True
+
+        for account in local_accounts:
+            account_messages, counts = _portable_collect_local_messages(settings, account, message_limit)
+            for key in ("inbox", "all", "unread", "sent", "drafts", "outbox", "trash"):
+                _portable_set_folder_count(folders, account, key, counts.get(key, 0))
+            for item in account_messages:
+                add_message(item)
+            export_stats["accounts"].append({
+                "type": "local",
+                "id": account.get("id", ""),
+                "address": account.get("address", ""),
+                "messages": len(account_messages),
+                "total": counts.get("all", len(account_messages)),
+                "truncated": bool(counts.get("truncated")),
+            })
+            export_stats["truncated"] = export_stats["truncated"] or bool(counts.get("truncated"))
+
+        for account in normalized_external_accounts:
             try:
-                resp = http_session.get(
-                    urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", f"api/accounts/{quote(str(account['id']), safe='')}/mails"),
-                    params={"folder": "__memail_all__", "count": per_external_limit, "offset": 0, "cacheOnly": 1},
-                    timeout=20,
-                )
-                if resp.status_code == 200:
-                    payload = resp.json()
-                    for mail in payload.get("mails", []) if isinstance(payload, dict) else []:
-                        messages.append(_portable_message_from_external(mail, account))
+                account_messages, counts = _portable_collect_external_messages(settings, account, message_limit)
             except Exception as exc:
                 app.logger.warning("便携导出读取外部邮件缓存失败: %s %s", account.get("address"), exc)
-        message_keys = {_portable_message_key(item) for item in messages}
-        for item in imported_messages[:limit]:
-            key = _portable_message_key(item)
-            if key and key not in message_keys:
-                messages.append(item)
-                message_keys.add(key)
+                account_messages, counts = [], {"__memail_all__": 0, "__memail_unread__": 0, "truncated": False}
+            exported_folder_counts = {}
+            for item in account_messages:
+                folder_key = str(item.get("folder") or "INBOX")
+                exported_folder_counts[folder_key] = exported_folder_counts.get(folder_key, 0) + 1
+                _portable_append_folder(folders, folder_keys, _portable_folder(account, folder_key, folder_key))
+                add_message(item)
+            _portable_set_folder_count(folders, account, "__memail_all__", counts.get("__memail_all__", len(account_messages)))
+            _portable_set_folder_count(folders, account, "__memail_unread__", counts.get("__memail_unread__", 0))
+            for folder_key, count in exported_folder_counts.items():
+                current_count = _portable_get_folder_count(folders, account, folder_key)
+                if count > current_count:
+                    _portable_set_folder_count(folders, account, folder_key, count)
+            export_stats["accounts"].append({
+                "type": "external",
+                "id": account.get("id", ""),
+                "address": account.get("address", ""),
+                "messages": len(account_messages),
+                "total": counts.get("__memail_all__", len(account_messages)),
+                "truncated": bool(counts.get("truncated")),
+            })
+            export_stats["truncated"] = export_stats["truncated"] or bool(counts.get("truncated"))
 
+        imported_added = 0
+        for item in imported_messages:
+            if has_account_filter and _portable_item_account_ref(item) not in exported_account_refs:
+                continue
+            if message_limit is not None and imported_added >= message_limit:
+                export_stats["truncated"] = True
+                break
+            if add_message(item):
+                imported_added += 1
+        export_stats["importedMessages"] = imported_added
+
+    exported_account_groups = {
+        _normalize_account_group(account.get("group", ""))
+        for account in accounts
+        if isinstance(account, dict)
+    }
     package = {
         "format": "memail.portable",
         "version": 1,
         "source": "server",
         "exportedAt": _iso_now(),
+        "summary": {
+            "accountCount": len(accounts),
+            "folderCount": len(folders),
+            "messageCount": len(messages),
+            **export_stats,
+        },
         "accounts": accounts,
         "folders": folders,
         "messages": messages,
@@ -6479,7 +6990,12 @@ def portable_export():
         "keywordRules": [
             _portable_keyword_rule(item)
             for item in _settings_list(settings, "keyword_rules")
-            if _normalize_keyword_rule(item)
+            if _portable_keyword_rule_matches_export(
+                item,
+                has_account_filter,
+                exported_account_refs,
+                exported_account_groups,
+            )
         ],
     }
     return jsonify(package)
@@ -6500,6 +7016,7 @@ def portable_import():
         "external_account_profiles": 0,
         "folders": 0,
         "messages": 0,
+        "message_meta": 0,
         "keyword_rules": 0,
         "ai_channels": 0,
         "translation_settings": 0,
@@ -6531,17 +7048,14 @@ def portable_import():
         elif account_type == "external":
             external_profiles = _settings_list(settings, "portable_external_accounts")
             external_profiles = [item for item in external_profiles if isinstance(item, dict)]
-            normalized = {
-                **account,
-                "protectedPassword": "",
-            }
+            normalized = _portable_sanitize_account_profile(account)
             ref = f"external:{normalized.get('id') or normalized.get('address')}".lower()
             external_profiles = [
                 item for item in external_profiles
                 if f"external:{item.get('id') or item.get('address')}".lower() != ref
             ]
             external_profiles.append(normalized)
-            settings["portable_external_accounts"] = external_profiles[-500:]
+            settings["portable_external_accounts"] = external_profiles
             imported["external_account_profiles"] += 1
 
     settings["mailboxes"] = list(by_address.values())
@@ -6570,7 +7084,7 @@ def portable_import():
     ]
     rules = [item for item in rules if item]
     if rules:
-        settings["keyword_rules"] = rules[-200:]
+        settings["keyword_rules"] = rules
         imported["keyword_rules"] = len(rules)
 
     folder_items = [
@@ -6585,7 +7099,7 @@ def portable_import():
         by_key = {_portable_folder_key(item): item for item in stored if _portable_folder_key(item)}
         for item in folder_items:
             by_key[_portable_folder_key(item)] = item
-        settings["portable_folders"] = list(by_key.values())[-2000:]
+        settings["portable_folders"] = list(by_key.values())
         imported["folders"] = len(folder_items)
 
     message_items = [
@@ -6600,8 +7114,37 @@ def portable_import():
         by_key = {_portable_message_key(item): item for item in stored if _portable_message_key(item)}
         for item in message_items:
             by_key[_portable_message_key(item)] = item
-        settings["portable_messages"] = list(by_key.values())[-5000:]
+        settings["portable_messages"] = list(by_key.values())
         imported["messages"] = len(message_items)
+        meta_store = settings.get("message_meta", {})
+        if not isinstance(meta_store, dict):
+            meta_store = {}
+        for item in message_items:
+            raw_meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            favorite = bool(raw_meta.get("favorite", item.get("favorite", False)))
+            pinned = bool(raw_meta.get("pinned", item.get("pinned", False)))
+            color = str(raw_meta.get("color") or item.get("color") or "").strip().lower()
+            color = color if re.fullmatch(r"(red|orange|yellow|green|blue|purple|gray)", color) else ""
+            if not any([favorite, pinned, color]):
+                continue
+            key = _message_meta_key(
+                item.get("accountType") or item.get("account_type") or "local",
+                item.get("accountId") or item.get("account_id") or "",
+                item.get("folder") or "INBOX",
+                item.get("id") or item.get("message_id") or "",
+            )
+            meta_store[key] = {
+                "account_type": item.get("accountType") or item.get("account_type") or "local",
+                "account_id": item.get("accountId") or item.get("account_id") or "",
+                "folder": item.get("folder") or "INBOX",
+                "message_id": str(item.get("id") or item.get("message_id") or ""),
+                "favorite": favorite,
+                "pinned": pinned,
+                "color": color,
+                "updated_at": raw_meta.get("updated_at") or item.get("updatedAt") or item.get("updated_at") or _iso_now(),
+            }
+            imported["message_meta"] += 1
+        settings["message_meta"] = meta_store
 
     _append_audit(settings, "portable.imported", imported)
     _touch_sync_event(settings, "portable.imported", imported)

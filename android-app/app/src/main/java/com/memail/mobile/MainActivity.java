@@ -110,6 +110,8 @@ public class MainActivity extends Activity {
     private final List<Models.Folder> folders = new ArrayList<>();
     private final List<Models.Mail> mails = new ArrayList<>();
     private final List<Models.KeywordRule> keywordRules = new ArrayList<>();
+    private final Map<String, MailCount> keywordCountCache = new LinkedHashMap<>();
+    private final Map<String, MailCount> groupCountCache = new LinkedHashMap<>();
     private final Object listLock = new Object();
 
     private SharedPreferences prefs;
@@ -159,6 +161,12 @@ public class MainActivity extends Activity {
     private int pageSize = 30;
     private boolean hasMore = false;
     private boolean mailPageLoading = false;
+    private boolean keywordCountsLoading = false;
+    private boolean groupCountsLoading = false;
+    private int keywordCountGeneration = 0;
+    private int groupCountGeneration = 0;
+    private long keywordCountsLoadedAt = 0L;
+    private long groupCountsLoadedAt = 0L;
     private String activeMailLoadKey = "";
     private String activeDetailLoadKey = "";
     private String activeTranslationLoadKey = "";
@@ -176,6 +184,16 @@ public class MainActivity extends Activity {
         String contentType;
         String content;
         int size;
+    }
+
+    private static final class MailCount {
+        final int total;
+        final int unread;
+
+        MailCount(int total, int unread) {
+            this.total = Math.max(0, total);
+            this.unread = Math.max(0, unread);
+        }
     }
 
     @Override
@@ -219,6 +237,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (!token.isEmpty()) {
+            reloadLocalCacheIntoMemory();
+            refreshVisibleShellFromCache();
+        }
         startEventStream();
         startForegroundRefreshLoop();
         if (!token.isEmpty() && !accounts.isEmpty()) refreshBootstrapSilentlyIfDue(false);
@@ -464,9 +486,7 @@ public class MainActivity extends Activity {
         RealtimeSyncService.start(this);
         startEventStream();
         startForegroundRefreshLoop();
-        accounts.clear();
-        accounts.addAll(store.readAccounts());
-        loadCachedKeywordRules();
+        reloadLocalCacheIntoMemory();
         if (accounts.isEmpty()) {
             fetchBootstrapThenAccounts(true, true);
         } else {
@@ -499,22 +519,26 @@ public class MainActivity extends Activity {
                 JSONObject bootstrap = api.get("/api/sync/bootstrap");
                 JSONObject local = api.get("/api/mailboxes");
                 JSONObject external = api.get("/imap/api/accounts");
-                parseAccounts(local, external);
-                replaceKeywordRules(parseKeywordRuleList(bootstrap));
+                List<Models.Account> nextAccounts = parseAccountList(local, external);
+                List<Models.KeywordRule> nextRules = parseKeywordRuleList(bootstrap);
                 try {
                     List<Models.KeywordRule> rules = parseKeywordRuleList(api.get("/api/keyword-rules"));
-                    if (!rules.isEmpty()) replaceKeywordRules(rules);
+                    if (!rules.isEmpty()) nextRules = rules;
                 } catch (Exception ignored) {
                     // Older servers can rely on /api/sync/bootstrap; the UI still shows cached rules.
                 }
-                saveKeywordRuleCache();
-                store.replaceAccounts(accounts);
-                prefs.edit().putLong("last_bootstrap_refresh_at", System.currentTimeMillis()).apply();
+                if (!nextRules.isEmpty()) saveKeywordRuleCache(nextRules);
+                store.replaceAccounts(nextAccounts);
+                prefs.edit()
+                    .putLong("last_bootstrap_refresh_at", System.currentTimeMillis())
+                    .putInt("sync_seq", bootstrap.optInt("sync_seq", prefs.getInt("sync_seq", 0)))
+                    .apply();
                 return "ok";
             } finally {
                 bootstrapRefreshRunning = false;
             }
         }, result -> {
+            reloadLocalCacheIntoMemory();
             if (render) renderAccounts();
             else if ("mailHub".equals(currentScreen)) renderMailHub();
             else if ("accounts".equals(currentScreen)) renderAccounts();
@@ -543,8 +567,24 @@ public class MainActivity extends Activity {
         if (mainHandler != null) mainHandler.removeCallbacks(foregroundRefreshTask);
     }
 
-    private void parseAccounts(JSONObject local, JSONObject external) {
+    private void reloadLocalCacheIntoMemory() {
         accounts.clear();
+        accounts.addAll(store.readAccounts());
+        loadCachedKeywordRules();
+    }
+
+    private void refreshVisibleShellFromCache() {
+        if ("accounts".equals(currentScreen)) renderAccounts();
+        else if ("mailHub".equals(currentScreen)) renderMailHub();
+        else if ("settings".equals(currentScreen)) renderSettings();
+    }
+
+    private void parseAccounts(JSONObject local, JSONObject external) {
+        replaceAccounts(parseAccountList(local, external));
+    }
+
+    private List<Models.Account> parseAccountList(JSONObject local, JSONObject external) {
+        List<Models.Account> parsed = new ArrayList<>();
         JSONArray localBoxes = Json.array(local, "mailboxes");
         for (int i = 0; i < localBoxes.length(); i++) {
             JSONObject item = localBoxes.optJSONObject(i);
@@ -554,13 +594,22 @@ public class MainActivity extends Activity {
             account.email = account.id;
             account.name = Json.anyStr(item, "display_name", "displayName");
             account.group = Json.str(item, "group");
-            accounts.add(account);
+            parsed.add(account);
         }
         JSONArray externalArray = external.optJSONArray("accounts");
         if (externalArray == null) externalArray = external.optJSONArray("items");
         if (externalArray == null) externalArray = external.optJSONArray("data");
         if (externalArray == null) externalArray = new JSONArray();
-        for (int i = 0; i < externalArray.length(); i++) addExternalAccount(externalArray.optJSONObject(i));
+        for (int i = 0; i < externalArray.length(); i++) {
+            Models.Account account = externalAccountFrom(externalArray.optJSONObject(i));
+            if (account != null) parsed.add(account);
+        }
+        return parsed;
+    }
+
+    private void replaceAccounts(List<Models.Account> nextAccounts) {
+        accounts.clear();
+        if (nextAccounts != null) accounts.addAll(nextAccounts);
     }
 
     private List<Models.KeywordRule> parseKeywordRuleList(JSONObject source) {
@@ -596,15 +645,25 @@ public class MainActivity extends Activity {
         try {
             String raw = prefs.getString("keyword_rules_cache", "[]");
             replaceKeywordRules(parseKeywordRuleList(new JSONObject().put("rules", new JSONArray(raw))));
+            keywordCountsLoadedAt = 0L;
+            groupCountsLoadedAt = 0L;
         } catch (Exception ignored) {
             keywordRules.clear();
+            keywordCountCache.clear();
+            groupCountCache.clear();
+            keywordCountsLoadedAt = 0L;
+            groupCountsLoadedAt = 0L;
         }
     }
 
     private void saveKeywordRuleCache() {
+        saveKeywordRuleCache(keywordRules);
+    }
+
+    private void saveKeywordRuleCache(List<Models.KeywordRule> rules) {
         try {
             JSONArray arr = new JSONArray();
-            for (Models.KeywordRule rule : keywordRules) {
+            for (Models.KeywordRule rule : rules) {
                 JSONObject item = new JSONObject()
                     .put("id", rule.id)
                     .put("name", rule.name)
@@ -634,7 +693,12 @@ public class MainActivity extends Activity {
     }
 
     private void addExternalAccount(JSONObject item) {
-        if (item == null) return;
+        Models.Account account = externalAccountFrom(item);
+        if (account != null) accounts.add(account);
+    }
+
+    private Models.Account externalAccountFrom(JSONObject item) {
+        if (item == null) return null;
         Models.Account account = new Models.Account();
         account.type = "external";
         account.id = String.valueOf(item.opt("id"));
@@ -644,7 +708,7 @@ public class MainActivity extends Activity {
         account.group = Json.str(item, "group");
         JSONObject sync = Json.obj(item, "syncStatus");
         account.unread = sync.optInt("unseen", 0);
-        accounts.add(account);
+        return account;
     }
 
     private void renderAccounts() {
@@ -727,26 +791,38 @@ public class MainActivity extends Activity {
         list.addView(sectionHeader("全局邮箱", "跨账号聚合查看"));
         list.addView(hubRow("全部账号", "所有邮件", totalUnread(), "▦", v -> openVirtualMailbox("global_all", "")));
         list.addView(hubRow("未读邮件", "所有账号的未读消息", totalUnread(), "●", v -> openVirtualMailbox("global_unread", "")));
-        Map<String, Integer> keywordCounts = keywordRuleCounts();
+        Map<String, MailCount> keywordCounts = cachedKeywordRuleCounts();
         int keywordTotal = 0;
-        for (Integer value : keywordCounts.values()) keywordTotal += value == null ? 0 : value;
+        int keywordUnread = 0;
+        for (MailCount value : keywordCounts.values()) {
+            if (value == null) continue;
+            keywordTotal += value.total;
+            keywordUnread += value.unread;
+        }
         list.addView(sectionHeader(
             "关键词监控",
-            keywordRules.isEmpty() ? "暂无规则" : keywordRules.size() + " 条规则 · " + keywordTotal + " 封命中"
+            keywordRules.isEmpty() ? "暂无规则" : keywordRules.size() + " 条规则 · 总 " + keywordTotal + " · 未读 " + keywordUnread
         ));
         if (keywordRules.isEmpty()) {
             list.addView(hubRow("暂无关键词规则", "请在服务端设置中新增关键词监控规则", 0, "⌁", v -> toast("请先在服务端设置关键词规则")));
         } else {
             for (Models.KeywordRule rule : keywordRules) {
-                int count = keywordCounts.containsKey(rule.id) ? keywordCounts.get(rule.id) : 0;
-                list.addView(hubRow(rule.name, nonEmpty(rule.keywordLine(), "命中关键词邮件"), count, "⚑", v -> openKeywordMailbox(rule), true));
+                MailCount count = keywordCounts.get(rule.id);
+                if (count == null) count = new MailCount(0, 0);
+                String line = nonEmpty(rule.keywordLine(), "命中关键词邮件");
+                list.addView(hubRow(rule.name, line + " · 总 " + count.total + " · 未读 " + count.unread, count.unread, "⚑", v -> openKeywordMailbox(rule), true));
             }
+            refreshKeywordCountsInBackground();
         }
+        Set<String> groups = allGroups();
+        Map<String, MailCount> groupCounts = cachedGroupCounts(groups);
+        refreshGroupCountsInBackground(groups);
         list.addView(sectionHeader("分组邮箱", "按业务分组查看"));
-        for (String group : allGroups()) {
-            int unread = groupUnread(group);
-            list.addView(hubRow(group, "分组所有邮件", unread, "▣", v -> openVirtualMailbox("group_all", group)));
-            list.addView(hubRow(group + " · 未读", "分组未读邮件", unread, "●", v -> openVirtualMailbox("group_unread", group)));
+        for (String group : groups) {
+            MailCount count = groupCounts.get(group);
+            if (count == null) count = new MailCount(0, groupUnread(group));
+            list.addView(hubRow(group, "分组所有邮件 · 总 " + count.total + " · 未读 " + count.unread, count.unread, "▣", v -> openVirtualMailbox("group_all", group), true));
+            list.addView(hubRow(group + " · 未读", "分组未读邮件 · 未读 " + count.unread, count.unread, "●", v -> openVirtualMailbox("group_unread", group), true));
         }
         if (accounts.isEmpty()) list.addView(empty("暂无账户，请先在服务端添加邮箱账号。"));
     }
@@ -818,6 +894,7 @@ public class MainActivity extends Activity {
         currentPage = 1;
         hasMore = false;
         List<Models.Folder> cachedFolders = store.readFolders(account.type, account.id);
+        boolean hadCachedFolders = !cachedFolders.isEmpty();
         if (!cachedFolders.isEmpty()) {
             replaceFolderList(cachedFolders);
             selectedFolder = pickDefaultFolder(account.id);
@@ -835,7 +912,7 @@ public class MainActivity extends Activity {
             loadMails(false);
             return;
         }
-        runAsync("加载文件夹...", () -> {
+        runAsync(hadCachedFolders ? null : "加载文件夹...", () -> {
             JSONArray arr = asArray(api.get("/imap/api/accounts/" + encode(account.id) + "/folders"));
             List<Models.Folder> loadedFolders = new ArrayList<>();
             loadedFolders.add(folder("external", account.id, "drafts", "草稿箱", 0));
@@ -852,7 +929,7 @@ public class MainActivity extends Activity {
             replaceFolderList(foldersFromJson(Json.array(result, "folders")));
             selectedFolder = pickDefaultFolder(account.id);
             renderFoldersOrMails();
-            loadMails(false);
+            loadMails(hadCachedFolders);
         });
     }
 
@@ -923,7 +1000,14 @@ public class MainActivity extends Activity {
     private void loadNextMailPage() {
         if (!hasMore || mailPageLoading) return;
         currentPage += 1;
-        loadMails(true);
+        List<Models.Mail> cached = cachedMails();
+        if (!cached.isEmpty()) {
+            replaceMailList(cached, false);
+            hasMore = hasMoreCachedMailsAfterPage(cached);
+            renderFoldersOrMails();
+            return;
+        }
+        loadMails(false);
     }
 
     private LinearLayout searchBar() {
@@ -1004,6 +1088,7 @@ public class MainActivity extends Activity {
         if (mailPageLoading && requestKey.equals(activeMailLoadKey)) return;
         mailPageLoading = true;
         activeMailLoadKey = requestKey;
+        if (requestPage > 1 && "list".equals(currentScreen)) renderFoldersOrMails();
         if (currentPage <= 1) {
             if (showCachedMailsIfAny()) {
                 silent = true;
@@ -1076,14 +1161,19 @@ public class MainActivity extends Activity {
             store.upsertMails(next);
             return new JSONObject()
                 .put("mails", mailListToJson(next))
+                .put("hasMore", hasMore)
                 .put("keepCachedKeyword", keepExistingKeyword && next.isEmpty());
         }, result -> {
             boolean isLatestRequest = requestKey.equals(activeMailLoadKey);
             if (isLatestRequest) mailPageLoading = false;
-            if (!isLatestRequest || !requestKey.equals(mailLoadKey())) return;
+            if (!isLatestRequest || !requestKey.equals(mailLoadKey())) {
+                if ("list".equals(currentScreen)) renderFoldersOrMails();
+                return;
+            }
+            hasMore = result.optBoolean("hasMore", hasMore);
             if (!result.optBoolean("keepCachedKeyword", false)) {
                 List<Models.Mail> renderedMails = mailsFromJson(Json.array(result, "mails"));
-                replaceMailList(renderedMails, currentPage <= 1);
+                replaceMailList(renderedMails, requestPage <= 1);
             } else {
                 hasMore = false;
             }
@@ -1114,17 +1204,41 @@ public class MainActivity extends Activity {
         List<Models.Mail> cached = cachedMails();
         if (cached.isEmpty()) return false;
         replaceMailList(cached, true);
-        hasMore = cached.size() >= pageSize;
+        hasMore = hasMoreCachedMailsAfterPage(cached);
         renderFoldersOrMails();
         return true;
+    }
+
+    private boolean hasMoreCachedMailsAfterPage(List<Models.Mail> pageRows) {
+        if ("keyword".equals(selectedVirtualMode) && selectedKeywordRule != null) return hasMore;
+        int rowCount = pageRows == null ? 0 : pageRows.size();
+        int total = cachedMailTotal();
+        if (total >= 0) {
+            int loadedThrough = Math.max(0, (currentPage - 1) * pageSize) + rowCount;
+            return loadedThrough < total;
+        }
+        return rowCount >= pageSize;
+    }
+
+    private int cachedMailTotal() {
+        try {
+            if (selectedAccount == null && !selectedVirtualMode.isEmpty()) {
+                if ("keyword".equals(selectedVirtualMode) && selectedKeywordRule != null) return -1;
+                return store.countVirtualMails(scopedAccounts(), selectedVirtualMode.endsWith("_unread"), searchQuery);
+            }
+            if (selectedAccount == null || selectedFolder == null) return -1;
+            boolean unreadOnly = "unread".equals(selectedFolder.path);
+            return store.countMails(selectedAccount.type, selectedAccount.id, selectedFolder.path, searchQuery, unreadOnly);
+        } catch (Exception ignored) {
+            return -1;
+        }
     }
 
     private List<Models.Mail> cachedMails() {
         int offset = Math.max(0, (currentPage - 1) * pageSize);
         if (selectedAccount == null && !selectedVirtualMode.isEmpty()) {
             if ("keyword".equals(selectedVirtualMode) && selectedKeywordRule != null) {
-                List<Models.Mail> cached = store.readVirtualMails(scopedAccounts(), false, "", 500, 0);
-                List<Models.Mail> matched = filterKeywordMails(cached, selectedKeywordRule, searchQuery);
+                List<Models.Mail> matched = cachedKeywordMatches(selectedKeywordRule, searchQuery, KEYWORD_SCAN_LIMIT * 3);
                 hasMore = offset + pageSize < matched.size();
                 return slice(matched, offset, pageSize);
             }
@@ -1138,8 +1252,8 @@ public class MainActivity extends Activity {
     private List<Models.Mail> loadVirtualMails() throws Exception {
         List<Models.Mail> merged = new ArrayList<>();
         if ("keyword".equals(selectedVirtualMode) && selectedKeywordRule != null) {
-            List<Models.Mail> source = loadKeywordSourceMails();
-            List<Models.Mail> matched = filterKeywordMails(source, selectedKeywordRule, searchQuery);
+            List<Models.Mail> matched = cachedKeywordMatches(selectedKeywordRule, searchQuery, KEYWORD_SCAN_LIMIT * 3);
+            store.upsertKeywordHits(selectedKeywordRule.id, matched);
             int offset = Math.max(0, (currentPage - 1) * pageSize);
             hasMore = offset + pageSize < matched.size();
             return slice(matched, offset, pageSize);
@@ -1186,12 +1300,18 @@ public class MainActivity extends Activity {
         return merged.size() > pageSize ? new ArrayList<>(merged.subList(0, pageSize)) : merged;
     }
 
-    private List<Models.Mail> loadKeywordSourceMails() throws Exception {
+    private List<Models.Mail> loadKeywordSourceMails(Models.KeywordRule rule, boolean includeRemote) throws Exception {
         Map<String, Models.Mail> sourceMap = new LinkedHashMap<>();
         List<Models.Account> scoped = scopedAccounts();
+        if (rule != null && !rule.id.isEmpty()) {
+            for (Models.Mail mail : store.readKeywordHitMails(rule.id, scoped, "", KEYWORD_SCAN_LIMIT * 3, 0)) {
+                sourceMap.put(mailStableKey(mail), mail);
+            }
+        }
         for (Models.Mail mail : store.readVirtualMails(scoped, false, "", KEYWORD_SCAN_LIMIT * 2, 0)) {
             sourceMap.put(mailStableKey(mail), mail);
         }
+        if (!includeRemote) return new ArrayList<>(sourceMap.values());
         List<String> externalIds = new ArrayList<>();
         for (Models.Account account : scoped) {
             if ("external".equals(account.type)) externalIds.add(account.id);
@@ -1231,29 +1351,172 @@ public class MainActivity extends Activity {
         return matched;
     }
 
-    private Map<String, Integer> keywordRuleCounts() {
-        Map<String, Integer> counts = new LinkedHashMap<>();
-        if (keywordRules.isEmpty() || accounts.isEmpty()) return counts;
-        List<Models.Mail> source = store.readVirtualMails(accounts, false, "", KEYWORD_SCAN_LIMIT * 3, 0);
-        for (Models.KeywordRule rule : keywordRules) {
-            int count = 0;
-            for (Models.Mail mail : source) {
-                if (keywordRuleIncludesMail(rule, mail) && rule.matches(mail, "")) count++;
+    private List<Models.Mail> cachedKeywordMatches(Models.KeywordRule rule, String extraQuery, int limit) {
+        return cachedKeywordMatches(rule, extraQuery, limit, new ArrayList<>(accounts));
+    }
+
+    private List<Models.Mail> cachedKeywordMatches(
+        Models.KeywordRule rule,
+        String extraQuery,
+        int limit,
+        List<Models.Account> accountRows
+    ) {
+        if (rule == null) return new ArrayList<>();
+        Map<String, Models.Mail> sourceMap = new LinkedHashMap<>();
+        List<Models.Account> scoped = accountsForKeywordRule(rule, accountRows);
+        if (rule != null && !rule.id.isEmpty() && !scoped.isEmpty()) {
+            for (Models.Mail mail : store.readKeywordHitMails(rule.id, scoped, extraQuery, limit, 0)) {
+                sourceMap.put(mailStableKey(mail), mail);
             }
-            counts.put(rule.id, count);
+        }
+        for (Models.Mail mail : store.readVirtualMails(scoped, false, "", limit, 0)) {
+            if (rule.matches(mail, extraQuery)) sourceMap.put(mailStableKey(mail), mail);
+        }
+        List<Models.Mail> matched = new ArrayList<>(sourceMap.values());
+        matched.sort((a, b) -> nonEmpty(b.date, "").compareTo(nonEmpty(a.date, "")));
+        return limit > 0 && matched.size() > limit ? new ArrayList<>(matched.subList(0, limit)) : matched;
+    }
+
+    private Map<String, MailCount> cachedKeywordRuleCounts() {
+        Map<String, MailCount> counts = new LinkedHashMap<>();
+        for (Models.KeywordRule rule : keywordRules) {
+            MailCount value = keywordCountCache.get(rule.id);
+            counts.put(rule.id, value == null ? new MailCount(0, 0) : value);
         }
         return counts;
     }
 
+    private Map<String, MailCount> cachedGroupCounts(Set<String> groups) {
+        Map<String, MailCount> counts = new LinkedHashMap<>();
+        for (String group : groups) {
+            MailCount value = groupCountCache.get(group);
+            counts.put(group, value == null ? new MailCount(0, groupUnread(group)) : value);
+        }
+        return counts;
+    }
+
+    private void refreshKeywordCountsInBackground() {
+        if (keywordCountsLoading || keywordRules.isEmpty() || accounts.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (keywordCountsLoadedAt > 0 && now - keywordCountsLoadedAt < 15_000L && keywordCountCacheCoversRules()) return;
+        keywordCountsLoading = true;
+        final int generation = ++keywordCountGeneration;
+        final List<Models.KeywordRule> ruleSnapshot = new ArrayList<>(keywordRules);
+        final List<Models.Account> accountSnapshot = new ArrayList<>(accounts);
+        io.submit(() -> {
+            Map<String, MailCount> computed = new LinkedHashMap<>();
+            try {
+                computed.putAll(keywordRuleCounts(ruleSnapshot, accountSnapshot));
+            } catch (Exception ignored) {
+                // Keep the existing count cache; menu switching must stay instant.
+            }
+            final Map<String, MailCount> counts = computed;
+            runOnUiThread(() -> {
+                if (generation != keywordCountGeneration) return;
+                if (!counts.isEmpty()) {
+                    keywordCountCache.clear();
+                    keywordCountCache.putAll(counts);
+                    keywordCountsLoadedAt = System.currentTimeMillis();
+                }
+                keywordCountsLoading = false;
+                if (!counts.isEmpty() && "mailHub".equals(currentScreen)) renderMailHub();
+            });
+        });
+    }
+
+    private void refreshGroupCountsInBackground(Set<String> groups) {
+        if (groupCountsLoading || groups == null || groups.isEmpty() || accounts.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (groupCountsLoadedAt > 0 && now - groupCountsLoadedAt < 15_000L && groupCountCacheCoversGroups(groups)) return;
+        groupCountsLoading = true;
+        final int generation = ++groupCountGeneration;
+        final Set<String> groupSnapshot = new LinkedHashSet<>(groups);
+        final List<Models.Account> accountSnapshot = new ArrayList<>(accounts);
+        io.submit(() -> {
+            Map<String, MailCount> computed = new LinkedHashMap<>();
+            try {
+                computed.putAll(groupCounts(groupSnapshot, accountSnapshot));
+            } catch (Exception ignored) {
+                // Keep cached group counts; menu switching must stay instant.
+            }
+            final Map<String, MailCount> counts = computed;
+            runOnUiThread(() -> {
+                if (generation != groupCountGeneration) return;
+                if (!counts.isEmpty()) {
+                    groupCountCache.clear();
+                    groupCountCache.putAll(counts);
+                    groupCountsLoadedAt = System.currentTimeMillis();
+                }
+                groupCountsLoading = false;
+                if (!counts.isEmpty() && "mailHub".equals(currentScreen)) renderMailHub();
+            });
+        });
+    }
+
+    private boolean keywordCountCacheCoversRules() {
+        for (Models.KeywordRule rule : keywordRules) {
+            if (!keywordCountCache.containsKey(rule.id)) return false;
+        }
+        return true;
+    }
+
+    private boolean groupCountCacheCoversGroups(Set<String> groups) {
+        for (String group : groups) {
+            if (!groupCountCache.containsKey(group)) return false;
+        }
+        return true;
+    }
+
+    private Map<String, MailCount> keywordRuleCounts(List<Models.KeywordRule> rules, List<Models.Account> accountRows) {
+        Map<String, MailCount> counts = new LinkedHashMap<>();
+        if (rules == null || rules.isEmpty() || accountRows == null || accountRows.isEmpty()) return counts;
+        for (Models.KeywordRule rule : rules) {
+            List<Models.Account> scoped = accountsForKeywordRule(rule, accountRows);
+            int total = store.countKeywordHitMails(rule.id, scoped, "", false);
+            int unread = store.countKeywordHitMails(rule.id, scoped, "", true);
+            if (total == 0) {
+                List<Models.Mail> matched = cachedKeywordMatches(rule, "", KEYWORD_SCAN_LIMIT * 3, accountRows);
+                total = matched.size();
+                unread = unreadMailCount(matched);
+            }
+            counts.put(rule.id, new MailCount(total, unread));
+        }
+        return counts;
+    }
+
+    private Map<String, MailCount> groupCounts(Set<String> groups, List<Models.Account> accountRows) {
+        Map<String, MailCount> counts = new LinkedHashMap<>();
+        if (groups == null || groups.isEmpty() || accountRows == null || accountRows.isEmpty()) return counts;
+        for (String group : groups) {
+            List<Models.Account> scoped = accountsForGroup(group, accountRows);
+            counts.put(group, new MailCount(
+                store.countVirtualMails(scoped, false, ""),
+                store.countVirtualMails(scoped, true, "")
+            ));
+        }
+        return counts;
+    }
+
+    private int unreadMailCount(List<Models.Mail> mails) {
+        int count = 0;
+        if (mails == null) return 0;
+        for (Models.Mail mail : mails) if (mail != null && !mail.seen) count++;
+        return count;
+    }
+
     private boolean keywordRuleIncludesMail(Models.KeywordRule rule, Models.Mail mail) {
+        return keywordRuleIncludesMail(rule, mail, accounts);
+    }
+
+    private boolean keywordRuleIncludesMail(Models.KeywordRule rule, Models.Mail mail, List<Models.Account> accountRows) {
         if (rule == null || mail == null) return false;
-        Models.Account account = findMailAccountStrict(mail);
+        Models.Account account = findMailAccountStrict(mail, accountRows);
         if (account != null) return keywordRuleIncludesAccount(rule, account);
         if ("group".equals(rule.scopeType)) return false;
         if ("accounts".equals(rule.scopeType)) {
             if (rule.scopeAccounts == null || rule.scopeAccounts.length == 0) return true;
             for (String scopeAccount : rule.scopeAccounts) {
-                if (sameId(scopeAccount, mail.accountId)) return true;
+                if (AccountRefs.mailMatchesAccountRef(mail, scopeAccount)) return true;
             }
             return false;
         }
@@ -1278,6 +1541,28 @@ public class MainActivity extends Activity {
         return scoped;
     }
 
+    private List<Models.Account> accountsForGroup(String groupName, List<Models.Account> accountRows) {
+        List<Models.Account> scoped = new ArrayList<>();
+        String target = nonEmpty(groupName, "未分组");
+        for (Models.Account account : accountRows) {
+            String group = account.group == null || account.group.isEmpty() ? "未分组" : account.group;
+            if (group.equals(target)) scoped.add(account);
+        }
+        return scoped;
+    }
+
+    private List<Models.Account> accountsForKeywordRule(Models.KeywordRule rule) {
+        return accountsForKeywordRule(rule, accounts);
+    }
+
+    private List<Models.Account> accountsForKeywordRule(Models.KeywordRule rule, List<Models.Account> accountRows) {
+        List<Models.Account> scoped = new ArrayList<>();
+        for (Models.Account account : accountRows) {
+            if (keywordRuleIncludesAccount(rule, account)) scoped.add(account);
+        }
+        return scoped;
+    }
+
     private boolean keywordRuleIncludesAccount(Models.KeywordRule rule, Models.Account account) {
         if (rule == null || account == null) return false;
         if ("group".equals(rule.scopeType)) {
@@ -1287,7 +1572,7 @@ public class MainActivity extends Activity {
         if ("accounts".equals(rule.scopeType)) {
             if (rule.scopeAccounts == null || rule.scopeAccounts.length == 0) return true;
             for (String scopeAccount : rule.scopeAccounts) {
-                if (sameId(scopeAccount, account.id) || sameId(scopeAccount, account.email)) return true;
+                if (AccountRefs.accountMatchesRef(account, scopeAccount)) return true;
             }
             return false;
         }
@@ -1337,24 +1622,25 @@ public class MainActivity extends Activity {
     }
 
     private Models.Account findMailAccountStrict(Models.Mail mail) {
+        return findMailAccountStrict(mail, accounts);
+    }
+
+    private Models.Account findMailAccountStrict(Models.Mail mail, List<Models.Account> accountRows) {
         if (mail == null) return null;
         String type = nonEmpty(mail.accountType, "");
         String id = nonEmpty(mail.accountId, "");
-        for (Models.Account account : accounts) {
+        for (Models.Account account : accountRows) {
             if (!type.isEmpty() && !type.equals(account.type)) continue;
-            if (sameId(id, account.id) || sameId(id, account.email)) return account;
+            if (AccountRefs.mailBelongsToAccount(mail, account)) return account;
         }
-        for (Models.Account account : accounts) {
-            if (sameId(id, account.id) || sameId(id, account.email)) return account;
+        for (Models.Account account : accountRows) {
+            if (AccountRefs.mailBelongsToAccount(mail, account)) return account;
         }
         return null;
     }
 
     private boolean sameId(String left, String right) {
-        if (left == null || right == null) return false;
-        String a = left.trim();
-        String b = right.trim();
-        return !a.isEmpty() && a.equalsIgnoreCase(b);
+        return AccountRefs.sameId(left, right);
     }
 
     private String mobileFolderName(String folder) {
@@ -3626,6 +3912,7 @@ public class MainActivity extends Activity {
                         setLoading(false, "");
                         toast(e.getMessage());
                     }
+                    if ("list".equals(currentScreen)) renderFoldersOrMails();
                 });
             }
         });
@@ -4180,7 +4467,21 @@ public class MainActivity extends Activity {
 
     private static String cleanPreview(String value) {
         if (value == null) return "";
-        return value.replaceAll("\\s+", " ").trim();
+        int max = 600;
+        String source = value.length() > max ? value.substring(0, max) + "..." : value;
+        StringBuilder sb = new StringBuilder(source.length());
+        boolean spacing = false;
+        for (int i = 0; i < source.length(); i++) {
+            char ch = source.charAt(i);
+            if (Character.isWhitespace(ch)) {
+                spacing = true;
+            } else {
+                if (spacing && sb.length() > 0) sb.append(' ');
+                sb.append(ch);
+                spacing = false;
+            }
+        }
+        return sb.toString().trim();
     }
 
     private String mobileTranslatorIdentity() {

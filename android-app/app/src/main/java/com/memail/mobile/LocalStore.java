@@ -11,7 +11,7 @@ import java.util.List;
 
 final class LocalStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "memail_mobile_cache.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
     private static final String[] MAIL_LIST_COLUMNS = new String[]{
         "account_type",
         "account_id",
@@ -82,19 +82,17 @@ final class LocalStore extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX idx_mails_scope_date ON mails(account_type, account_id, folder, date_text DESC)");
         db.execSQL("CREATE INDEX idx_mails_date ON mails(date_text DESC)");
         createTranslationTable(db);
+        createKeywordHitsTable(db);
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) {
             createTranslationTable(db);
-            return;
         }
-        db.execSQL("DROP TABLE IF EXISTS mails");
-        db.execSQL("DROP TABLE IF EXISTS translations");
-        db.execSQL("DROP TABLE IF EXISTS folders");
-        db.execSQL("DROP TABLE IF EXISTS accounts");
-        onCreate(db);
+        if (oldVersion < 3) {
+            createKeywordHitsTable(db);
+        }
     }
 
     private static void createTranslationTable(SQLiteDatabase db) {
@@ -111,6 +109,18 @@ final class LocalStore extends SQLiteOpenHelper {
             + "model TEXT,"
             + "updated_at INTEGER DEFAULT 0,"
             + "PRIMARY KEY(account_type, account_id, folder, id, source_hash))");
+    }
+
+    private static void createKeywordHitsTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS keyword_hits ("
+            + "rule_id TEXT NOT NULL,"
+            + "account_type TEXT NOT NULL,"
+            + "account_id TEXT NOT NULL,"
+            + "folder TEXT NOT NULL,"
+            + "id TEXT NOT NULL,"
+            + "matched_at INTEGER DEFAULT 0,"
+            + "PRIMARY KEY(rule_id, account_type, account_id, folder, id))");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_keyword_hits_rule_date ON keyword_hits(rule_id, matched_at DESC)");
     }
 
     void replaceAccounts(List<Models.Account> accounts) {
@@ -305,6 +315,27 @@ final class LocalStore extends SQLiteOpenHelper {
         }
     }
 
+    int countMails(String accountType, String accountId, String folder, String query, boolean unreadOnly) {
+        List<String> args = new ArrayList<>();
+        StringBuilder where = new StringBuilder("account_type=? AND account_id=?");
+        args.add(safe(accountType));
+        args.add(safe(accountId));
+        if (unreadOnly && "unread".equals(folder)) {
+            where.append(" AND folder NOT IN ('drafts','outbox')");
+        } else {
+            where.append(" AND folder=?");
+            args.add(safe(folder));
+        }
+        appendFilters(where, args, query, unreadOnly);
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.rawQuery(
+            "SELECT COUNT(*) FROM mails WHERE " + where,
+            args.toArray(new String[0])
+        )) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
     List<Models.Mail> readMails(
         String accountType,
         String accountId,
@@ -449,6 +480,112 @@ final class LocalStore extends SQLiteOpenHelper {
         return queryMails(where.toString(), args, limit, offset);
     }
 
+    int countVirtualMails(List<Models.Account> accounts, boolean unreadOnly, String query) {
+        if (accounts == null || accounts.isEmpty()) return 0;
+        List<String> args = new ArrayList<>();
+        StringBuilder where = new StringBuilder("(");
+        boolean added = false;
+        for (Models.Account account : accounts) {
+            if (isEmpty(account.type) || isEmpty(account.id)) continue;
+            if (added) where.append(" OR ");
+            where.append("(account_type=? AND account_id=?)");
+            args.add(safe(account.type));
+            args.add(safe(account.id));
+            added = true;
+        }
+        where.append(")");
+        if (!added) return 0;
+        where.append(" AND folder NOT IN ('drafts','outbox')");
+        appendFilters(where, args, query, unreadOnly);
+        SQLiteDatabase db = getReadableDatabase();
+        try (Cursor cursor = db.rawQuery(
+            "SELECT COUNT(*) FROM mails WHERE " + where,
+            args.toArray(new String[0])
+        )) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
+    void upsertKeywordHits(String ruleId, List<Models.Mail> mails) {
+        if (isEmpty(ruleId) || mails == null || mails.isEmpty()) return;
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            long now = System.currentTimeMillis();
+            for (Models.Mail mail : mails) {
+                if (mail == null || isEmpty(mail.accountType) || isEmpty(mail.accountId) || isEmpty(mail.folder)) continue;
+                ContentValues values = new ContentValues();
+                values.put("rule_id", safe(ruleId));
+                values.put("account_type", safe(mail.accountType));
+                values.put("account_id", safe(mail.accountId));
+                values.put("folder", safe(mail.folder));
+                values.put("id", mailId(mail));
+                values.put("matched_at", now);
+                db.insertWithOnConflict("keyword_hits", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    List<Models.Mail> readKeywordHitMails(
+        String ruleId,
+        List<Models.Account> accounts,
+        String query,
+        int limit,
+        int offset
+    ) {
+        List<Models.Mail> items = new ArrayList<>();
+        List<String> args = new ArrayList<>();
+        String where = keywordHitWhere(ruleId, accounts, query, args);
+        if (where.isEmpty()) return items;
+        SQLiteDatabase db = getReadableDatabase();
+        String sql = "SELECT "
+            + "m.account_type AS account_type,"
+            + "m.account_id AS account_id,"
+            + "m.folder AS folder,"
+            + "m.id AS id,"
+            + "m.sender AS sender,"
+            + "m.subject AS subject,"
+            + "m.preview AS preview,"
+            + "m.date_text AS date_text,"
+            + "m.kind AS kind,"
+            + "m.to_text AS to_text,"
+            + "m.error AS error,"
+            + "m.seen AS seen,"
+            + "m.favorite AS favorite "
+            + "FROM keyword_hits h "
+            + "JOIN mails m ON m.account_type=h.account_type AND m.account_id=h.account_id AND m.folder=h.folder AND m.id=h.id "
+            + "WHERE " + where + " "
+            + "ORDER BY m.date_text DESC, h.matched_at DESC "
+            + "LIMIT " + Math.max(1, limit) + " OFFSET " + Math.max(0, offset);
+        try (Cursor cursor = db.rawQuery(sql, args.toArray(new String[0]))) {
+            while (cursor.moveToNext()) {
+                items.add(readMail(cursor));
+            }
+        }
+        return items;
+    }
+
+    int countKeywordHitMails(String ruleId, List<Models.Account> accounts, String query) {
+        return countKeywordHitMails(ruleId, accounts, query, false);
+    }
+
+    int countKeywordHitMails(String ruleId, List<Models.Account> accounts, String query, boolean unreadOnly) {
+        List<String> args = new ArrayList<>();
+        String where = keywordHitWhere(ruleId, accounts, query, args);
+        if (where.isEmpty()) return 0;
+        if (unreadOnly) where += " AND m.seen=0";
+        SQLiteDatabase db = getReadableDatabase();
+        String sql = "SELECT COUNT(*) FROM keyword_hits h "
+            + "JOIN mails m ON m.account_type=h.account_type AND m.account_id=h.account_id AND m.folder=h.folder AND m.id=h.id "
+            + "WHERE " + where;
+        try (Cursor cursor = db.rawQuery(sql, args.toArray(new String[0]))) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
     private List<Models.Mail> queryMails(String where, List<String> args, int limit, int offset) {
         List<Models.Mail> items = new ArrayList<>();
         SQLiteDatabase db = getReadableDatabase();
@@ -468,6 +605,34 @@ final class LocalStore extends SQLiteOpenHelper {
             }
         }
         return items;
+    }
+
+    private static String keywordHitWhere(String ruleId, List<Models.Account> accounts, String query, List<String> args) {
+        if (isEmpty(ruleId) || accounts == null || accounts.isEmpty()) return "";
+        StringBuilder where = new StringBuilder("h.rule_id=? AND (");
+        args.add(safe(ruleId));
+        boolean added = false;
+        for (Models.Account account : accounts) {
+            if (account == null || isEmpty(account.type) || isEmpty(account.id)) continue;
+            if (added) where.append(" OR ");
+            where.append("(h.account_type=? AND h.account_id=?)");
+            args.add(safe(account.type));
+            args.add(safe(account.id));
+            added = true;
+        }
+        if (!added) return "";
+        where.append(") AND m.folder NOT IN ('drafts','outbox')");
+        String q = query == null ? "" : query.trim();
+        if (!q.isEmpty()) {
+            where.append(" AND (m.sender LIKE ? OR m.subject LIKE ? OR m.preview LIKE ? OR m.text_body LIKE ? OR m.html_body LIKE ?)");
+            String like = "%" + q + "%";
+            args.add(like);
+            args.add(like);
+            args.add(like);
+            args.add(like);
+            args.add(like);
+        }
+        return where.toString();
     }
 
     private static void appendFilters(StringBuilder where, List<String> args, String query, boolean unreadOnly) {

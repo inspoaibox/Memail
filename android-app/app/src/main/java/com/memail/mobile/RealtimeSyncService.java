@@ -192,7 +192,7 @@ public class RealtimeSyncService extends Service {
                     syncRequested = false;
                 }
                 try {
-                    updateNotification("正在缓存完整正文");
+                    updateNotification("正在同步本地缓存");
                     MobileSyncEngine.SyncResult result = MobileSyncEngine.sync(this, () -> !running || Thread.currentThread().isInterrupted());
                     if (result.bodyPrefetchBudgetExhausted && result.missingBodyCount > 0) {
                         updateNotification("继续缓存剩余正文 " + result.missingBodyCount + " 封");

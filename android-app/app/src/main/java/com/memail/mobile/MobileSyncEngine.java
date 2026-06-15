@@ -33,6 +33,7 @@ final class MobileSyncEngine {
     private static final int MAX_INCREMENTAL_PAGES_PER_FOLDER = 3;
     private static final int MAX_BACKFILL_PAGES_PER_FOLDER = 1;
     private static final int MAX_DETAIL_PREFETCH_PER_SYNC = 500;
+    private static final int KEYWORD_BACKGROUND_SCAN_LIMIT = 10000;
 
     private MobileSyncEngine() {}
 
@@ -50,12 +51,21 @@ final class MobileSyncEngine {
         try {
             List<Models.Account> accounts = fetchAccounts(api);
             if (stop.shouldStop()) return result;
+            List<Models.KeywordRule> keywordRules = fetchKeywordRules(api, prefs);
+            if (stop.shouldStop()) return result;
             result.accountCount = accounts.size();
             if (!accounts.isEmpty()) {
                 int oldUnread = prefs.getInt("last_unread_total", 0);
+                store.replaceAccounts(accounts);
+                prefs.edit()
+                    .putLong("last_bootstrap_refresh_at", System.currentTimeMillis())
+                    .putInt("last_unread_total", totalUnread(accounts))
+                    .apply();
                 DetailBudget detailBudget = new DetailBudget(MAX_DETAIL_PREFETCH_PER_SYNC);
                 cacheRecentMailboxPages(api, store, accounts, stop, detailBudget);
+                cacheKeywordHits(store, accounts, keywordRules, stop);
                 cacheStoredMissingDetails(api, store, stop, detailBudget);
+                cacheKeywordHits(store, accounts, keywordRules, stop);
                 result.bodyPrefetchBudgetExhausted = detailBudget.remaining <= 0;
                 result.missingBodyCount = result.bodyPrefetchBudgetExhausted ? store.countMailsMissingBody() : 0;
                 if (stop.shouldStop()) return result;
@@ -72,6 +82,137 @@ final class MobileSyncEngine {
         } finally {
             store.close();
         }
+    }
+
+    private static List<Models.KeywordRule> fetchKeywordRules(ApiClient api, SharedPreferences prefs) {
+        List<Models.KeywordRule> rules = new ArrayList<>();
+        try {
+            rules = parseKeywordRuleList(api.get("/api/keyword-rules"));
+        } catch (Exception ignored) {
+            // Fall through to bootstrap or cached rules.
+        }
+        if (rules.isEmpty()) {
+            try {
+                rules = parseKeywordRuleList(api.get("/api/sync/bootstrap"));
+            } catch (Exception ignored) {
+                // Cached rules keep keyword history stable during transient server failures.
+            }
+        }
+        if (!rules.isEmpty()) {
+            saveKeywordRuleCache(prefs, rules);
+            return rules;
+        }
+        return loadCachedKeywordRules(prefs);
+    }
+
+    private static List<Models.KeywordRule> parseKeywordRuleList(JSONObject source) {
+        List<Models.KeywordRule> parsed = new ArrayList<>();
+        JSONArray arr = Json.array(source, "keywordRules");
+        if (arr.length() == 0) arr = Json.array(source, "keyword_rules");
+        if (arr.length() == 0) arr = Json.array(source, "rules");
+        if (arr.length() == 0) arr = Json.array(source, "items");
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            if (item == null) continue;
+            Models.KeywordRule rule = new Models.KeywordRule();
+            rule.id = Json.str(item, "id");
+            rule.name = Json.str(item, "name");
+            rule.scopeType = nonEmpty(Json.anyStr(item, "scope_type", "scopeType"), "all");
+            rule.scopeGroup = Json.anyStr(item, "scope_group", "scopeGroup");
+            rule.scopeAccounts = jsonStringArray(Json.arrayAny(item, "scope_accounts", "scopeAccounts"));
+            rule.matchMode = nonEmpty(Json.anyStr(item, "match_mode", "matchMode"), "any");
+            rule.enabled = item.optBoolean("enabled", true);
+            rule.keywords = jsonStringArray(Json.array(item, "keywords"));
+            rule.fields = jsonStringArray(Json.array(item, "fields"));
+            if (rule.enabled && !rule.id.isEmpty() && !rule.name.isEmpty()) parsed.add(rule);
+        }
+        return parsed;
+    }
+
+    private static String[] jsonStringArray(JSONArray arr) {
+        String[] values = new String[arr.length()];
+        for (int i = 0; i < arr.length(); i++) values[i] = arr.optString(i, "");
+        return values;
+    }
+
+    private static List<Models.KeywordRule> loadCachedKeywordRules(SharedPreferences prefs) {
+        try {
+            String raw = prefs.getString("keyword_rules_cache", "[]");
+            return parseKeywordRuleList(new JSONObject().put("rules", new JSONArray(raw)));
+        } catch (Exception ignored) {
+            return new ArrayList<>();
+        }
+    }
+
+    private static void saveKeywordRuleCache(SharedPreferences prefs, List<Models.KeywordRule> rules) {
+        try {
+            JSONArray arr = new JSONArray();
+            for (Models.KeywordRule rule : rules) {
+                JSONObject item = new JSONObject()
+                    .put("id", rule.id)
+                    .put("name", rule.name)
+                    .put("scopeType", rule.scopeType)
+                    .put("scopeGroup", rule.scopeGroup)
+                    .put("matchMode", rule.matchMode)
+                    .put("enabled", rule.enabled);
+                JSONArray keywords = new JSONArray();
+                if (rule.keywords != null) for (String keyword : rule.keywords) keywords.put(keyword);
+                JSONArray fields = new JSONArray();
+                if (rule.fields != null) for (String field : rule.fields) fields.put(field);
+                JSONArray scopeAccounts = new JSONArray();
+                if (rule.scopeAccounts != null) for (String account : rule.scopeAccounts) scopeAccounts.put(account);
+                item.put("keywords", keywords).put("fields", fields).put("scopeAccounts", scopeAccounts);
+                arr.put(item);
+            }
+            prefs.edit().putString("keyword_rules_cache", arr.toString()).apply();
+        } catch (Exception ignored) {
+            // Rule cache is only a startup/background hint.
+        }
+    }
+
+    private static void cacheKeywordHits(
+        LocalStore store,
+        List<Models.Account> accounts,
+        List<Models.KeywordRule> rules,
+        StopSignal stop
+    ) {
+        if (rules == null || rules.isEmpty() || accounts == null || accounts.isEmpty()) return;
+        for (Models.KeywordRule rule : rules) {
+            if (stop.shouldStop()) return;
+            List<Models.Account> scoped = accountsForKeywordRule(rule, accounts);
+            if (scoped.isEmpty()) continue;
+            List<Models.Mail> source = store.readVirtualMails(scoped, false, "", KEYWORD_BACKGROUND_SCAN_LIMIT, 0);
+            List<Models.Mail> matched = new ArrayList<>();
+            for (Models.Mail mail : source) {
+                if (stop.shouldStop()) return;
+                if (rule.matches(mail, "")) matched.add(mail);
+            }
+            store.upsertKeywordHits(rule.id, matched);
+        }
+    }
+
+    private static List<Models.Account> accountsForKeywordRule(Models.KeywordRule rule, List<Models.Account> accounts) {
+        List<Models.Account> scoped = new ArrayList<>();
+        for (Models.Account account : accounts) {
+            if (keywordRuleIncludesAccount(rule, account)) scoped.add(account);
+        }
+        return scoped;
+    }
+
+    private static boolean keywordRuleIncludesAccount(Models.KeywordRule rule, Models.Account account) {
+        if (rule == null || account == null) return false;
+        if ("group".equals(rule.scopeType)) {
+            String group = account.group == null || account.group.isEmpty() ? "未分组" : account.group;
+            return group.equals(nonEmpty(rule.scopeGroup, "未分组"));
+        }
+        if ("accounts".equals(rule.scopeType)) {
+            if (rule.scopeAccounts == null || rule.scopeAccounts.length == 0) return true;
+            for (String scopeAccount : rule.scopeAccounts) {
+                if (AccountRefs.accountMatchesRef(account, scopeAccount)) return true;
+            }
+            return false;
+        }
+        return true;
     }
 
     private static List<Models.Account> fetchAccounts(ApiClient api) throws Exception {
@@ -129,13 +270,15 @@ final class MobileSyncEngine {
     private static void cacheExternalAccount(ApiClient api, LocalStore store, Models.Account account, StopSignal stop, DetailBudget detailBudget) throws Exception {
         JSONObject folderData = api.get("/imap/api/accounts/" + encode(account.id) + "/folders");
         JSONArray folders = Json.arrayAny(folderData, "items", "folders", "data");
+        List<Models.Folder> cachedFolders = externalFolders(account, folders);
+        if (!cachedFolders.isEmpty()) store.replaceFolders(account, cachedFolders);
         List<String> folderPaths = backgroundFolderPaths(folders);
         if (folderPaths.isEmpty()) folderPaths.add("INBOX");
-        int cachedFolders = 0;
+        int cachedFolderCount = 0;
         for (String folder : folderPaths) {
-            if (stop.shouldStop() || cachedFolders >= MAX_BACKGROUND_FOLDERS_PER_ACCOUNT) return;
+            if (stop.shouldStop() || cachedFolderCount >= MAX_BACKGROUND_FOLDERS_PER_ACCOUNT) return;
             cacheExternalFolderIncrementally(api, store, account, folder, stop, detailBudget);
-            cachedFolders++;
+            cachedFolderCount++;
         }
     }
 
@@ -150,6 +293,42 @@ final class MobileSyncEngine {
             else paths.add(path);
         }
         return paths;
+    }
+
+    private static List<Models.Folder> externalFolders(Models.Account account, JSONArray folders) {
+        List<Models.Folder> result = new ArrayList<>();
+        Models.Folder drafts = folder(account, "drafts", "草稿箱", 0);
+        Models.Folder outbox = folder(account, "outbox", "发送失败", 0);
+        result.add(drafts);
+        result.add(outbox);
+        for (int i = 0; i < folders.length(); i++) {
+            JSONObject item = folders.optJSONObject(i);
+            if (item == null || item.optBoolean("noselect", false)) continue;
+            String path = Json.anyStr(item, "path", "name");
+            if (path.isEmpty()) continue;
+            result.add(folder(account, path, Json.anyStr(item, "name", "path"), 0));
+        }
+        return result;
+    }
+
+    private static List<Models.Folder> localFolders(Models.Account account) {
+        List<Models.Folder> result = new ArrayList<>();
+        result.add(folder(account, "unread", "未读邮件", 0));
+        result.add(folder(account, "inbox", "收件箱", 0));
+        result.add(folder(account, "sent", "已发送", 0));
+        result.add(folder(account, "drafts", "草稿箱", 0));
+        result.add(folder(account, "outbox", "发送失败", 0));
+        return result;
+    }
+
+    private static Models.Folder folder(Models.Account account, String path, String name, int count) {
+        Models.Folder folder = new Models.Folder();
+        folder.accountType = account.type;
+        folder.accountId = account.id;
+        folder.path = path;
+        folder.name = name == null || name.isEmpty() ? path : name;
+        folder.count = count;
+        return folder;
     }
 
     private static void cacheExternalFolderIncrementally(ApiClient api, LocalStore store, Models.Account account, String folder, StopSignal stop, DetailBudget detailBudget) throws Exception {
@@ -176,7 +355,6 @@ final class MobileSyncEngine {
                 }
             }
             store.upsertMails(pageMails);
-            cacheMissingMailDetails(api, store, pageMails, stop, detailBudget);
             pagesRead++;
             hasMore = data.optBoolean("hasMore", false) || page * CACHE_PAGE_SIZE < data.optInt("total", 0);
             page++;
@@ -201,18 +379,19 @@ final class MobileSyncEngine {
                 pageMails.add(Models.Mail.fromExternal(arr.optJSONObject(j), account.id, folder));
             }
             store.upsertMails(pageMails);
-            cacheMissingMailDetails(api, store, pageMails, stop, detailBudget);
             if (!(data.optBoolean("hasMore", false) || page * CACHE_PAGE_SIZE < data.optInt("total", 0))) return;
             page++;
         }
     }
 
     private static void cacheLocalAccount(ApiClient api, LocalStore store, Models.Account account, StopSignal stop, DetailBudget detailBudget) throws Exception {
+        store.replaceFolders(account, localFolders(account));
         cacheLocalFolderIncrementally(api, store, account, "inbox", false, stop, detailBudget);
         if (stop.shouldStop()) return;
         cacheLocalFolderIncrementally(api, store, account, "sent", false, stop, detailBudget);
         if (stop.shouldStop()) return;
         cacheLocalUnreadCount(api, account);
+        store.replaceAccounts(fetchAccountsSnapshotWithUpdatedAccount(store, account));
     }
 
     private static void cacheLocalFolderIncrementally(ApiClient api, LocalStore store, Models.Account account, String folder, boolean unreadOnly, StopSignal stop, DetailBudget detailBudget) throws Exception {
@@ -235,7 +414,6 @@ final class MobileSyncEngine {
                 }
             }
             store.upsertMails(pageMails);
-            cacheMissingMailDetails(api, store, pageMails, stop, detailBudget);
             pagesRead++;
             offset += CACHE_PAGE_SIZE;
             hasMore = offset < data.optInt("total", offset);
@@ -255,10 +433,30 @@ final class MobileSyncEngine {
                 pageMails.add(Models.Mail.fromLocal(arr.optJSONObject(j), account.id, folder));
             }
             store.upsertMails(pageMails);
-            cacheMissingMailDetails(api, store, pageMails, stop, detailBudget);
             offset += CACHE_PAGE_SIZE;
             if (offset >= data.optInt("total", offset)) return;
         }
+    }
+
+    private static List<Models.Account> fetchAccountsSnapshotWithUpdatedAccount(LocalStore store, Models.Account updated) {
+        List<Models.Account> snapshot = store.readAccounts();
+        boolean replaced = false;
+        for (int i = 0; i < snapshot.size(); i++) {
+            Models.Account account = snapshot.get(i);
+            if (sameAccount(account, updated)) {
+                snapshot.set(i, updated);
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) snapshot.add(updated);
+        return snapshot;
+    }
+
+    private static boolean sameAccount(Models.Account left, Models.Account right) {
+        if (left == null || right == null) return false;
+        return nonEmpty(left.type, "").equals(nonEmpty(right.type, ""))
+            && nonEmpty(left.id, "").equals(nonEmpty(right.id, ""));
     }
 
     private static void cacheLocalUnreadCount(ApiClient api, Models.Account account) throws Exception {
