@@ -3346,14 +3346,14 @@ def _portable_account_from_local_mailbox(item: dict) -> dict | None:
     }
 
 
-def _portable_account_from_external(item: dict) -> dict | None:
+def _portable_account_from_external(item: dict, include_secrets: bool = False) -> dict | None:
     if not isinstance(item, dict):
         return None
-    email = _normalize_mailbox_address(item.get("email", ""))
+    email = _normalize_mailbox_address(item.get("email") or item.get("address") or "")
     if not email:
         return None
     smtp = item.get("smtp") if isinstance(item.get("smtp"), dict) else {}
-    return {
+    account = {
         "id": str(item.get("id") or email),
         "type": "external",
         "address": email,
@@ -3370,10 +3370,37 @@ def _portable_account_from_external(item: dict) -> dict | None:
         "smtpSecure": bool(smtp.get("secure", True)),
         "smtpRequireTls": bool(smtp.get("requireTLS", False)),
     }
+    if include_secrets:
+        auth = item.get("auth") if isinstance(item.get("auth"), dict) else {}
+        password = item.get("password") or item.get("protectedPassword") or auth.get("pass")
+        if password:
+            account["password"] = str(password)
+            account["protectedPassword"] = str(password)
+        oauth = item.get("oauth") if isinstance(item.get("oauth"), dict) else {}
+        if oauth:
+            account["oauth"] = {
+                "provider": str(oauth.get("provider") or ""),
+                "refresh_token": str(oauth.get("refresh_token") or oauth.get("refreshToken") or ""),
+                "access_token": str(oauth.get("access_token") or oauth.get("accessToken") or ""),
+                "expires_at": _safe_int(oauth.get("expires_at") or oauth.get("expiresAt"), 0),
+                "scope": str(oauth.get("scope") or ""),
+            }
+        if auth:
+            account["auth"] = {
+                "user": email,
+                **({"pass": str(password)} if password else {}),
+            }
+    return account
 
 
-def _portable_sanitize_account_profile(item: dict) -> dict:
+def _portable_truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _portable_sanitize_account_profile(item: dict, include_secrets: bool = False) -> dict:
     safe = dict(item or {})
+    if include_secrets:
+        return safe
     blocked = {
         "password",
         "protectedpassword",
@@ -3893,19 +3920,24 @@ def _portable_collect_external_messages(settings: dict, account: dict, limit: in
     return messages, counts
 
 
-def _public_ai_settings_for_portable() -> dict:
+def _public_ai_settings_for_portable(include_secrets: bool = False) -> dict:
     ai = _get_ai_settings()
     channels = []
     for item in ai.get("channels", []):
         safe = _safe_ai_channel(item)
-        channels.append({
+        channel = {
             "id": safe.get("id", ""),
             "name": safe.get("name", ""),
             "provider": safe.get("provider", ""),
             "baseUrl": safe.get("base_url", ""),
             "models": safe.get("models", []),
             "updatedAt": safe.get("updated_at", ""),
-        })
+        }
+        if include_secrets:
+            api_key = _decrypt_setting(item.get("api_key"))
+            if api_key:
+                channel["apiKey"] = api_key
+        channels.append(channel)
     default_model = ai.get("default_model", {}) if isinstance(ai.get("default_model"), dict) else {}
     return {
         "channels": channels,
@@ -3916,9 +3948,10 @@ def _public_ai_settings_for_portable() -> dict:
     }
 
 
-def _public_translation_settings_for_portable() -> dict:
-    settings = _safe_translation_settings(_get_translation_settings())
-    return {
+def _public_translation_settings_for_portable(include_secrets: bool = False) -> dict:
+    raw = _get_translation_settings()
+    settings = _safe_translation_settings(raw)
+    payload = {
         "defaultProvider": settings.get("default_provider", "ai"),
         "fallbackToAi": bool(settings.get("fallback_to_ai", True)),
         "baidu": {
@@ -3934,6 +3967,17 @@ def _public_translation_settings_for_portable() -> dict:
             "apiKeyConfigured": bool((settings.get("google_cloud") or {}).get("api_key_configured")),
         },
     }
+    if include_secrets:
+        baidu_secret = _decrypt_setting(((raw.get("baidu") or {}).get("secret") if isinstance(raw.get("baidu"), dict) else None))
+        tencent_secret_key = _decrypt_setting(((raw.get("tencent") or {}).get("secret_key") if isinstance(raw.get("tencent"), dict) else None))
+        google_api_key = _decrypt_setting(((raw.get("google_cloud") or {}).get("api_key") if isinstance(raw.get("google_cloud"), dict) else None))
+        if baidu_secret:
+            payload["baidu"]["secret"] = baidu_secret
+        if tencent_secret_key:
+            payload["tencent"]["secretKey"] = tencent_secret_key
+        if google_api_key:
+            payload["googleCloud"]["apiKey"] = google_api_key
+    return payload
 
 
 def _normalize_portable_ai_settings(value: dict) -> dict:
@@ -3956,6 +4000,9 @@ def _normalize_portable_ai_settings(value: dict) -> dict:
             "created_at": item.get("created_at") or item.get("createdAt") or _iso_now(),
             "updated_at": item.get("updated_at") or item.get("updatedAt") or _iso_now(),
         }
+        api_key = str(item.get("apiKey") or item.get("api_key") or "").strip()
+        if api_key:
+            channel["api_key"] = _encrypt_setting(api_key)
         channels.append(channel)
     default_model = value.get("default_model") or value.get("defaultModel") or {}
     if isinstance(default_model, dict):
@@ -3980,9 +4027,13 @@ def _normalize_portable_translation_settings(value: dict) -> dict:
     baidu = value.get("baidu") if isinstance(value.get("baidu"), dict) else {}
     if baidu.get("appid"):
         result["baidu_appid"] = str(baidu.get("appid")).strip()
+    if baidu.get("secret"):
+        result["baidu_secret"] = str(baidu.get("secret")).strip()
     tencent = value.get("tencent") if isinstance(value.get("tencent"), dict) else {}
     if tencent.get("secretId") or tencent.get("secret_id"):
         result["tencent_secret_id"] = str(tencent.get("secretId") or tencent.get("secret_id")).strip()
+    if tencent.get("secretKey") or tencent.get("secret_key"):
+        result["tencent_secret_key"] = str(tencent.get("secretKey") or tencent.get("secret_key")).strip()
     if tencent.get("region"):
         result["tencent_region"] = str(tencent.get("region")).strip()
     google_cloud = value.get("googleCloud") or value.get("google_cloud")
@@ -4860,6 +4911,114 @@ def _save_imap_runtime_settings(data: dict) -> tuple[dict, str | None]:
     if not payload.get("success", True):
         return {}, payload.get("message") or payload.get("error") or "保存 IMAP 设置失败"
     return payload.get("settings", {}), None
+
+
+def _get_imap_portable_settings(include_secrets: bool = False) -> dict:
+    target = urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/portable/settings")
+    payload = _portable_json_get(
+        target,
+        params={"secrets": "1"} if include_secrets else {},
+        timeout=20,
+    )
+    if isinstance(payload, dict):
+        settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+        return settings
+    return {}
+
+
+def _get_external_account_profiles_for_portable(include_secrets: bool = False) -> list[dict]:
+    if include_secrets:
+        target = urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/portable/accounts")
+        payload = _portable_json_get(target, params={"secrets": "1"}, timeout=30)
+        if isinstance(payload, dict) and isinstance(payload.get("accounts"), list):
+            return [item for item in payload.get("accounts", []) if isinstance(item, dict)]
+    try:
+        resp = http_session.get(urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/accounts"), timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data if isinstance(data, list) else []
+    except Exception as exc:
+        app.logger.warning("便携导出读取外部账号失败: %s", exc)
+    return []
+
+
+def _portable_account_has_secret(account: dict) -> bool:
+    if not isinstance(account, dict):
+        return False
+    oauth = account.get("oauth") if isinstance(account.get("oauth"), dict) else {}
+    auth = account.get("auth") if isinstance(account.get("auth"), dict) else {}
+    return bool(
+        account.get("password")
+        or account.get("protectedPassword")
+        or auth.get("pass")
+        or oauth.get("refresh_token")
+        or oauth.get("refreshToken")
+    )
+
+
+def _restore_portable_external_accounts(accounts: list[dict]) -> tuple[int, str]:
+    accounts = [item for item in accounts if isinstance(item, dict) and _portable_account_has_secret(item)]
+    if not accounts:
+        return 0, ""
+    target = urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/portable/accounts/import")
+    try:
+        resp = http_session.post(target, json={"accounts": accounts}, timeout=30)
+    except Exception as exc:
+        return 0, str(exc)
+    if resp.status_code != 200:
+        return 0, _response_error(resp, f"IMAP 账号凭据恢复失败 HTTP {resp.status_code}")
+    try:
+        payload = resp.json()
+    except Exception:
+        return 0, "IMAP 账号凭据恢复返回了无效响应"
+    if not payload.get("success", True):
+        return 0, payload.get("message") or payload.get("error") or "IMAP 账号凭据恢复失败"
+    return _safe_int(payload.get("imported"), 0), ""
+
+
+def _public_runtime_settings_for_portable(include_secrets: bool = False) -> dict:
+    local = _read_viewer_settings()
+    payload = {
+        "unifiedPasswordConfigured": bool(_get_unified_password()),
+        "resendApiKeyConfigured": bool(_decrypt_setting(local.get("resend_api_key")) or RESEND_API_KEY),
+        "imapOAuth": _get_imap_portable_settings(include_secrets),
+    }
+    if include_secrets:
+        unified_password = _decrypt_setting(local.get("unified_password")) or UNIFIED_PASSWORD
+        resend_api_key = _decrypt_setting(local.get("resend_api_key")) or RESEND_API_KEY
+        if unified_password:
+            payload["unifiedPassword"] = unified_password
+        if resend_api_key:
+            payload["resendApiKey"] = resend_api_key
+    return payload
+
+
+def _import_portable_runtime_settings(settings: dict, value: dict) -> tuple[int, str]:
+    if not isinstance(value, dict):
+        return 0, ""
+    imported = 0
+    if value.get("unifiedPassword"):
+        settings["unified_password"] = _encrypt_setting(str(value.get("unifiedPassword")))
+        imported += 1
+    if value.get("resendApiKey"):
+        settings["resend_api_key"] = _encrypt_setting(str(value.get("resendApiKey")))
+        imported += 1
+    imap_oauth = value.get("imapOAuth") if isinstance(value.get("imapOAuth"), dict) else {}
+    if imap_oauth:
+        payload = {
+            "public_base_url": imap_oauth.get("publicBaseUrl") or imap_oauth.get("public_base_url") or "",
+            "google_client_id": imap_oauth.get("googleClientId") or imap_oauth.get("google_client_id") or "",
+            "microsoft_client_id": imap_oauth.get("microsoftClientId") or imap_oauth.get("microsoft_client_id") or "",
+        }
+        if imap_oauth.get("googleClientSecret"):
+            payload["google_client_secret"] = imap_oauth.get("googleClientSecret")
+        if imap_oauth.get("microsoftClientSecret"):
+            payload["microsoft_client_secret"] = imap_oauth.get("microsoftClientSecret")
+        _, err = _save_imap_runtime_settings(payload)
+        if err:
+            return imported, err
+        imported += 1
+    return imported, ""
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -6801,6 +6960,7 @@ def portable_export():
     settings = _read_viewer_settings()
     message_limit = _portable_parse_message_limit()
     include_messages = request.args.get("messages", "1").strip().lower() not in {"0", "false", "no"}
+    include_secrets = _portable_truthy(request.args.get("secrets"))
     selected_refs = _portable_query_account_refs()
     has_group_filter = "group" in request.args
     group_filter = _normalize_account_group(request.args.get("group", ""))
@@ -6811,6 +6971,7 @@ def portable_export():
     exported_account_refs = set()
     export_stats = {
         "messagesIncluded": include_messages,
+        "secretsIncluded": include_secrets,
         "messageLimitPerMailbox": "all" if message_limit is None else message_limit,
         "group": group_filter if has_group_filter else "",
         "selectedAccounts": sorted(selected_refs),
@@ -6842,14 +7003,9 @@ def portable_export():
 
     external_accounts = []
     normalized_external_accounts = []
-    try:
-        resp = http_session.get(urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/accounts"), timeout=10)
-        if resp.status_code == 200:
-            external_accounts = resp.json() if isinstance(resp.json(), list) else []
-    except Exception as exc:
-        app.logger.warning("便携导出读取外部账号失败: %s", exc)
+    external_accounts = _get_external_account_profiles_for_portable(include_secrets)
     for item in external_accounts:
-        account = _portable_account_from_external(item)
+        account = _portable_account_from_external(item, include_secrets)
         if not account:
             continue
         if not _portable_account_selected(account, selected_refs, has_group_filter, group_filter):
@@ -6883,7 +7039,7 @@ def portable_export():
         for account in accounts
     }
     for account in imported_external_accounts:
-        account = _portable_sanitize_account_profile(account)
+        account = _portable_sanitize_account_profile(account, include_secrets)
         if not _portable_account_selected(account, selected_refs, has_group_filter, group_filter):
             continue
         ref = f"{account.get('type')}:{account.get('id')}".lower()
@@ -6985,8 +7141,9 @@ def portable_export():
         "accounts": accounts,
         "folders": folders,
         "messages": messages,
-        "aiSettings": _public_ai_settings_for_portable(),
-        "translationSettings": _public_translation_settings_for_portable(),
+        "aiSettings": _public_ai_settings_for_portable(include_secrets),
+        "translationSettings": _public_translation_settings_for_portable(include_secrets),
+        "runtimeSettings": _public_runtime_settings_for_portable(include_secrets),
         "keywordRules": [
             _portable_keyword_rule(item)
             for item in _settings_list(settings, "keyword_rules")
@@ -7014,13 +7171,16 @@ def portable_import():
     imported = {
         "local_accounts": 0,
         "external_account_profiles": 0,
+        "external_account_credentials": 0,
         "folders": 0,
         "messages": 0,
         "message_meta": 0,
         "keyword_rules": 0,
         "ai_channels": 0,
         "translation_settings": 0,
+        "runtime_secrets": 0,
     }
+    warnings = []
     mailboxes = settings.get("mailboxes", []) if isinstance(settings.get("mailboxes"), list) else []
     by_address = {
         _normalize_mailbox_address(item.get("address", "")): item
@@ -7028,6 +7188,7 @@ def portable_import():
         if isinstance(item, dict) and _normalize_mailbox_address(item.get("address", ""))
     }
 
+    external_accounts_for_restore = []
     for account in data.get("accounts", []):
         if not isinstance(account, dict):
             continue
@@ -7048,7 +7209,7 @@ def portable_import():
         elif account_type == "external":
             external_profiles = _settings_list(settings, "portable_external_accounts")
             external_profiles = [item for item in external_profiles if isinstance(item, dict)]
-            normalized = _portable_sanitize_account_profile(account)
+            normalized = _portable_sanitize_account_profile(account, include_secrets=True)
             ref = f"external:{normalized.get('id') or normalized.get('address')}".lower()
             external_profiles = [
                 item for item in external_profiles
@@ -7057,6 +7218,8 @@ def portable_import():
             external_profiles.append(normalized)
             settings["portable_external_accounts"] = external_profiles
             imported["external_account_profiles"] += 1
+            if _portable_account_has_secret(normalized):
+                external_accounts_for_restore.append(normalized)
 
     settings["mailboxes"] = list(by_address.values())
     order = _normalize_account_order(settings.get("account_order", []))
@@ -7069,10 +7232,19 @@ def portable_import():
     ai_settings = _normalize_portable_ai_settings(data.get("aiSettings") or data.get("ai_settings") or {})
     imported["ai_channels"] = _merge_portable_ai_settings(settings, ai_settings)
 
+    runtime_count, runtime_error = _import_portable_runtime_settings(
+        settings,
+        data.get("runtimeSettings") or data.get("runtime_settings") or {},
+    )
+    imported["runtime_secrets"] = runtime_count
+    if runtime_error:
+        warnings.append(f"运行密钥导入失败: {runtime_error}")
+
     translation_settings = _normalize_portable_translation_settings(
         data.get("translationSettings") or data.get("translation_settings") or {}
     )
     if translation_settings:
+        _write_viewer_settings(settings)
         _write_translation_settings(translation_settings)
         settings = _read_viewer_settings()
         imported["translation_settings"] = 1
@@ -7146,13 +7318,25 @@ def portable_import():
             imported["message_meta"] += 1
         settings["message_meta"] = meta_store
 
+    restored_count, restore_error = _restore_portable_external_accounts(external_accounts_for_restore)
+    imported["external_account_credentials"] = restored_count
+    if restore_error:
+        warnings.append(f"外部账号凭据恢复失败: {restore_error}")
+
     _append_audit(settings, "portable.imported", imported)
     _touch_sync_event(settings, "portable.imported", imported)
     _write_viewer_settings(settings)
+    if imported["external_account_profiles"] and imported["external_account_credentials"]:
+        message = "便携包已导入，外部账号密码/OAuth Token 已恢复；账号会在后台重新连接并同步。"
+    elif imported["external_account_profiles"]:
+        message = "便携包已导入。该包不包含外部账号密码/OAuth Token，需要在账号设置中重新填写或重新授权。"
+    else:
+        message = "便携包已导入。"
     return jsonify({
         "success": True,
         "imported": imported,
-        "message": "便携包已导入。外部账号密码/OAuth Token 不在便携包内，需要在账号设置中重新填写或重新授权。",
+        "warnings": warnings,
+        "message": message,
     })
 
 

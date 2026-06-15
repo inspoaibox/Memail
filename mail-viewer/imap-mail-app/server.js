@@ -433,6 +433,109 @@ function accountSummary(id, account, extra = {}) {
   };
 }
 
+function accountPortableProfile(id, account, includeSecrets = false) {
+  const summary = accountSummary(id, account);
+  const profile = {
+    id,
+    type: 'external',
+    address: summary.email,
+    email: summary.email,
+    displayName: summary.displayName,
+    sendName: summary.sendName,
+    group: summary.group,
+    provider: summary.name,
+    name: summary.name,
+    host: summary.host,
+    port: summary.port,
+    secure: summary.secure,
+    smtp: summary.smtp,
+  };
+  if (includeSecrets) {
+    if (account?.auth?.pass) {
+      profile.password = account.auth.pass;
+      profile.protectedPassword = account.auth.pass;
+      profile.auth = { user: summary.email, pass: account.auth.pass };
+    }
+    if (account?.oauth?.provider && account?.oauth?.refresh_token) {
+      profile.oauth = {
+        provider: account.oauth.provider,
+        refresh_token: account.oauth.refresh_token,
+        access_token: account.oauth.access_token || '',
+        expires_at: account.oauth.expires_at || 0,
+        scope: account.oauth.scope || '',
+      };
+    }
+  }
+  return profile;
+}
+
+function buildAccountFromPortableProfile(profile) {
+  const email = String(profile?.address || profile?.email || profile?.auth?.user || '').trim().toLowerCase();
+  if (!email) throw new Error('便携账号缺少邮箱地址');
+  const provider = String(profile.provider || profile.name || detectPreset(email) || 'custom').trim().toLowerCase();
+  const preset = PRESETS[provider] || null;
+  const smtpSource = profile.smtp && typeof profile.smtp === 'object' ? profile.smtp : {};
+  const oauth = profile.oauth && typeof profile.oauth === 'object' ? profile.oauth : null;
+  const refreshToken = String(oauth?.refresh_token || oauth?.refreshToken || '').trim();
+  const password = normalizeManualPassword(
+    provider,
+    email,
+    profile.password ?? profile.protectedPassword ?? profile.auth?.pass ?? ''
+  );
+  if (!password && !refreshToken) {
+    throw new Error(`${email} 缺少密码或 OAuth refresh token`);
+  }
+  const imapPort = parseInt(profile.port, 10) || preset?.port || 993;
+  const account = {
+    name: provider,
+    host: String(profile.host || preset?.host || '').trim(),
+    port: imapPort,
+    secure: profile.secure !== undefined ? profile.secure !== false : (preset ? preset.secure !== false : imapPort !== 143),
+    smtp: normalizeSmtpConfig({
+      host: smtpSource.host || preset?.smtp?.host || '',
+      port: smtpSource.port || preset?.smtp?.port || 465,
+      secure: smtpSource.secure !== undefined ? smtpSource.secure !== false : preset?.smtp?.secure,
+      requireTLS: smtpSource.requireTLS !== undefined ? !!smtpSource.requireTLS : preset?.smtp?.requireTLS,
+    }),
+    auth: { user: email },
+    displayName: normalizeDisplayName(profile.displayName || profile.display_name, email),
+    sendName: normalizeSendName(profile.sendName || profile.send_name),
+    group: normalizeAccountGroup(profile.group),
+  };
+  if (refreshToken) {
+    account.oauth = {
+      provider: String(oauth.provider || (isGmailAccount(provider, email) ? 'gmail' : provider === 'outlook' ? 'microsoft' : provider)).trim().toLowerCase(),
+      refresh_token: refreshToken,
+      access_token: String(oauth.access_token || oauth.accessToken || '').trim(),
+      expires_at: parseInt(oauth.expires_at || oauth.expiresAt || 0, 10) || 0,
+      scope: String(oauth.scope || '').trim(),
+    };
+  } else {
+    account.auth.pass = password;
+  }
+  return account;
+}
+
+function findAccountIdByEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  for (const [id, client] of clients) {
+    if (String(client.account?.auth?.user || '').trim().toLowerCase() === normalized) return id;
+  }
+  return null;
+}
+
+function connectImportedAccountInBackground(id, client) {
+  setTimeout(async () => {
+    try {
+      await client.connect();
+      backgroundSyncAccount(client, { force: true, window: IMAP_CACHE_SYNC_WINDOW });
+      console.log(`  ✓ 便携导入账号 ${client.account?.auth?.user || id} 已连接`);
+    } catch (err) {
+      console.log(`  ✗ 便携导入账号 ${client.account?.auth?.user || id} 暂未连接，已保留账号: ${err.message}`);
+    }
+  }, 0);
+}
+
 function resultOk(protocol, config) {
   return {
     protocol,
@@ -1916,6 +2019,68 @@ app.post('/api/settings', (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: `保存 IMAP 运行配置失败: ${err.message}` });
   }
+});
+
+app.get('/api/portable/settings', (req, res) => {
+  const includeSecrets = ['1', 'true', 'yes'].includes(String(req.query.secrets || '').toLowerCase());
+  const settings = {
+    publicBaseUrl: runtimeSettings.public_base_url || getPublicBaseUrl(),
+    googleClientId: getGoogleClientId(),
+    googleClientSecretConfigured: Boolean(getGoogleClientSecret()),
+    microsoftClientId: getMicrosoftClientId(),
+    microsoftClientSecretConfigured: Boolean(getMicrosoftClientSecret()),
+  };
+  if (includeSecrets) {
+    settings.googleClientSecret = getGoogleClientSecret();
+    settings.microsoftClientSecret = getMicrosoftClientSecret();
+  }
+  res.json({ success: true, settings });
+});
+
+app.get('/api/portable/accounts', (req, res) => {
+  const includeSecrets = ['1', 'true', 'yes'].includes(String(req.query.secrets || '').toLowerCase());
+  const accounts = [];
+  clients.forEach((client, id) => {
+    accounts.push(accountPortableProfile(id, client.account, includeSecrets));
+  });
+  res.json({ success: true, accounts });
+});
+
+app.post('/api/portable/accounts/import', async (req, res) => {
+  if (!requirePersistenceSecret(res)) return;
+  const incoming = Array.isArray(req.body?.accounts) ? req.body.accounts : [];
+  const restored = [];
+  const errors = [];
+  for (const profile of incoming) {
+    if (!profile || typeof profile !== 'object') continue;
+    try {
+      const account = buildAccountFromPortableProfile(profile);
+      const existingId = findAccountIdByEmail(account.auth.user);
+      let id = existingId;
+      if (!id) {
+        const requestedId = parseInt(profile.id, 10);
+        id = Number.isInteger(requestedId) && requestedId > 0 && !clients.has(requestedId)
+          ? requestedId
+          : ++clientId;
+      }
+      clientId = Math.max(clientId, id);
+      const oldClient = clients.get(id);
+      if (oldClient) {
+        try { await oldClient.disconnect(); } catch {}
+      }
+      const client = createMailClient(account);
+      clients.set(id, client);
+      restored.push(accountSummary(id, account, { imported: true }));
+      connectImportedAccountInBackground(id, client);
+    } catch (err) {
+      errors.push({
+        email: profile.address || profile.email || profile.auth?.user || '',
+        error: err.message,
+      });
+    }
+  }
+  if (restored.length) saveAccounts();
+  res.json({ success: true, imported: restored.length, accounts: restored, errors });
 });
 
 app.post('/api/oauth/gmail/start', (req, res) => {

@@ -2232,7 +2232,7 @@
                             <div class="row g-4">
                                 <div class="col-12 col-lg-6">
                                     <h6 class="mb-2"><i class="bi bi-download me-1"></i>导出便携包</h6>
-                                    <div class="small text-muted mb-3">导出账号档案、文件夹、邮件缓存、AI 渠道信息和关键词规则。不会导出邮箱密码、OAuth Token 或 AI API Key。</div>
+                                    <div class="small text-muted mb-3">导出账号档案、文件夹、邮件缓存、AI 渠道信息和关键词规则。默认不导出邮箱密码、OAuth Token 或 API Key；勾选完整迁移包后会一并导出。</div>
                                     <div class="row g-2 align-items-end mb-2">
                                         <div class="col-7">
                                             <label class="form-label" for="portable-export-group">账号分组</label>
@@ -2242,6 +2242,12 @@
                                             <div class="form-check pb-1">
                                                 <input class="form-check-input" type="checkbox" id="portable-export-include-messages" checked onchange="syncPortableExportMessageMode()">
                                                 <label class="form-check-label small" for="portable-export-include-messages">导出邮件</label>
+                                            </div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="portable-export-include-secrets" onchange="renderPortableExportControls()">
+                                                <label class="form-check-label small" for="portable-export-include-secrets">完整迁移包：包含外部账号密码、OAuth Token、AI/翻译 API Key</label>
                                             </div>
                                         </div>
                                         <div class="col-7">
@@ -2255,7 +2261,7 @@
                                             </select>
                                         </div>
                                         <div class="col-5">
-                                            <button class="btn btn-primary btn-sm w-100" onclick="exportPortablePackage()">
+                                            <button class="btn btn-primary btn-sm w-100" id="portable-export-button" onclick="exportPortablePackage()">
                                                 <i class="bi bi-download me-1"></i>下载便携包
                                             </button>
                                         </div>
@@ -3946,8 +3952,9 @@
             const visible = _portableExportVisibleAccounts();
             const checkedRefs = new Set(_portableExportCheckedRefs());
             const include = document.getElementById('portable-export-include-messages')?.checked !== false;
+            const includeSecrets = document.getElementById('portable-export-include-secrets')?.checked === true;
             if (limit) limit.disabled = !include;
-            summary.textContent = `${checkedRefs.size}/${visible.length} 个账号 · ${include ? '包含邮件' : '只导账号和设置'}`;
+            summary.textContent = `${checkedRefs.size}/${visible.length} 个账号 · ${include ? '包含邮件' : '只导账号和设置'}${includeSecrets ? ' · 包含敏感凭据' : ''}`;
             if (!visible.length) {
                 list.innerHTML = `<div class="account-settings-empty">当前分组没有账号</div>`;
                 return;
@@ -6192,18 +6199,30 @@
         async function exportPortablePackage() {
             _clearPortableSettingsAlert();
             const limit = document.getElementById('portable-export-limit')?.value || '200';
+            const btn = document.getElementById('portable-export-button');
+            const originalBtnHtml = btn?.innerHTML || '';
             try {
                 const includeMessages = document.getElementById('portable-export-include-messages')?.checked === false ? '0' : '1';
+                const includeSecrets = document.getElementById('portable-export-include-secrets')?.checked === true;
                 const visibleAccounts = _portableExportVisibleAccounts();
                 const selectedRefs = _portableExportCheckedRefs();
                 if (!selectedRefs.length) {
                     _showPortableSettingsAlert('warning', '请选择至少一个账号');
                     return;
                 }
+                if (includeSecrets && !confirm('完整迁移包会包含外部账号密码、OAuth Token、AI/翻译 API Key。请只在迁移到自己服务器时使用，并妥善保存该文件。继续导出吗？')) {
+                    return;
+                }
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>正在导出`;
+                }
+                _showPortableSettingsAlert('info', includeSecrets ? '正在生成完整迁移包，请稍等...' : '正在生成便携包，请稍等...');
                 const params = new URLSearchParams({
                     messages: includeMessages,
                     limit: includeMessages === '1' ? limit : '0',
                 });
+                if (includeSecrets) params.set('secrets', '1');
                 const storedGroup = _portableExportStoredGroup();
                 if (storedGroup !== null) params.set('group', storedGroup);
                 if (selectedRefs.length !== visibleAccounts.length) {
@@ -6226,6 +6245,11 @@
                 _showPortableSettingsAlert('success', '便携包已开始下载');
             } catch (e) {
                 _showPortableSettingsAlert('danger', `导出失败: ${e.message}`);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalBtnHtml || `<i class="bi bi-download me-1"></i>下载便携包`;
+                }
             }
         }
 
@@ -6246,7 +6270,8 @@
                 });
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.message || '导入失败');
-                _showPortableSettingsAlert('success', `${data.message || '导入完成'} ${JSON.stringify(data.imported || {})}`);
+                const warnings = Array.isArray(data.warnings) && data.warnings.length ? ` 警告: ${data.warnings.join('；')}` : '';
+                _showPortableSettingsAlert('success', `${data.message || '导入完成'} ${JSON.stringify(data.imported || {})}${warnings}`);
                 await Promise.all([
                     loadMailboxes(),
                     loadAiSettings(),

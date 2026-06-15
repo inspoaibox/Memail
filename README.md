@@ -219,6 +219,87 @@ The background sync scheduler is enabled by default: after startup it waits abou
 
 Drafts, failed-send records, and sent records are persisted with the viewer settings. The compose screen opens inline in the right reading pane and uses the currently selected mailbox as the sender. “Save Draft” stores the message in the selected account’s “App Drafts” view, failed sends go to “Failed Send”, and both local accounts and external SMTP accounts can retry from the failed-send record. Compose supports To, Cc, Bcc, and attachments; drafts and failed-send records preserve these fields. Remote IMAP Drafts/Sent folders still appear as normal provider folders when available.
 
+### 4. Domain Reverse Proxy
+
+The Web UI service is `mail-viewer`. Docker Compose binds it to localhost by default:
+
+```text
+http://127.0.0.1:5000
+```
+
+Point your domain reverse proxy to that address. SMTP inbound port `25` and IMAP client port `993` are not HTTP services, so do not put them behind a normal Nginx/Caddy `reverse_proxy`; open them directly in your firewall and cloud security group.
+
+If you use Gmail / Outlook OAuth callbacks or need public absolute URLs, set this in `.env`:
+
+```env
+PUBLIC_BASE_URL=https://mail.yourdomain.com
+```
+
+#### Nginx
+
+Replace `mail.yourdomain.com` with your real domain:
+
+```nginx
+server {
+    listen 80;
+    server_name mail.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name mail.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/mail.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mail.yourdomain.com/privkey.pem;
+
+    client_max_body_size 25m;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+With Certbot, you can issue the certificate and reload Nginx:
+
+```bash
+sudo certbot --nginx -d mail.yourdomain.com
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+#### Caddy
+
+Caddy automatically issues and renews HTTPS certificates:
+
+```caddyfile
+mail.yourdomain.com {
+    encode gzip
+
+    reverse_proxy 127.0.0.1:5000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+```
+
+After saving it to `/etc/caddy/Caddyfile`, reload Caddy:
+
+```bash
+sudo caddy fmt --overwrite /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
 ### Security And Multi-Device Sync
 
 The Web UI settings page includes security controls:
@@ -335,6 +416,19 @@ Memail no longer requires every operational setting to be baked into `.env`. Aft
 These settings are saved to Docker volumes and survive container restarts, image rebuilds, and GitHub-built image updates. Sensitive values are encrypted with `CONFIG_ENCRYPTION_KEY`; if it is omitted, `docker-compose.yml` falls back to `IMAP_ACCOUNTS_SECRET`, then `SECRET_KEY`, then `APP_SECRET`.
 
 Keep `.env` for bootstrapping values that must exist before the UI can start, such as database connection, login password, API keys used between internal services, session/JWT secrets, and encryption keys.
+
+### Portable Import And Export
+
+The Settings > Import/Export pane can create a `.memail.json` portable package. The default mode is meant for backups or sharing configuration: it includes account profiles, folders, mail cache, AI/translation channel metadata, and keyword rules, but it does not include external mailbox passwords, OAuth tokens, or API keys.
+
+When migrating to your own new server, enable “Full migration package: include external account passwords, OAuth Token, AI/translation API Key”. A full migration package also exports:
+
+- External IMAP/SMTP passwords or app passwords.
+- Gmail / Outlook OAuth refresh tokens.
+- Gmail / Outlook OAuth client secrets.
+- AI channel API keys, translation provider secrets, Resend API key, and the unified mailbox password.
+
+After importing a full migration package, external accounts are restored into the new IMAP bridge and reconnect/sync in the background, so you do not need to re-enter every password or repeat OAuth authorization. Full migration packages contain sensitive credentials; use them only when migrating to your own server, and store or delete the downloaded file carefully.
 
 ### Gmail External IMAP: App Password Or OAuth2
 
