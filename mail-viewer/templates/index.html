@@ -1753,18 +1753,26 @@
                                 </div>
                                 <div class="col-12"><hr></div>
                                 <div class="col-12">
-                                    <h6 class="mb-2"><i class="bi bi-bell me-1"></i><span data-i18n="browserNotifications">浏览器通知</span></h6>
+                                    <h6 class="mb-2"><i class="bi bi-bell me-1"></i><span data-i18n="browserNotifications">电脑/浏览器通知</span></h6>
                                     <div class="small text-muted mb-2" data-i18n="browserNotificationHint">浏览器打开时，自动刷新发现新邮件会弹出系统通知。</div>
                                     <div class="d-flex flex-wrap align-items-center gap-3">
                                         <div class="form-check form-switch mb-0">
                                             <input class="form-check-input" type="checkbox" id="settings-browser-notifications" onchange="setBrowserNotificationsEnabled(this.checked)">
                                             <label class="form-check-label" for="settings-browser-notifications" data-i18n="enableBrowserNotifications">收到新邮件时通知</label>
                                         </div>
+                                        <div class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox" id="settings-notification-monitor" onchange="setNotificationMonitorEnabled(this.checked)">
+                                            <label class="form-check-label" for="settings-notification-monitor" data-i18n="enableNotificationMonitor">实时监控全部账号</label>
+                                        </div>
                                         <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-request-notification-permission" onclick="requestBrowserNotificationPermission()">
                                             <i class="bi bi-bell me-1"></i><span data-i18n="requestNotificationPermission">授权通知</span>
                                         </button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-test-notification" onclick="sendTestBrowserNotification()">
+                                            <i class="bi bi-send-check me-1"></i><span data-i18n="sendTestNotification">测试通知</span>
+                                        </button>
                                     </div>
                                     <div class="small text-muted mt-2" id="settings-browser-notification-status"></div>
+                                    <div class="small text-muted mt-1" id="settings-notification-monitor-status"></div>
                                     <div class="mt-3">
                                         <div class="small fw-semibold mb-2" data-i18n="notificationGroups">通知分组</div>
                                         <div class="account-settings-list" id="settings-notification-groups"></div>
@@ -2756,15 +2764,20 @@
                 editorPlaceholder: '输入邮件正文...',
                 time: '时间',
                 autoRefreshTitle: '每 15 秒自动刷新',
-                browserNotifications: '浏览器通知',
-                browserNotificationHint: '浏览器打开时，自动刷新发现新邮件会弹出系统通知。',
+                browserNotifications: '电脑/浏览器通知',
+                browserNotificationHint: '浏览器保持打开时，系统会定时检查全部账号，发现新邮件后弹出电脑通知。',
                 enableBrowserNotifications: '收到新邮件时通知',
+                enableNotificationMonitor: '实时监控全部账号',
                 requestNotificationPermission: '授权通知',
+                sendTestNotification: '测试通知',
                 notificationsUnsupported: '当前浏览器或当前访问环境不支持系统通知，请使用 HTTPS 访问。',
                 notificationsEnabled: '浏览器通知已开启',
                 notificationsDisabled: '浏览器通知已关闭',
                 notificationsDenied: '浏览器通知权限被拒绝，请在浏览器地址栏权限设置里重新允许。',
                 notificationsNeedPermission: '需要先授权浏览器通知权限',
+                notificationMonitorEnabled: '实时监控已开启，每 30 秒检查一次全部账号。',
+                notificationMonitorDisabled: '实时监控未开启，只会在当前页面刷新时提示。',
+                testNotificationBody: '这是一条 Memail 测试通知',
                 notificationGroups: '通知分组',
                 notificationGroupHint: '关闭后，该分组收到新邮件不会弹通知。',
                 noNotificationGroups: '暂无邮箱分组',
@@ -3130,15 +3143,20 @@
                 editorPlaceholder: 'Enter email body...',
                 time: 'Time',
                 autoRefreshTitle: 'Auto-refresh every 15s',
-                browserNotifications: 'Browser Notifications',
-                browserNotificationHint: 'When the browser is open, Memail shows a system notification after auto-refresh detects new mail.',
+                browserNotifications: 'Desktop & Browser Notifications',
+                browserNotificationHint: 'While the browser stays open, Memail checks all accounts periodically and shows a desktop notification for new mail.',
                 enableBrowserNotifications: 'Notify me about new mail',
+                enableNotificationMonitor: 'Monitor all accounts',
                 requestNotificationPermission: 'Allow Notifications',
+                sendTestNotification: 'Test Notification',
                 notificationsUnsupported: 'System notifications are not supported in this browser or access context. Use HTTPS.',
                 notificationsEnabled: 'Browser notifications enabled',
                 notificationsDisabled: 'Browser notifications disabled',
                 notificationsDenied: 'Browser notification permission was denied. Allow it in the browser site permissions.',
                 notificationsNeedPermission: 'Notification permission is required first',
+                notificationMonitorEnabled: 'Real-time monitor is on and checks all accounts every 30 seconds.',
+                notificationMonitorDisabled: 'Real-time monitor is off; notifications only appear during current-page refreshes.',
+                testNotificationBody: 'This is a Memail test notification',
                 notificationGroups: 'Notification Groups',
                 notificationGroupHint: 'Disabled groups will still receive mail, but will not show browser notifications.',
                 noNotificationGroups: 'No account groups',
@@ -3277,6 +3295,12 @@
         let externalStatusTimer = null;
         let autoRefreshEnabled = true;
         let browserNotificationsEnabled = false;
+        let browserNotificationMonitorEnabled = true;
+        let browserNotificationMonitorTimer = null;
+        let browserNotificationMonitorBaselineReady = false;
+        let browserNotificationUnreadSnapshot = {};
+        let browserNotificationLastShown = {};
+        let browserNotificationLastExternalSyncAt = 0;
         let browserNotificationKnownKeys = new Set();
         let browserNotificationExternalUnread = {};
         let browserNotificationBaselineReady = false;
@@ -7306,6 +7330,12 @@
             _updateFolderChrome();
             externalStatusTimer = window.setInterval(refreshExternalAccountStatuses, 60000);
             restartAutoRefreshIfNeeded();
+            restartNotificationMonitor();
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                pollNotificationSummary({ baseline: !browserNotificationMonitorBaselineReady });
+            }
         });
         window.addEventListener('message', (event) => {
             if (event.origin !== window.location.origin) return;
@@ -7337,14 +7367,24 @@
             return document.getElementById('settings-browser-notifications');
         }
 
+        function _browserNotificationMonitorToggleEl() {
+            return document.getElementById('settings-notification-monitor');
+        }
+
         function _updateBrowserNotificationStatus() {
             const toggle = _browserNotificationToggleEl();
+            const monitorToggle = _browserNotificationMonitorToggleEl();
             const button = document.getElementById('btn-request-notification-permission');
+            const testButton = document.getElementById('btn-test-notification');
             const status = _browserNotificationStatusEl();
+            const monitorStatus = document.getElementById('settings-notification-monitor-status');
             const supported = _browserNotificationsSupported();
             if (toggle) toggle.checked = browserNotificationsEnabled;
+            if (monitorToggle) monitorToggle.checked = browserNotificationMonitorEnabled;
             if (toggle) toggle.disabled = !supported;
+            if (monitorToggle) monitorToggle.disabled = !supported || !browserNotificationsEnabled;
             if (button) button.disabled = !supported;
+            if (testButton) testButton.disabled = !supported || Notification.permission !== 'granted';
             if (!status) return;
             if (!supported) {
                 status.textContent = t('notificationsUnsupported');
@@ -7357,10 +7397,17 @@
             } else {
                 status.textContent = t('notificationsDisabled');
             }
+            if (monitorStatus) {
+                monitorStatus.textContent = browserNotificationsEnabled && browserNotificationMonitorEnabled
+                    ? t('notificationMonitorEnabled')
+                    : t('notificationMonitorDisabled');
+            }
         }
 
         function _loadBrowserNotificationPreference() {
             browserNotificationsEnabled = localStorage.getItem('memail-browser-notifications') === '1';
+            const monitorSaved = localStorage.getItem('memail-notification-monitor');
+            browserNotificationMonitorEnabled = monitorSaved === null ? true : monitorSaved !== '0';
             try {
                 browserNotificationGroupPrefs = JSON.parse(localStorage.getItem('memail-browser-notification-groups') || '{}') || {};
             } catch (e) {
@@ -7371,6 +7418,7 @@
 
         function _persistBrowserNotificationPreference() {
             localStorage.setItem('memail-browser-notifications', browserNotificationsEnabled ? '1' : '0');
+            localStorage.setItem('memail-notification-monitor', browserNotificationMonitorEnabled ? '1' : '0');
             localStorage.setItem('memail-browser-notification-groups', JSON.stringify(browserNotificationGroupPrefs || {}));
             _updateBrowserNotificationStatus();
         }
@@ -7432,6 +7480,7 @@
             const result = await Notification.requestPermission();
             browserNotificationsEnabled = result === 'granted';
             _persistBrowserNotificationPreference();
+            restartNotificationMonitor();
             return browserNotificationsEnabled;
         }
 
@@ -7442,11 +7491,23 @@
                 browserNotificationsEnabled = allowed;
             }
             _persistBrowserNotificationPreference();
+            restartNotificationMonitor();
+        }
+
+        function setNotificationMonitorEnabled(enabled) {
+            browserNotificationMonitorEnabled = Boolean(enabled);
+            browserNotificationMonitorBaselineReady = false;
+            browserNotificationUnreadSnapshot = {};
+            _persistBrowserNotificationPreference();
+            restartNotificationMonitor();
         }
 
         function _showBrowserMailNotification(account, count = 1, tag = 'memail-new-mail') {
             if (!browserNotificationsEnabled || !_browserNotificationsSupported() || Notification.permission !== 'granted') return;
             const safeCount = Math.max(Number(count) || 1, 1);
+            const now = Date.now();
+            if (tag && browserNotificationLastShown[tag] && now - browserNotificationLastShown[tag] < 20000) return;
+            if (tag) browserNotificationLastShown[tag] = now;
             try {
                 const notification = new Notification(t('newMailNotificationTitle'), {
                     body: t('newMailNotificationBody', { account: account || 'Memail', n: safeCount }),
@@ -7461,6 +7522,77 @@
             } catch (e) {
                 // Browser notifications are optional; never block mail refresh.
             }
+        }
+
+        async function sendTestBrowserNotification() {
+            const allowed = await requestBrowserNotificationPermission();
+            if (!allowed) return;
+            _showBrowserMailNotification('Memail', 1, `memail-test-${Date.now()}`);
+        }
+
+        function _notificationAccountLabel(item = {}) {
+            return item.label || item.address || item.id || 'Memail';
+        }
+
+        async function _queueNotificationExternalSyncIfNeeded(force = false) {
+            const now = Date.now();
+            if (!force && now - browserNotificationLastExternalSyncAt < 120000) return;
+            if (!Array.isArray(externalAccounts) || !externalAccounts.length) return;
+            browserNotificationLastExternalSyncAt = now;
+            try {
+                const sync = await _imapApi('/accounts/sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force: true, background: true }),
+                });
+                if (Array.isArray(sync.accounts)) {
+                    externalAccounts = sync.accounts;
+                    renderMailboxes();
+                    renderFolderList();
+                    _updateFolderChrome();
+                }
+            } catch (e) {
+                console.warn('notification external sync failed', e);
+            }
+        }
+
+        async function pollNotificationSummary({ baseline = false } = {}) {
+            if (!browserNotificationsEnabled || !browserNotificationMonitorEnabled) return;
+            if (!_browserNotificationsSupported() || Notification.permission !== 'granted') return;
+            try {
+                _queueNotificationExternalSyncIfNeeded();
+                const resp = await fetch('/api/notifications/summary');
+                const data = await resp.json();
+                if (!data.success || !Array.isArray(data.accounts)) return;
+                const nextSnapshot = {};
+                data.accounts.forEach(item => {
+                    const ref = String(item.ref || `${item.type}:${item.id || item.address || ''}`).toLowerCase();
+                    if (!ref || ref === ':') return;
+                    const unread = Math.max(Number(item.unread || 0), 0);
+                    nextSnapshot[ref] = unread;
+                    const previous = browserNotificationUnreadSnapshot[ref];
+                    const groupEnabled = _isBrowserNotificationGroupEnabled(item.group || t('defaultAccountGroup'));
+                    if (!baseline && browserNotificationMonitorBaselineReady && previous !== undefined && unread > previous && groupEnabled) {
+                        const tagId = item.type === 'external' ? String(item.id || item.address || ref) : ref;
+                        _showBrowserMailNotification(_notificationAccountLabel(item), unread - previous, `memail-account-${tagId}`);
+                    }
+                });
+                browserNotificationUnreadSnapshot = nextSnapshot;
+                browserNotificationMonitorBaselineReady = true;
+            } catch (e) {
+                console.warn('notification summary poll failed', e);
+            }
+        }
+
+        function restartNotificationMonitor() {
+            if (browserNotificationMonitorTimer) {
+                clearInterval(browserNotificationMonitorTimer);
+                browserNotificationMonitorTimer = null;
+            }
+            _updateBrowserNotificationStatus();
+            if (!browserNotificationsEnabled || !browserNotificationMonitorEnabled) return;
+            pollNotificationSummary({ baseline: !browserNotificationMonitorBaselineReady });
+            browserNotificationMonitorTimer = setInterval(() => pollNotificationSummary(), 30000);
         }
 
         function _messageNotificationKey(msg, fallback = {}) {

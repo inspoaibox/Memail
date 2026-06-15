@@ -5586,6 +5586,101 @@ def reorder_mailboxes():
     return jsonify({"success": True, "mailboxes": reordered, "account_order": order})
 
 
+def _notification_local_unread_count(email: str) -> tuple[int, str]:
+    password = _get_unified_password()
+    if not password:
+        return 0, "未配置邮箱统一密码"
+    base_url = DUCKMAIL_BASE_URL.rstrip("/")
+    try:
+        token_resp = http_session.post(
+            f"{base_url}/token",
+            json={"address": email, "password": password},
+            headers={"Content-Type": "application/json"},
+            timeout=8,
+        )
+        if token_resp.status_code != 200:
+            return 0, f"登录失败 HTTP {token_resp.status_code}"
+        token = token_resp.json().get("token")
+        if not token:
+            return 0, "登录响应缺少 token"
+        resp = http_session.get(
+            f"{base_url}/messages",
+            params={"offset": 0, "limit": 1, "unread": "true"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return 0, f"HTTP {resp.status_code}"
+        data = resp.json()
+        if isinstance(data, dict):
+            return _safe_int(data.get("hydra:totalItems"), 0), ""
+        return len(data) if isinstance(data, list) else 0, ""
+    except Exception as exc:
+        app.logger.warning("读取本地邮箱未读通知统计失败: %s %s", email, exc)
+        return 0, str(exc)
+
+
+def _notification_external_accounts() -> list[dict]:
+    try:
+        resp = http_session.get(urljoin(IMAP_MAIL_BASE_URL.rstrip("/") + "/", "api/accounts"), timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data if isinstance(data, list) else []
+    except Exception as exc:
+        app.logger.warning("读取外部邮箱未读通知统计失败: %s", exc)
+    return []
+
+
+@app.route("/api/notifications/summary", methods=["GET"])
+@login_required
+def notifications_summary():
+    settings = _read_viewer_settings()
+    accounts = []
+    for mailbox in _settings_list(settings, "mailboxes"):
+        if not isinstance(mailbox, dict):
+            continue
+        address = _normalize_mailbox_address(mailbox.get("address", ""))
+        if not address:
+            continue
+        unread, error = _notification_local_unread_count(address)
+        accounts.append({
+            "ref": f"local:{address}",
+            "type": "local",
+            "id": address,
+            "address": address,
+            "label": _normalize_display_name(mailbox.get("display_name", ""), address),
+            "group": _normalize_account_group(mailbox.get("group", "")),
+            "unread": unread,
+            "error": error,
+        })
+    for item in _notification_external_accounts():
+        if not isinstance(item, dict):
+            continue
+        email = _normalize_mailbox_address(item.get("email") or item.get("address") or "")
+        account_id = str(item.get("id") or email).strip()
+        if not account_id:
+            continue
+        sync = item.get("syncStatus") if isinstance(item.get("syncStatus"), dict) else {}
+        accounts.append({
+            "ref": f"external:{account_id}".lower(),
+            "type": "external",
+            "id": account_id,
+            "address": email,
+            "label": _normalize_display_name(item.get("displayName", ""), email or account_id),
+            "group": _normalize_account_group(item.get("group", "")),
+            "unread": _safe_int(sync.get("unseen", item.get("unreadCount", 0)), 0),
+            "syncing": bool(sync.get("syncing")),
+            "syncedAt": sync.get("syncedAt", ""),
+            "error": sync.get("error", ""),
+        })
+    return jsonify({
+        "success": True,
+        "checkedAt": _iso_now(),
+        "totalUnread": sum(_safe_int(item.get("unread"), 0) for item in accounts),
+        "accounts": accounts,
+    })
+
+
 @app.route("/api/inbox/detail", methods=["POST"])
 @app.route("/api/inbox/detail/cache", methods=["POST"])
 @login_required
