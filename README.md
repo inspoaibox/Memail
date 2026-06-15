@@ -155,27 +155,33 @@ docker-compose ps
 
 ### 3. Start With GitHub-Built Images
 
-Use this mode when GitHub builds the Docker images and your server only pulls and runs them. GitHub Actions builds and pushes images to GitHub Container Registry on pushes to `main` / `master`, `v*.*.*` tags, pull requests, or manual workflow runs:
+Use this mode when you want to run the Docker images built by GitHub Actions for [inspoaibox/Memail](https://github.com/inspoaibox/Memail). Your server only pulls the GHCR images and runs them. The Docker workflow builds and publishes images to GitHub Container Registry on pushes to `main` / `master`, `v*.*.*` tags, or manual workflow runs. Pull requests build for validation only and do not publish images.
 
 ```text
-ghcr.io/<owner>/manymail-mail-service
-ghcr.io/<owner>/manymail-mail-viewer
-ghcr.io/<owner>/manymail-imap-mail
-ghcr.io/<owner>/manymail-imap-server
+ghcr.io/inspoaibox/manymail-mail-service
+ghcr.io/inspoaibox/manymail-mail-viewer
+ghcr.io/inspoaibox/manymail-imap-mail
+ghcr.io/inspoaibox/manymail-imap-server
 ```
 
 GitHub Actions only builds and publishes images. It does not automatically SSH into your server or restart Docker Compose unless you add a separate deploy workflow.
 
-After pushing code to GitHub, open the repository's **Actions** tab and wait for the **Docker** workflow to finish successfully. Then set these image names in `.env` on your server. Replace `<owner>` with your GitHub username or organization, and use the branch tag you build from, usually `main` or `master`:
+After pushing code to GitHub, open the repository's **Actions** tab and wait for the **Docker** workflow to finish successfully. Then set these image names in `.env` on your server. For the official repository, you can use the `inspoaibox` image names directly. For your own fork, replace `inspoaibox` with your lowercase GitHub username or organization. Use the branch tag you build from, usually `main` or `master`:
 
 ```env
-MAIL_SERVICE_IMAGE=ghcr.io/<owner>/manymail-mail-service:master
-MAIL_VIEWER_IMAGE=ghcr.io/<owner>/manymail-mail-viewer:master
-IMAP_MAIL_IMAGE=ghcr.io/<owner>/manymail-imap-mail:master
-IMAP_SERVER_IMAGE=ghcr.io/<owner>/manymail-imap-server:master
+MAIL_SERVICE_IMAGE=ghcr.io/inspoaibox/manymail-mail-service:main
+MAIL_VIEWER_IMAGE=ghcr.io/inspoaibox/manymail-mail-viewer:main
+IMAP_MAIL_IMAGE=ghcr.io/inspoaibox/manymail-imap-mail:main
+IMAP_SERVER_IMAGE=ghcr.io/inspoaibox/manymail-imap-server:main
 ```
 
-If the GitHub Container Registry package is private, log in on the server before pulling:
+Available tag patterns:
+
+- `main` / `master`: latest image for that branch.
+- `v1.2.3`: image for a release tag.
+- `sha-xxxxxxx`: exact commit image tag shown in GitHub Actions or Packages.
+
+If the GitHub Container Registry package is public, the server can pull it without logging in. If it is private, log in first with a token that has at least `read:packages` permission:
 
 ```bash
 echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
@@ -188,6 +194,8 @@ docker-compose pull
 docker-compose up -d
 docker-compose ps
 ```
+
+If your server uses Docker Compose v2, you can use `docker compose` instead of `docker-compose`.
 
 `docker-compose pull` only pulls GitHub-built images when the four `*_IMAGE` variables above are set in `.env`. If they are not set, Compose uses the local `manymail-*:local` images built from source; in that mode, use the local-build update commands from section 2.
 

@@ -155,27 +155,33 @@ docker-compose ps
 
 ### 3. 使用 GitHub 构建的 Docker 镜像启动
 
-这种方式适合由 GitHub Actions 负责构建 Docker 镜像，服务器只负责拉取镜像并运行。项目包含 Docker 工作流，会在推送到 `main` / `master`、创建 `v*.*.*` 标签、Pull Request 或手动触发时构建并推送镜像到 GitHub Container Registry：
+这种方式适合直接使用 [inspoaibox/Memail](https://github.com/inspoaibox/Memail) 的 GitHub Actions 构建结果，服务器只负责拉取 GHCR 镜像并运行。项目包含 Docker 工作流，会在推送到 `main` / `master`、创建 `v*.*.*` 标签或手动触发时构建并推送镜像到 GitHub Container Registry。Pull Request 只构建验证，不会推送镜像。
 
 ```text
-ghcr.io/<owner>/manymail-mail-service
-ghcr.io/<owner>/manymail-mail-viewer
-ghcr.io/<owner>/manymail-imap-mail
-ghcr.io/<owner>/manymail-imap-server
+ghcr.io/inspoaibox/manymail-mail-service
+ghcr.io/inspoaibox/manymail-mail-viewer
+ghcr.io/inspoaibox/manymail-imap-mail
+ghcr.io/inspoaibox/manymail-imap-server
 ```
 
 注意：GitHub Actions 只负责构建并推送镜像，不会自动登录你的服务器，也不会自动运行 `docker-compose up`。如果需要自动部署，还要另外写 SSH 部署工作流。
 
-推送代码到 GitHub 后，先到仓库的 **Actions** 页面，确认 **Docker** 工作流已经成功。然后在服务器的 `.env` 中设置镜像地址。把 `<owner>` 替换成你的 GitHub 用户名或组织名，标签通常使用 `main` 或 `master`：
+推送代码到 GitHub 后，先到仓库的 **Actions** 页面，确认 **Docker** 工作流已经成功。然后在服务器的 `.env` 中设置镜像地址。官方仓库当前可以直接使用 `inspoaibox` 这一组地址；如果你使用自己的 fork，把 `inspoaibox` 替换成小写的 GitHub 用户名或组织名即可。标签通常使用当前分支名，比如 `main` 或 `master`：
 
 ```env
-MAIL_SERVICE_IMAGE=ghcr.io/<owner>/manymail-mail-service:master
-MAIL_VIEWER_IMAGE=ghcr.io/<owner>/manymail-mail-viewer:master
-IMAP_MAIL_IMAGE=ghcr.io/<owner>/manymail-imap-mail:master
-IMAP_SERVER_IMAGE=ghcr.io/<owner>/manymail-imap-server:master
+MAIL_SERVICE_IMAGE=ghcr.io/inspoaibox/manymail-mail-service:main
+MAIL_VIEWER_IMAGE=ghcr.io/inspoaibox/manymail-mail-viewer:main
+IMAP_MAIL_IMAGE=ghcr.io/inspoaibox/manymail-imap-mail:main
+IMAP_SERVER_IMAGE=ghcr.io/inspoaibox/manymail-imap-server:main
 ```
 
-如果 GHCR 包是私有的，服务器需要先登录：
+可用标签说明：
+
+- `main` / `master`：对应分支最新构建。
+- `v1.2.3`：对应 release tag 构建。
+- `sha-xxxxxxx`：对应某次提交的精确镜像标签，可在 GitHub Actions 或 Packages 页面查看。
+
+如果 GHCR 包是公开的，服务器不需要登录即可拉取。如果 GHCR 包是私有的，服务器需要先登录，Token 至少需要 `read:packages` 权限：
 
 ```bash
 echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
@@ -188,6 +194,8 @@ docker-compose pull
 docker-compose up -d
 docker-compose ps
 ```
+
+如果你的服务器使用 Docker Compose v2，也可以把上面的 `docker-compose` 换成 `docker compose`。
 
 只有 `.env` 中设置了上面的 4 个 `*_IMAGE` 变量时，`docker-compose pull` 才会拉取 GitHub 构建好的 GHCR 镜像。如果没有设置这些变量，Compose 会使用本地源码构建的 `manymail-*:local` 镜像，此时 `docker-compose pull` 不会让刚 `git pull` 下来的源码生效，必须回到第 2 节执行本地构建更新命令。
 
