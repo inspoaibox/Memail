@@ -943,6 +943,32 @@
             padding: 1px 6px;
             background: #ffffff;
         }
+        .mail-account-badges {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            flex: 0 0 auto;
+            margin-left: auto;
+        }
+        .mail-account-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 20px;
+            height: 20px;
+            padding: 0 6px;
+            border-radius: 999px;
+            background: var(--primary-color);
+            color: #fff;
+            font-size: 0.68rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+        .mail-account-badge.muted {
+            background: rgba(15,23,42,0.08);
+            color: var(--muted-text);
+            font-weight: 700;
+        }
         .mail-account-provider-icon {
             flex: 0 0 auto;
             width: 30px;
@@ -2480,6 +2506,7 @@
                 clearGoogleCloudTranslationApiKey: '清除 Google Cloud Translation API Key',
                 keywordRules: '关键词规则',
                 keywordGroups: '关键词分组',
+                keywordMatches: '命中邮件',
                 keywordRuleForm: '规则配置',
                 ruleName: '规则名称',
                 ruleNamePlaceholder: '例如：Walmart 退款',
@@ -2859,6 +2886,7 @@
                 clearGoogleCloudTranslationApiKey: 'Clear Google Cloud Translation API Key',
                 keywordRules: 'Keyword Rules',
                 keywordGroups: 'Keyword Groups',
+                keywordMatches: 'Matched Mail',
                 keywordRuleForm: 'Rule Config',
                 ruleName: 'Rule Name',
                 ruleNamePlaceholder: 'e.g. Walmart refund',
@@ -3285,6 +3313,10 @@
         let aiChannels = [];
         let aiDefaultModel = {};
         let keywordRules = [];
+        let keywordRuleStats = {};
+        let keywordStatsRefreshRunning = false;
+        let keywordStatsRefreshPending = false;
+        let keywordStatsLastRefreshAt = 0;
         let extractionRules = [];
         let suppressAccountClick = false;
         let currentComposeSender = null;
@@ -3320,6 +3352,7 @@
         const EXTERNAL_OUTBOX_FOLDER = '__memail_outbox__';
         const EXTERNAL_FOLDER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
         const EXTERNAL_FOLDER_CACHE_PREFIX = 'memail-external-folders:';
+        const KEYWORD_STATS_REFRESH_INTERVAL = 60000;
         let externalAccountSwitchSeq = 0;
 
         // HTML 转义工具函数（防 XSS）
@@ -3393,6 +3426,65 @@
             return n > 0 ? `<span class="badge mail-count-badge ms-auto">${n > 99 ? '99+' : n}</span>` : '';
         }
 
+        function _formatBadgeCount(value) {
+            const n = Number(value) || 0;
+            if (n <= 0) return '';
+            return n > 99 ? '99+' : String(n);
+        }
+
+        function _isMessageUnread(msg) {
+            return msg && (msg.unseen === true || msg.seen !== true);
+        }
+
+        function _keywordRuleStats(ruleId) {
+            return keywordRuleStats[String(ruleId || '')] || { total: 0, unread: 0, updatedAt: 0 };
+        }
+
+        function _keywordRuleBadges(ruleId) {
+            const stats = _keywordRuleStats(ruleId);
+            const unread = Number(stats.unread || 0);
+            const total = Number(stats.total || 0);
+            const value = unread || total;
+            if (value <= 0) return '';
+            const cls = unread > 0 ? '' : ' muted';
+            const title = unread > 0 ? t('unreadMail') : t('keywordMatches');
+            return `<span class="mail-account-badges" title="${_escapeAttr(title)}">
+                <span class="mail-account-badge${cls}">${_formatBadgeCount(value)}</span>
+            </span>`;
+        }
+
+        function _updateKeywordRuleStats(ruleId, messages = []) {
+            if (!ruleId) return;
+            const list = Array.isArray(messages) ? messages : [];
+            keywordRuleStats[String(ruleId)] = {
+                total: list.length,
+                unread: list.filter(_isMessageUnread).length,
+                updatedAt: Date.now(),
+            };
+        }
+
+        function _adjustCurrentKeywordUnread(delta) {
+            if (currentAccountType !== 'keyword' || !currentKeywordRuleId || !delta) return;
+            const key = String(currentKeywordRuleId);
+            const current = _keywordRuleStats(key);
+            const total = Math.max(
+                Number(current.total || 0),
+                Number(currentFolderCounts.keywordMatches || 0),
+                Number(currentGlobalTotal || 0)
+            );
+            keywordRuleStats[key] = {
+                ...current,
+                total,
+                unread: Math.max(0, Number(current.unread || 0) + delta),
+                updatedAt: Date.now(),
+            };
+            _updateFolderCounts({
+                keywordMatches: keywordRuleStats[key].total,
+                keywordUnread: keywordRuleStats[key].unread,
+            });
+            renderMailboxes();
+        }
+
         function _totalPages(total) {
             return Math.max(1, Math.ceil((Number(total) || 0) / currentPageSize));
         }
@@ -3437,6 +3529,7 @@
             if (context === 'external') return queryExternalMails(false, requested);
             if (context === 'global') return queryGlobalMessages(false, requested);
             if (context === 'group') return queryGroupMessages(false, requested);
+            if (context === 'keyword') return queryKeywordRuleMessages(false);
         }
 
         function _setPageAndJump(context, total, page) {
@@ -4808,6 +4901,7 @@
                 renderFolderList();
                 _updateFolderChrome();
             }
+            refreshKeywordRuleStats({ force: true }).catch(() => {});
         }
 
         async function refreshExternalAccountStatuses() {
@@ -4825,8 +4919,50 @@
                 if (currentAccountType === 'global') queryGlobalMessages(true);
                 if (currentAccountType === 'group') queryGroupMessages(true);
                 if (currentAccountType === 'keyword') queryKeywordRuleMessages(true);
+                refreshKeywordRuleStats({ force: true }).catch(() => {});
             } catch (e) {
                 // Status refresh is opportunistic; normal account loading still reports errors.
+                refreshKeywordRuleStats().catch(() => {});
+            }
+        }
+
+        async function refreshKeywordRuleStats({ force = false } = {}) {
+            const enabledRules = keywordRules.filter(rule => rule.enabled !== false);
+            if (!enabledRules.length) return;
+            if (keywordStatsRefreshRunning) {
+                if (force) keywordStatsRefreshPending = true;
+                return;
+            }
+            const now = Date.now();
+            if (!force && now - keywordStatsLastRefreshAt < KEYWORD_STATS_REFRESH_INTERVAL) return;
+            keywordStatsLastRefreshAt = now;
+            keywordStatsRefreshRunning = true;
+            try {
+                await Promise.all(enabledRules.map(async rule => {
+                    try {
+                        const scoped = _keywordRuleAccounts(rule);
+                        const [localMessages, externalMessages] = await Promise.all([
+                            _searchLocalKeywordRule(rule, scoped.local, ''),
+                            _searchExternalKeywordRule(rule, scoped.external, ''),
+                        ]);
+                        const merged = _mergeKeywordMessages(localMessages.concat(externalMessages))
+                            .sort((a, b) => _messageSortTime(b) - _messageSortTime(a));
+                        _updateKeywordRuleStats(rule.id, merged);
+                    } catch (e) {
+                        console.warn('keyword stats refresh failed', rule?.id, e);
+                    }
+                }));
+                renderMailboxes();
+                if (currentAccountType === 'keyword' && currentKeywordRuleId) {
+                    const stats = _keywordRuleStats(currentKeywordRuleId);
+                    _updateFolderCounts({ keywordMatches: stats.total, keywordUnread: stats.unread });
+                }
+            } finally {
+                keywordStatsRefreshRunning = false;
+                if (keywordStatsRefreshPending) {
+                    keywordStatsRefreshPending = false;
+                    refreshKeywordRuleStats({ force: true }).catch(() => {});
+                }
             }
         }
 
@@ -4865,6 +5001,7 @@
                                 <span class="mail-account-title">${_escapeHtml(rule.name)}</span>
                                 <span class="mail-account-subtitle">${_escapeHtml((rule.keywords || []).slice(0, 3).join(', '))}</span>
                             </span>
+                            ${_keywordRuleBadges(rule.id)}
                         </button>`);
                 });
             }
@@ -5066,9 +5203,13 @@
             }
             if (currentAccountType === 'keyword') {
                 const rule = keywordRules.find(item => item.id === currentKeywordRuleId);
+                const stats = _keywordRuleStats(currentKeywordRuleId);
+                const keywordBadge = stats.updatedAt
+                    ? (stats.unread || stats.total)
+                    : (currentFolderCounts.keywordUnread || currentFolderCounts.keywordMatches);
                 list.innerHTML = `
                     <button class="mail-folder-item active" data-folder="${_escapeAttr(currentKeywordRuleId)}" onclick="queryKeywordRuleMessages(false)">
-                        <i class="bi bi-funnel"></i><span class="mail-folder-label">${_escapeHtml(rule?.name || t('keywordRules'))}</span>${_folderBadge(currentFolderCounts.keywordMatches)}
+                        <i class="bi bi-funnel"></i><span class="mail-folder-label">${_escapeHtml(rule?.name || t('keywordRules'))}</span>${_folderBadge(keywordBadge)}
                     </button>
                     <button class="mail-folder-item" onclick="openSettings('keywords')">
                         <i class="bi bi-sliders"></i><span class="mail-folder-label">${t('keywordRules')}</span>
@@ -6861,6 +7002,7 @@
                 renderKeywordRules();
                 renderExtractionApiExample();
                 renderMailboxes();
+                refreshKeywordRuleStats({ force: true }).catch(() => {});
             } catch (e) {
                 _showKeywordSettingsAlert('danger', `${t('keywordRuleLoadFailed')}: ${e.message}`);
             }
@@ -6892,6 +7034,7 @@
                 resetKeywordRuleForm();
                 renderKeywordRules();
                 renderMailboxes();
+                refreshKeywordRuleStats({ force: true }).catch(() => {});
                 _showKeywordSettingsAlert('success', t('keywordRuleSaved'));
             } catch (e) {
                 _showKeywordSettingsAlert('danger', `${t('keywordRuleSaveFailed')}: ${e.message}`);
@@ -6910,6 +7053,7 @@
                 }
                 renderKeywordRules();
                 renderMailboxes();
+                refreshKeywordRuleStats({ force: true }).catch(() => {});
             } catch (e) {
                 _showKeywordSettingsAlert('danger', `${t('deleteFailed')}: ${e.message}`);
             }
@@ -7550,6 +7694,7 @@
                     renderMailboxes();
                     renderFolderList();
                     _updateFolderChrome();
+                    refreshKeywordRuleStats({ force: true }).catch(() => {});
                 }
             } catch (e) {
                 console.warn('notification external sync failed', e);
@@ -7579,6 +7724,7 @@
                 });
                 browserNotificationUnreadSnapshot = nextSnapshot;
                 browserNotificationMonitorBaselineReady = true;
+                refreshKeywordRuleStats().catch(() => {});
             } catch (e) {
                 console.warn('notification summary poll failed', e);
             }
@@ -7710,6 +7856,7 @@
                     renderMailboxes();
                     renderFolderList();
                     _updateFolderChrome();
+                    refreshKeywordRuleStats({ force: true }).catch(() => {});
                 }
             } catch (e) {
                 console.warn('background external sync failed', e);
@@ -7725,6 +7872,7 @@
             }
             if (enabled && (currentAccountType === 'global' || currentAccountType === 'group' || currentAccountType === 'keyword' || currentEmail)) {
                 autoRefreshTimer = setInterval(() => {
+                    refreshKeywordRuleStats().catch(() => {});
                     if (_currentSearchQuery()) {
                         if (_currentViewUsesExternalAccounts()) _backgroundSyncVisibleExternalAccounts(false);
                         searchMail(true);
@@ -8428,7 +8576,9 @@
             if (!rule || rule.enabled === false) {
                 currentGlobalMessages = [];
                 currentGlobalTotal = 0;
-                _updateFolderCounts({ keywordMatches: 0 });
+                _updateKeywordRuleStats(currentKeywordRuleId, []);
+                _updateFolderCounts({ keywordMatches: 0, keywordUnread: 0 });
+                renderMailboxes();
                 if (!silent) {
                     mailList.innerHTML = `<div class="empty-state"><i class="bi bi-funnel d-block"></i><p>${t('noKeywordMatches')}</p></div>`;
                 }
@@ -8451,7 +8601,15 @@
                 currentGlobalMessages = merged;
                 currentGlobalTotal = merged.length;
                 _trackBrowserMailNotifications(currentGlobalMessages, keywordRules.find(item => item.id === currentKeywordRuleId)?.name || t('keywordRules'), silent);
-                _updateFolderCounts({ keywordMatches: merged.length });
+                const unread = merged.filter(_isMessageUnread).length;
+                if (!extraQuery) {
+                    _updateKeywordRuleStats(currentKeywordRuleId, merged);
+                    const stats = _keywordRuleStats(currentKeywordRuleId);
+                    _updateFolderCounts({ keywordMatches: stats.total, keywordUnread: stats.unread });
+                    renderMailboxes();
+                } else {
+                    _updateFolderCounts({ keywordMatches: merged.length, keywordUnread: unread });
+                }
                 await loadMessageMetaFor(merged);
                 renderGlobalMessages(merged);
                 if (merged.length === 0) {
@@ -8518,7 +8676,7 @@
                 mailList.insertAdjacentHTML('beforeend', _renderPagination({
                     currentPage: currentGlobalPage,
                     total: currentGlobalTotal,
-                    context: currentAccountType === 'group' ? 'group' : 'global',
+                    context: currentAccountType === 'keyword' ? 'keyword' : currentAccountType === 'group' ? 'group' : 'global',
                 }));
             }
             _restoreMailListState(listState);
@@ -8528,6 +8686,13 @@
             const accountId = decodeURIComponent(encodedAccountId);
             if (!accountId) return;
             const msgRef = _parseExternalMessageRef(encodedMsgId);
+            const before = currentGlobalMessages.find(msg =>
+                msg._accountType === 'external' &&
+                String(msg._accountId) === String(accountId) &&
+                String(msg.uid) === String(msgRef.uid) &&
+                String(msg.folder || msg.sourceFolder || msg._source || 'INBOX') === String(msgRef.folder)
+            );
+            const wasUnread = _isMessageUnread(before);
             currentExternalAccountId = accountId;
             currentExternalAccount = _externalAccountById(accountId);
             currentEmail = currentExternalAccount?.email || currentEmail;
@@ -8539,6 +8704,7 @@
                 String(msg.folder || msg.sourceFolder || msg._source || 'INBOX') === String(msgRef.folder)
             );
             if (idx !== -1) currentGlobalMessages[idx].seen = true;
+            if (wasUnread) _adjustCurrentKeywordUnread(-1);
         }
 
         async function viewGlobalLocalMail(encodedEmail, encodedMessageId, element) {
@@ -8820,6 +8986,8 @@
                         patchCounts.globalUnread = Math.max(0, (currentFolderCounts.globalUnread || 0) + delta);
                     } else if (currentAccountType === 'group') {
                         patchCounts.groupUnread = Math.max(0, (currentFolderCounts.groupUnread || 0) + delta);
+                    } else if (currentAccountType === 'keyword') {
+                        _adjustCurrentKeywordUnread(delta);
                     }
                     if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
                     if (seen && (
@@ -8848,6 +9016,8 @@
                         patchCounts.globalUnread = Math.max(0, (currentFolderCounts.globalUnread || 0) + delta);
                     } else if (currentAccountType === 'group') {
                         patchCounts.groupUnread = Math.max(0, (currentFolderCounts.groupUnread || 0) + delta);
+                    } else if (currentAccountType === 'keyword') {
+                        _adjustCurrentKeywordUnread(delta);
                     }
                     if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
                     if (seen && (
@@ -9865,7 +10035,11 @@
                 const idx = currentMessages.findIndex(m => m.id === messageId && (!m._source || m._source === 'inbox'));
                 const wasUnread = !isTrash && idx !== -1 ? !currentMessages[idx].seen : false;
                 if (!isTrash && idx !== -1) currentMessages[idx].seen = true;
-                const globalIdx = currentGlobalMessages.findIndex(m => String(m.id || m.msgid) === String(messageId));
+                const globalIdx = currentGlobalMessages.findIndex(m =>
+                    String(m.id || m.msgid) === String(messageId) &&
+                    (!m._accountId || String(m._accountId) === String(currentEmail))
+                );
+                const globalWasUnread = !isTrash && globalIdx !== -1 && _isMessageUnread(currentGlobalMessages[globalIdx]);
                 if (!isTrash && globalIdx !== -1) currentGlobalMessages[globalIdx].seen = true;
                 if (!isTrash && element) element.classList.remove('mail-unread');
                 if (!isGlobalContext && wasUnread) {
@@ -9875,6 +10049,9 @@
                         localUnread: currentInboxUnreadCount,
                     });
                     _updateUnreadBadge();
+                }
+                if (isGlobalContext && currentAccountType === 'keyword' && globalWasUnread) {
+                    _adjustCurrentKeywordUnread(-1);
                 }
                 const escapedSubject = _escapeHtml(msg.subject || t('noSubject'));
                 const escapedFromName = _escapeHtml(msg.from?.name || '');
@@ -10528,6 +10705,8 @@
                             patchCounts.globalUnread = Math.max(0, (currentFolderCounts.globalUnread || 0) + delta);
                         } else if (currentAccountType === 'group') {
                             patchCounts.groupUnread = Math.max(0, (currentFolderCounts.groupUnread || 0) + delta);
+                        } else if (currentAccountType === 'keyword') {
+                            _adjustCurrentKeywordUnread(delta);
                         }
                         if (Object.keys(patchCounts).length) _updateFolderCounts(patchCounts);
                         if (context.type === 'external' && currentExternalFolder === EXTERNAL_UNREAD_FOLDER && seen) {
